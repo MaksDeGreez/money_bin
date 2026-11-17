@@ -29,6 +29,9 @@ gem "redis", ">= 5.0"
 # Background jobs for Active Job [https://sidekiq.org]
 gem "sidekiq", "~> 8.1"
 
+# Password hashing for has_secure_password (the owner's sign-in)
+gem "bcrypt", "~> 3.1"
+
 # Load .env* files into ENV (.env.example lists the settings)
 gem "dotenv"
 
