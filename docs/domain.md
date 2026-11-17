@@ -25,7 +25,7 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
 
 - **Account.** `kind` describes the account; it changes no rule. `archived` hides a closed account from
   everyday lists but keeps its history. `external_id` is the identifier a bank or an importer uses.
-  The balance is the sum of the account's transaction amounts.
+  The balance is the sum of the account's booked transaction amounts (drafts are left out, see `status`).
 - **Category.** A group has no parent and only collects categories. Lines and receipt items point at
   categories, never at groups. So the level is fixed once something points at a row: a category that lines or
   items use cannot lose its parent, and a group with categories cannot get one. Moving a category to another
@@ -47,8 +47,20 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
     `merchant` is the cleaned shop name. `comment` is a note from a person.
   - `source` says where the row came from: `legacy` (the history import), `receipt`, `manual`, `api`
     (the AI agent or another client) or `bank`. `external_id` is that source's own id for the row.
-  - `status`: `confirmed` (the default), `needs_review` (a person should look, for example at an
-    uncategorised line), or `draft` (still being prepared).
+  - `status` says whether the money is booked:
+    - `draft`: a proposal that nobody has accepted yet. It is **not counted**: balances and reports leave
+      it out. Drafts are expected to come from an AI agent that proposes a transaction through the API, and
+      from a receipt that waits to be matched with a bank transaction. Accepting a receipt books its draft
+      (see "Acceptance");
+    - `needs_review`: booked and counted, but a person must still look (for example at an uncategorised
+      line);
+    - `confirmed` (the default): booked, counted and complete.
+
+    `Transaction.booked` is the scope of the counted rows (`needs_review` and `confirmed`), and
+    `Transaction.draft` its opposite; `transaction.booked?` asks the same of one row. `Account#balance` and
+    the report scopes `expenses` and `incomes` use booked rows only. All other rules (the line sum, the
+    transfer rules, the decimal places) apply to a draft exactly as to a booked row: a draft is a complete
+    transaction that is not counted yet, not a half-filled form.
   - `transfer_id` joins the two legs of a transfer.
   - `lock_version` is Active Record's optimistic lock counter (see "Concurrent writers").
 - **Transaction line.** `category_id` nil means "not categorised yet". `legacy_category_path` keeps the old
@@ -96,6 +108,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A stale copy of a transaction cannot save or destroy, also when only its lines change | Model (optimistic locking, `lock_version`) |
 | A transfer has exactly two legs, on different accounts, with opposite signs and no lines | DB for "at most one leg per sign" (unique index `index_transactions_one_leg_per_side`); model for the rest |
 | A same-currency transfer nets to exactly zero | Model only |
+| The two legs of a transfer have the same status | Model only |
 | A leg cannot leave its transfer; destroying one leg destroys the other | Model only |
 | A receipt has 1 to 3 photos, of photo formats only (JPEG, PNG, WebP, HEIC/HEIF), all different | Model only |
 | A receipt's `sha256` is present, 64 lower-case hex characters, and unique | Model + DB |
@@ -179,6 +192,12 @@ A transfer moves money between two own accounts. It is two transactions, one per
   and rolls back when the list is not empty.
 - `leg.counterpart` returns the other leg.
 - Destroying one leg destroys the other.
+- Both legs have the same status. Otherwise a half-draft transfer would change one balance and not the
+  other. `transfer!` gives both legs the `status` it gets; a leg saved alone with another status than its
+  stored counterpart is refused. `transaction.update_status!(status)` changes the status of both legs
+  together, in one database transaction (for a transaction that is not a leg it is just
+  `update!(status:)`). A stale copy raises `ActiveRecord::StaleObjectError`, as any save does, and then
+  neither leg changes.
 - The amounts of a same-currency pair cannot be changed one leg at a time (each save would break the
   zero sum). Destroy the pair and create it again. This also applies to an import that runs again and
   finds that the source changed the amount of a same-currency transfer: it destroys the stored pair (found
@@ -316,8 +335,9 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
   the items' sum, nil when the total is unknown) and `receipt.items_match_total?` let a screen show the gap.
   Otherwise the transaction becomes `confirmed`;
 - the earlier status of a linked transaction does not matter: a `draft` (or a `confirmed` one) also ends
-  `needs_review` or `confirmed`, because accepting the receipt is the review. The receipt becomes
-  `reviewed` and is linked to the transaction;
+  `needs_review` or `confirmed`, because accepting the receipt is the review. So accepting a receipt books
+  a draft: from then on it counts in balances and reports. The receipt becomes `reviewed` and is linked to
+  the transaction;
 - only `extracted` receipts (the first acceptance) and `reviewed` ones (accepting again after a change)
   can be accepted. `uploaded` and `processing` have no OCR result yet, and `failed` has none to trust;
 - it runs in one database transaction with the receipt row locked, so a failure changes nothing and two
@@ -354,7 +374,7 @@ it was given, before that cast, and refuses more than two decimal places on `Tra
 `#original_amount`, `TransactionLine#amount`, `ReceiptItem#amount`, `#unit_price` and `#discount`, and
 `Receipt#total`; a receipt item `quantity` (`decimal(12, 3)`) gets the same rule with three places. A
 converted amount (a USD price in UAH) is rounded by the writer that converts it, on purpose, before it
-reaches the model. The sign carries the direction, so a balance is `SUM(amount)`
+reaches the model. The sign carries the direction, so a balance is `SUM(amount)` over the booked rows
 and a report never needs a "kind" column.
 
 **No currencies table.** A currency is the ISO 4217 code on the account. A transaction has no currency
@@ -400,6 +420,12 @@ would be hidden. Forms and URL helpers also call `model_name`.
 bank feed, the history import. Writers that know a row needs a person set `needs_review` themselves, as
 `Receipts::Accept` does for an uncategorised line. A default of `needs_review` would put every hand-entered
 row into a review queue.
+
+**A draft is a proposal and is not counted.** An AI agent may suggest a transaction that the owner has not
+seen, and a receipt may wait for its bank transaction. Counting such rows would change balances and reports
+on a guess. A draft therefore stays out of every sum until a person (or a receipt acceptance) books it, but
+it follows every other rule, so booking it is only a status change. `needs_review` is different: the money
+is real and counted; only some detail (a category) still needs a person.
 
 ## Rails and PostgreSQL notes
 

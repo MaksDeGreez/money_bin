@@ -45,6 +45,15 @@ class Transaction::TransferableTest < ActiveSupport::TestCase
     assert in_leg.needs_review?
   end
 
+  test "transfer! can propose a draft pair, which changes no balance" do
+    out_leg, in_leg = transfer!(status: :draft)
+
+    assert out_leg.draft? && in_leg.draft?
+    assert_empty out_leg.transfer_problems
+    assert_equal BigDecimal("4334.60"), accounts(:card_uah).balance
+    assert_equal BigDecimal("1940"), accounts(:cash_uah).balance
+  end
+
   test "transfer! needs to_amount when the currencies differ" do
     error = assert_raises(ArgumentError) { transfer!(to: accounts(:savings_usd)) }
     assert_match "to_amount is required", error.message
@@ -179,6 +188,62 @@ class Transaction::TransferableTest < ActiveSupport::TestCase
 
     assert leg.update(account: other_uah)
     assert_empty leg.transfer_problems
+  end
+
+  test "a leg cannot change its status alone" do
+    leg = transactions(:withdrawal_in)
+
+    assert_not leg.update(status: :draft)
+    assert_includes leg.errors[:base], "The two legs must have the same status"
+  end
+
+  test "a leg cannot join a transfer with another status" do
+    out_leg = Transaction.create!(account: accounts(:card_uah), amount: -5, occurred_on: Date.current, source: :manual,
+                                  transfer_id: SecureRandom.uuid, status: :draft)
+    in_leg = Transaction.new(account: accounts(:cash_uah), amount: 5, occurred_on: Date.current, source: :manual,
+                             transfer_id: out_leg.transfer_id)
+
+    assert_not in_leg.valid?
+    assert_includes in_leg.errors[:base], "The two legs must have the same status"
+  end
+
+  test "update_status! changes both legs of a transfer together" do
+    out_leg, in_leg = transfer!(status: :draft)
+
+    assert out_leg.update_status!(:confirmed)
+    assert out_leg.reload.confirmed?
+    assert in_leg.reload.confirmed?
+    assert_empty out_leg.transfer_problems
+
+    assert in_leg.update_status!("needs_review")
+    assert out_leg.reload.needs_review?
+  end
+
+  test "update_status! on a stale leg changes neither leg" do
+    leg = transactions(:withdrawal_in)
+    Transaction.find(leg.id).update!(comment: "Edited in another tab")
+
+    assert_raises(ActiveRecord::StaleObjectError) { leg.update_status!(:draft) }
+    assert transactions(:withdrawal_out).reload.confirmed?
+    assert Transaction.find(leg.id).confirmed?
+  end
+
+  test "update_status! refuses an unknown status" do
+    assert_raises(ActiveRecord::RecordInvalid) { transactions(:withdrawal_in).update_status!("done") }
+    assert transactions(:withdrawal_out).reload.confirmed?
+  end
+
+  test "update_status! also works for a transaction that is not a transfer" do
+    coffee = transactions(:coffee)
+
+    assert coffee.update_status!(:draft)
+    assert coffee.reload.draft?
+  end
+
+  test "transfer_problems finds legs with different statuses" do
+    transactions(:withdrawal_in).update_column(:status, "draft")
+
+    assert_equal [ "the two legs must have the same status" ], transactions(:withdrawal_out).transfer_problems
   end
 
   test "other fields of a leg can change" do

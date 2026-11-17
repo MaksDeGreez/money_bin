@@ -5,7 +5,9 @@
 # - legs have no lines (a transfer is not spending or income);
 # - when both accounts use the same currency, the two amounts net to exactly zero. A bank fee is never
 #   hidden inside a leg: it is a separate expense transaction;
-# - when the currencies differ, the two amounts may be anything (the exchange rate is implied).
+# - when the currencies differ, the two amounts may be anything (the exchange rate is implied);
+# - both legs have the same status, so a draft transfer changes no balance and a booked one changes both.
+#   `update_status!` changes the status of both legs together.
 #
 # Where each rule lives:
 # - the unique index index_transactions_one_leg_per_side allows one negative and one positive leg per
@@ -86,6 +88,7 @@ module Transaction::Transferable
     def pair_problems(leg, other)
       problems = []
       problems << "the two legs must be on different accounts" if leg.account_id == other.account_id
+      problems << "the two legs must have the same status" if leg.status != other.status
       return problems if leg.amount.blank? || other.amount.blank?
 
       if leg.amount.positive? == other.amount.positive?
@@ -110,6 +113,29 @@ module Transaction::Transferable
     transfer_leg? ? self.class.transfer_problems(transfer_id) : []
   end
 
+  # Sets `status` and saves, like update!(status:). For a transfer leg it sets the counterpart's status too,
+  # in one database transaction: a single leg cannot change its status (the legs must match). A stale copy
+  # raises ActiveRecord::StaleObjectError and an invalid status ActiveRecord::RecordInvalid; then neither
+  # leg changes in the database.
+  def update_status!(status)
+    return update!(status:) unless transfer_leg?
+
+    self.class.transaction do
+      other = counterpart
+      other&.status = status
+      self.status = status
+      # This leg is saved first, while the stored counterpart still has the old status, so it is checked
+      # against the counterpart in memory. The counterpart's own save then sees this leg already stored.
+      @counterpart_in_memory = other
+      save!
+      @counterpart_in_memory = nil
+      other&.save!
+    end
+    true
+  ensure
+    @counterpart_in_memory = nil
+  end
+
   private
     def transfer_leg_rules
       errors.add(:lines, "must be empty for a transfer leg") if kept_lines.any?
@@ -118,7 +144,8 @@ module Transaction::Transferable
       if others.size > 1
         errors.add(:transfer_id, "already has two legs")
       elsif others.one?
-        self.class.pair_problems(self, others.first).each { |problem| errors.add(:base, problem.upcase_first) }
+        other = others.first.id == @counterpart_in_memory&.id ? @counterpart_in_memory : others.first
+        self.class.pair_problems(self, other).each { |problem| errors.add(:base, problem.upcase_first) }
       end
     end
 

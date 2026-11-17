@@ -15,8 +15,13 @@
 # the account's (a USD purchase paid from a UAH card). Both or neither; same sign as `amount`.
 #
 # `source` says where the row came from; with `external_id` (that source's own id for it) it makes imports
-# idempotent. `status` is the review state: `confirmed` by default, `needs_review` when something still
-# needs a person (an uncategorised line), `draft` for a row that is still being prepared.
+# idempotent. `status` says whether the money is booked:
+# - `draft`: a proposal (from an AI agent, or waiting for a receipt) that nobody has accepted yet. It is not
+#   counted in balances or reports, but every other rule (the line sum, the transfer rules) still applies;
+# - `needs_review`: booked and counted, but a person should still look (an uncategorised line);
+# - `confirmed` (the default): booked, counted and complete.
+# `booked` is the scope of the counted rows; `draft` (from the enum) is its opposite. Balances and the
+# `expenses` / `incomes` scopes use only booked rows.
 #
 # Concurrent writers: `lock_version` turns on Active Record's optimistic locking. Saving or destroying a stale
 # copy raises ActiveRecord::StaleObjectError. A save that changes only lines still bumps the version (it
@@ -31,6 +36,8 @@ class Transaction < ApplicationRecord
   # Money has at most two decimal places; more is refused, never rounded (DecimalPlacesValidator).
   MONEY_DECIMAL_PLACES = 2
   MCC_FORMAT = /\A\d{4}\z/
+  # The statuses whose money counts in balances and reports. A draft is only a proposal.
+  BOOKED_STATUSES = %w[needs_review confirmed].freeze
 
   include Transferable
 
@@ -56,9 +63,11 @@ class Transaction < ApplicationRecord
 
   scope :between, ->(from, to) { where(occurred_on: from..to) }
   scope :recent, -> { order(occurred_on: :desc, id: :desc) }
+  scope :booked, -> { where(status: BOOKED_STATUSES) }
   scope :transfer_legs, -> { where.not(transfer_id: nil) }
-  scope :expenses, -> { where(transfer_id: nil).where(amount: ...0) }
-  scope :incomes, -> { where(transfer_id: nil).where(arel_table[:amount].gt(0)) }
+  # For reports, so booked rows only: a draft expense is not money spent yet.
+  scope :expenses, -> { booked.where(transfer_id: nil).where(amount: ...0) }
+  scope :incomes, -> { booked.where(transfer_id: nil).where(arel_table[:amount].gt(0)) }
 
   normalizes :original_currency, with: ->(value) { value.strip.upcase.presence }
   normalizes :mcc, :external_id, with: ->(value) { value.strip.presence }
@@ -75,6 +84,11 @@ class Transaction < ApplicationRecord
 
   def transfer_leg?
     transfer_id.present?
+  end
+
+  # True when the money counts in balances and reports (needs_review or confirmed), false for a draft.
+  def booked?
+    BOOKED_STATUSES.include?(status)
   end
 
   def expense?

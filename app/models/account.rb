@@ -1,9 +1,10 @@
 # A place where money is kept: a cash wallet, a bank card, a savings account. Every account holds one
 # currency (an ISO 4217 code such as UAH or USD). There is no currencies table: the code is enough.
 #
-# The balance is the plain sum of the account's transaction amounts, because expenses are negative and
-# incomes positive. For that sum to stay meaningful, the currency cannot change once the account has
-# transactions, and an account with transactions cannot be destroyed (archive it instead).
+# The balance is the plain sum of the account's booked transaction amounts (drafts are proposals and do not
+# count), because expenses are negative and incomes positive. For that sum to stay meaningful, the currency
+# cannot change once the account has transactions, and an account with transactions cannot be destroyed
+# (archive it instead).
 #
 # `external_id` is the identifier a bank or an importer uses for the account. It is optional and unique.
 class Account < ApplicationRecord
@@ -27,9 +28,9 @@ class Account < ApplicationRecord
   validates :external_id, uniqueness: true, allow_nil: true
   validate :currency_fixed_once_used, on: :update
 
-  # The sum of all transaction amounts, as a BigDecimal in the account currency.
+  # The sum of the booked transaction amounts (drafts left out), as a BigDecimal in the account currency.
   def balance
-    transactions.sum(:amount)
+    transactions.booked.sum(:amount)
   end
 
   private

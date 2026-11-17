@@ -80,6 +80,17 @@ class AccountTest < ActiveSupport::TestCase
     assert_kind_of BigDecimal, accounts(:card_uah).balance
   end
 
+  test "balance counts booked transactions only, not drafts" do
+    account = accounts(:cash_uah)
+    draft = Transaction.create!(account:, amount: -40, occurred_on: Date.new(2026, 10, 10), source: :api, status: :draft,
+                                lines_attributes: [ { amount: -40 } ])
+
+    assert_equal BigDecimal("1940"), account.balance
+
+    draft.update!(status: :needs_review)
+    assert_equal BigDecimal("1900"), account.balance
+  end
+
   test "currency cannot change once the account has transactions" do
     account = accounts(:card_uah)
 

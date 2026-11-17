@@ -307,6 +307,36 @@ class TransactionTest < ActiveSupport::TestCase
     assert_equal [ transactions(:snack), transactions(:market_split) ], Transaction.between(Date.new(2026, 10, 3), Date.new(2026, 10, 4)).recent.to_a
   end
 
+  test "booked holds needs_review and confirmed rows, not drafts" do
+    draft = build_expense(status: :draft).tap(&:save!)
+
+    assert_includes Transaction.booked, transactions(:coffee)
+    assert_includes Transaction.booked, transactions(:subscription) # needs_review
+    assert_not_includes Transaction.booked, draft
+    assert_equal [ draft ], Transaction.draft.to_a
+    assert_equal Transaction.count - 1, Transaction.booked.count
+    assert transactions(:subscription).booked?
+    assert_not draft.booked?
+  end
+
+  test "drafts are not expenses or incomes in reports" do
+    expense = build_expense(status: :draft).tap(&:save!)
+    income = build_expense(amount: "100.00", lines: [ { amount: "100.00" } ], status: :draft).tap(&:save!)
+
+    assert_not_includes Transaction.expenses, expense
+    assert_not_includes Transaction.incomes, income
+    assert expense.update!(status: :needs_review)
+    assert_includes Transaction.expenses, expense
+  end
+
+  test "a draft follows the line-sum rule like a booked row" do
+    draft = build_expense(status: :draft, lines: [ { amount: "-60.00" } ])
+
+    assert_not draft.valid?
+    assert_includes draft.errors[:lines], "must add up to the transaction amount"
+    assert_not build_expense(status: :draft, lines: []).valid?
+  end
+
   test "destroying a transaction destroys its lines" do
     assert_difference -> { TransactionLine.count }, -2 do
       transactions(:market_split).destroy!
