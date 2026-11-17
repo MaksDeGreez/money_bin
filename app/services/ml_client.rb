@@ -18,7 +18,8 @@ require "securerandom"
 # - ConnectionError        the service cannot be reached (refused, unknown host, connection reset). Transient.
 # - TimeoutError           opening the connection or waiting for the answer took too long. Transient.
 # - ResponseError          the service answered with an error status (4xx). Keeps `status`, the service's
-#                          `code` and its message.
+#                          `code` and its message. Permanent: the same photos get the same answer, e.g.
+#                          413 image_too_large or 415 unsupported_media_type.
 #   - ServerError          a 5xx answer other than 501. Transient.
 #   - BackendNotImplemented the selected backend is only a placeholder (501).
 # - InvalidResponse        a 2xx answer that is not JSON or misses a required key.

@@ -234,6 +234,17 @@ class MlClientTest < ActiveSupport::TestCase
     assert_not error.transient?
   end
 
+  test "a 413 for a photo over the size limit is a permanent response error" do
+    stub_ml_error(:ocr, status: 413, code: "image_too_large", message: "File 'r.jpg' is larger than the limit of 15728640 bytes.")
+
+    error = assert_raises(MlClient::ResponseError) { client.ocr([ image ]) }
+
+    assert_instance_of MlClient::ResponseError, error
+    assert_equal 413, error.status
+    assert_equal "image_too_large", error.code
+    assert_not error.transient?
+  end
+
   test "a 422 from categorise is a response error" do
     stub_ml_error(:categorise, status: 422, code: "validation_error", message: "texts.0: text must not be empty")
 

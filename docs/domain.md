@@ -249,7 +249,7 @@ What is stored where:
   models refuse it rather than round it). New items have no category yet;
 - on failure, `ocr_raw` is `{"error": {"code": ..., "message": ...}}` and nothing else: no stack trace and
   no response body. `code` is the service's own code (`validation_error`, `too_many_images`,
-  `unsupported_media_type`, `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
+  `image_too_large`, `unsupported_media_type`, `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
   `ml_timeout`, `invalid_response`, `no_images` or `image_missing`. `message` is one line of at most 300
   characters. There is no separate column for the reason: `ocr_raw` already means "what the OCR step
   left".
@@ -272,7 +272,9 @@ Retries and timeouts:
 - transient failures are retried by the job with a growing wait (Active Job's `polynomially_longer`:
   about 3 s, 18 s, 83 s, 258 s), 5 runs in all; then the receipt becomes `failed`. Transient means the
   service cannot be reached, a timeout, or a 5xx answer other than 501;
-- permanent failures make the receipt `failed` at once: a 4xx answer, 501 (the backend is only a
+- permanent failures make the receipt `failed` at once: a 4xx answer (for example 413 `image_too_large`,
+  a photo over the service's `ML_MAX_IMAGE_BYTES`, 15 MB by default, or 415 `unsupported_media_type`, a
+  file whose first bytes are not a JPEG, PNG, WebP or HEIC image), 501 (the backend is only a
   placeholder), an answer that is not JSON or misses a required key, no photos attached, a photo file
   missing from storage;
 - any other exception (a bug, the database gone) is raised: Sidekiq's own retries apply and the receipt

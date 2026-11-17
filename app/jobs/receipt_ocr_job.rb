@@ -14,8 +14,8 @@
 # Failures:
 # - transient (the service cannot be reached, a timeout, a 5xx answer other than 501): retried with a
 #   growing wait, ATTEMPTS runs in all; when they run out, the receipt becomes `failed`;
-# - permanent (a 4xx or 501 answer, an invalid answer, no photos, a photo file missing from storage): the
-#   receipt becomes `failed` at once.
+# - permanent (a 4xx or 501 answer, such as 413 image_too_large for a photo over the service's size limit,
+#   an invalid answer, no photos, a photo file missing from storage): the receipt becomes `failed` at once.
 # A failed receipt keeps the reason in `ocr_raw` as { "error" => { "code", "message" } }: a short code
 # (the service's own code, or one of ml_unreachable, ml_timeout, invalid_response, no_images,
 # image_missing) and a one-line message. Any other exception is a bug or an infrastructure problem: it is

@@ -5,6 +5,7 @@
 #
 #   stub_ml_ocr(receipt: { merchant: nil, items: [] })
 #   stub_ml_error(:ocr, status: 422, code: "too_many_images", message: "Send at most 3 files, got 4.")
+#   stub_ml_error(:ocr, status: 413, code: "image_too_large", message: "File 'r.jpg' is larger than the limit of 15728640 bytes.")
 module MlServiceStubs
   ML_HEALTH = { status: "ok", backend: "stub", model_name: "stub-ocr", model_version: "0.1.0" }.freeze
   ML_OCR_RECEIPT = {

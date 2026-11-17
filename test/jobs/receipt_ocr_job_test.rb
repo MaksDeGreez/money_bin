@@ -144,6 +144,7 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     {
       [ 422, "too_many_images" ] => "Send at most 3 files, got 4.",
       [ 415, "unsupported_media_type" ] => "File 'r.gif' has type 'image/gif'.",
+      [ 413, "image_too_large" ] => "File 'r.jpg' is larger than the limit of 15728640 bytes.",
       [ 501, "backend_not_implemented" ] => "The mlx backend is a placeholder."
     }.each do |(status, code), message|
       stub_ml_error(:ocr, status:, code:, message:)
