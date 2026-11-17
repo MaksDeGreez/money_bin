@@ -6,7 +6,7 @@ Master's capstone project (MSc Data Science, engineering project): a personal fi
 
 `docs/domain.md` is the reference: entities, invariants and the reasons behind them. Read it before touching models, migrations or anything that computes money. Money is always a decimal (`numeric` columns, `BigDecimal` in Ruby, decimal strings over HTTP), never a float.
 
-`docs/decisions/` holds the architecture decision records, numbered (`0001-stack.md`: why Rails + PostgreSQL + Redis/Sidekiq + a separate FastAPI ML service, local-first). Add a new numbered record for each infrastructure or process decision.
+`docs/decisions/` holds the architecture decision records, numbered (`0001-stack.md`: why Rails + PostgreSQL + Redis/Sidekiq + a separate FastAPI ML service, local-first; `0002-authentication-and-api-tokens.md`: sign-in, one user, Sidekiq Web protection, API tokens). Add a new numbered record for each infrastructure or process decision.
 
 ## Stack
 
@@ -18,12 +18,15 @@ Master's capstone project (MSc Data Science, engineering project): a personal fi
 - Active Storage on the local disk (`storage/`, git-ignored). Receipt photos never leave the machine unless the owner turns on a hosted OCR backend.
 - The ML service: `ml/`, Python 3.12, FastAPI, managed with `uv`. Endpoints `/health`, `/ocr` (1-3 images → receipt with items), `/categorise` (texts → 3 category candidates each). The backend is chosen by `OCR_BACKEND`: `stub` (default, invented data in the final shapes), `mlx` and `openrouter` (placeholders, HTTP 501). `ml/README.md` is the contract.
 - Minitest + fixtures, WebMock (no test reaches the network), SimpleCov. No RSpec, no FactoryBot, no system tests. Python: pytest, ruff.
-- No authentication: single local user. Times are shown in Kyiv time (`config.time_zone = "Europe/Kyiv"`); the database stores UTC.
+- Authentication: the Rails 8 generator's code (`Authentication` concern, `Session`, `Current`), bcrypt. Exactly one `User`, created on the command line; no sign-up, no e-mailed password reset. Every page needs a signed-in session unless the controller calls `allow_unauthenticated_access`. Sidekiq Web (`/sidekiq`) sits behind a route constraint on the session cookie (a 404 otherwise).
+- API: personal API tokens (`ApiToken`: `mbt_` prefix, SHA-256 digest stored, scopes `read` / `read_write`, revoked never deleted). API controllers live in `app/controllers/api/v1/` and inherit from `Api::BaseController` (`ActionController::API`, `Authorization: Bearer` only, errors `{"error": {"code", "message"}}`). Browser cookies never authenticate the API.
+- Times are shown in Kyiv time (`config.time_zone = "Europe/Kyiv"`); the database stores UTC.
 - `dotenv` loads `.env*` (`.env.example` lists the settings).
 
 ## Running it
 
 - `bin/setup` — gems, `uv sync` in `ml/`, `.env` from `.env.example`, `git config core.hooksPath .githooks`, services, `db:prepare`, then `bin/dev` (`--skip-server` to stop before it). `bin/worktree-setup` does the same in a linked git worktree and links `.env`, `.env.local` and `config/master.key` from the main checkout. `bin/worktree-remove PATH` retires a clean worktree: drops its test databases, removes it, prunes (freeing its test Redis database) and deletes the local branch when GitHub shows its pull request merged.
+- `bin/rails user:create` — creates the one user (asks, or reads `MONEY_BIN_EMAIL` / `MONEY_BIN_PASSWORD`); `bin/rails user:password` sets a new password and ends every browser session. Logic in `Users::CommandLine`. Never print or log a password or a plain token.
 - `bin/dev` — Puma on port 3100, Sidekiq, the Tailwind watcher and the ML service on 127.0.0.1:8100 (`Procfile.dev`, foreman). Wipes compiled assets first. Skips the ML service when `uv` is missing.
 - `bin/services` — checks PostgreSQL and Redis and starts a stopped one with `brew services` (`--check` only reports).
 - `bin/ci --summary` — the full check suite, one line per step plus the output of failed steps (full log in `tmp/ci/last.log`): setup, RuboCop, slim-lint, bundler-audit, importmap audit, Brakeman, the leak check of the tracked files, Tailwind build, Rails tests, seeds, ruff check, ruff format, pytest. Run it before every push. GitHub CI is the merge gate.
@@ -49,6 +52,7 @@ Databases: `money_bin_v2_development`, `money_bin_v2_production`, and for tests 
 
 - Keep `README.md`, this file and `docs/` current in the same change: `docs/domain.md` for the model and its reasoning, `docs/decisions/` for infrastructure and process decisions.
 - No secrets and no personal data in git: not in code, fixtures, docs, commit messages or branch names. Fixtures and examples are synthetic. Secrets live in `.env` (git-ignored); private files live outside the repository. `.githooks/pre-commit` (gitleaks) and `.githooks/pre-push` (leak check) back this up, and CI scans the history with gitleaks.
+- Tests: controller tests sign in with `sign_in_as users(:owner)` (`test/support/session_test_helper.rb`); API tests send `bearer(plain_token(:agent_read))` (`test/support/api_token_test_helper.rb`; fixtures store only digests). The suite checks that every fixture is valid (`test/models/fixtures_test.rb`): add new models there.
 - CI never needs model weights, receipt images or personal data. Tests stub HTTP with WebMock; the ML tests use the stub backend.
 - Views: Slim only. Use the UI helpers before writing markup: `ui_button`, `ui_link_button`, `ui_button_to` (variants `primary`, `secondary`, `ghost`, `soft`, `danger`, `link`; sizes `sm`, `md`, `lg`, `icon`), `ui_badge` (tones `neutral`, `accent`, `signal`, `muted`, `solid`, `danger`), `ui_icon` (Lucide), `ui_classes` (merges Tailwind classes), the partials `ui/page_header`, `ui/callout`, `ui/flash`, `ui/theme_toggle`, and `UiFormBuilder` (the default form builder: `f.text_field` and friends, `f.select`, `f.check_box`, `f.radio_button`, `f.submit`, `f.hint`, `f.error_for`). Prefer adding a helper or partial over a one-off.
 - Tailwind utilities must appear literally in `app/views`, `app/helpers`, `app/form_builders` or `app/javascript`; never build `"bg-#{tone}"`. Utilities with `:`, `/`, `[` or `]` go in `class="…"` in Slim, not in dot shorthand. No inline JS.

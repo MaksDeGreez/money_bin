@@ -16,12 +16,15 @@ everything runs on the owner's machine, and the data and photos stay there.
                                          a local MLX model or OpenRouter later
 ```
 
-The decisions behind this stack are in [`docs/decisions/0001-stack.md`](docs/decisions/0001-stack.md).
+The decisions behind this stack are in [`docs/decisions/0001-stack.md`](docs/decisions/0001-stack.md), and
+the ones behind sign-in and API tokens in
+[`docs/decisions/0002-authentication-and-api-tokens.md`](docs/decisions/0002-authentication-and-api-tokens.md).
 
 ## Status
 
 Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
-ML service answers with its stub backend, and CI checks both. The domain model is described in
+owner signs in, AI agents authenticate with personal API tokens, the ML service answers with its stub
+backend, and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
 
 ## Requirements
@@ -38,6 +41,7 @@ ML service answers with its stub backend, and CI checks both. The domain model i
 bin/setup                # gems, Python packages, .env, git hooks, services, databases, then bin/dev
 bin/setup --skip-server  # the same without starting the app
 bin/setup --reset        # also resets the databases (bin/rails db:reset)
+bin/rails user:create    # once: the one user who signs in (see "Signing in and API tokens")
 ```
 
 ## Run
@@ -57,7 +61,44 @@ processes in `Procfile.dev` with foreman:
 | `ml`      | the ML service (`uvicorn app.main:app`)      | 8100 |
 
 Without `uv` (or without `ml/`), `bin/dev` starts everything except the ML service. Useful URLs:
-`/` (home), `/up` (health check), <http://127.0.0.1:8100/docs> (ML service API docs).
+`/` (home), `/session/new` (sign in), `/settings/api_tokens` (API tokens), `/sidekiq` (background jobs,
+signed in only), `/api/v1/status` (API check), `/up` (health check), <http://127.0.0.1:8100/docs> (ML
+service API docs).
+
+## Signing in and API tokens
+
+The app has exactly one user, the owner, and no sign-up page. Create the user once, on the machine that
+runs the app:
+
+```sh
+bin/rails user:create      # asks for the e-mail address and the password (at least 12 characters)
+bin/rails user:password    # sets a new password and signs out every browser
+```
+
+The password is typed without echo, twice. For a scripted setup, both tasks read `MONEY_BIN_EMAIL` and
+`MONEY_BIN_PASSWORD` from the environment instead of asking (keep such a password out of your shell
+history). A second user is refused. There is no password reset by e-mail: `bin/rails user:password` is
+the reset. Seeds never create a user.
+
+Every page needs a signed-in session, except the sign-in page and `/up`. Sign in at `/session/new`.
+
+AI agents and scripts use **personal API tokens**, not the browser session. Create one at
+`/settings/api_tokens` (signed in): give it a name and a scope, `read` (GET requests only) or
+`read_write` (every request). The token (`mbt_` and 44 more characters) is shown once, right after it
+is created: copy it then. Only a SHA-256 digest of it is stored, so it cannot be shown again; revoke a
+lost token and create a new one. Revoked tokens stay in the list.
+
+Send the token in the `Authorization` header:
+
+```sh
+export MONEY_BIN_TOKEN='mbt_...'   # the token you copied (placeholder here)
+curl -s -H "Authorization: Bearer $MONEY_BIN_TOKEN" http://localhost:3100/api/v1/status
+# {"status":"ok","token":{"name":"Laptop agent","scope":"read"}}
+```
+
+Errors have one shape, `{"error": {"code": "...", "message": "..."}}`: 401 `unauthorized` (no token) or
+`invalid_token` (unknown, malformed or revoked), 403 `insufficient_scope` (a `read` token on a request
+that changes data).
 
 ## Tests and checks
 
