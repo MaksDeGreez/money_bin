@@ -1,0 +1,34 @@
+# Invented receipts. Each has one photo (test/fixtures/active_storage); the sha256 values are digests of
+# made-up text, since the photo bytes are not stored.
+
+# Accepted: booked as the market_split transaction (groceries + household).
+market_receipt:
+  ledger_transaction: market_split
+  status: reviewed
+  ocr_raw: { "engine": "stub", "lines_read": 3 }
+  ocr_model_name: stub-ocr
+  ocr_model_version: "0.1.0"
+  fiscal_number: "4000000001"
+  receipt_number: "A-1024"
+  issued_at: 2026-10-03T18:40:00+03:00
+  total: 1250.40
+  currency: UAH
+  merchant_name: Example Market
+  batch: october-shopping
+  sha256: 0ee3d325089dc00907ec6937d2418c6e4bfa5d21ff915120588ff1ec24a09fa8
+
+# Read by OCR, waiting for a person: one item has only a suggested category.
+corner_receipt:
+  status: extracted
+  ocr_model_name: stub-ocr
+  ocr_model_version: "0.1.0"
+  issued_at: 2026-10-08T12:05:00+03:00
+  total: 152.50
+  currency: UAH
+  merchant_name: Corner Shop
+  batch: october-shopping
+  sha256: e7a5eee269ee224283be2be8045c153a46238ff33d4ce9056a7b3750f3ae0fbf
+
+# Just uploaded: no OCR yet, no items.
+new_receipt:
+  sha256: 135c2f31616a107039a7880c07ccb4c86f730b414ac45bd495a49106c0699a9c

@@ -23,6 +23,10 @@ class Category < ApplicationRecord
   has_many :children, -> { order(:position, :name) }, class_name: "Category", foreign_key: :parent_id, inverse_of: :parent,
     dependent: :restrict_with_error
   has_many :transaction_lines, dependent: :restrict_with_error
+  has_many :receipt_items, dependent: :restrict_with_error
+  # Suggestions are only guesses; they go when the category goes.
+  has_many :suggested_receipt_items, class_name: "ReceiptItem", foreign_key: :suggested_category_id, inverse_of: :suggested_category,
+    dependent: :nullify
 
   scope :groups, -> { where(parent_id: nil) }
   scope :leaves, -> { where.not(parent_id: nil) }

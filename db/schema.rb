@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_160400) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_160600) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -79,6 +79,55 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160400) do
     t.index ["normalized_name"], name: "index_payees_on_normalized_name", unique: true
   end
 
+  create_table "receipt_items", force: :cascade do |t|
+    t.bigint "receipt_id", null: false
+    t.integer "position", null: false
+    t.string "name", null: false
+    t.decimal "quantity", precision: 12, scale: 3
+    t.decimal "unit_price", precision: 15, scale: 2
+    t.decimal "amount", precision: 15, scale: 2, null: false
+    t.decimal "discount", precision: 15, scale: 2, default: "0.0", null: false
+    t.bigint "category_id"
+    t.bigint "suggested_category_id"
+    t.float "confidence"
+    t.boolean "accepted_by_user", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["category_id"], name: "index_receipt_items_on_category_id"
+    t.index ["receipt_id", "position"], name: "index_receipt_items_on_receipt_id_and_position", unique: true
+    t.index ["suggested_category_id"], name: "index_receipt_items_on_suggested_category_id"
+    t.check_constraint "\"position\" >= 0", name: "receipt_items_position_non_negative"
+    t.check_constraint "confidence >= 0::double precision AND confidence <= 1::double precision", name: "receipt_items_confidence_range"
+    t.check_constraint "discount >= 0::numeric", name: "receipt_items_discount_non_negative"
+    t.check_constraint "quantity > 0::numeric", name: "receipt_items_quantity_positive"
+  end
+
+  create_table "receipts", force: :cascade do |t|
+    t.bigint "transaction_id"
+    t.string "status", default: "uploaded", null: false
+    t.jsonb "ocr_raw"
+    t.string "ocr_model_name"
+    t.string "ocr_model_version"
+    t.string "fiscal_number"
+    t.string "receipt_number"
+    t.timestamptz "issued_at"
+    t.decimal "total", precision: 15, scale: 2
+    t.string "currency", limit: 3
+    t.string "merchant_name"
+    t.text "qr_payload"
+    t.string "batch"
+    t.string "sha256", limit: 64, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["batch"], name: "index_receipts_on_batch"
+    t.index ["sha256"], name: "index_receipts_on_sha256", unique: true
+    t.index ["status"], name: "index_receipts_on_status"
+    t.index ["transaction_id"], name: "index_receipts_on_transaction_id", unique: true
+    t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "receipts_currency_format"
+    t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipts_sha256_format"
+    t.check_constraint "status::text = ANY (ARRAY['uploaded'::character varying, 'processing'::character varying, 'extracted'::character varying, 'reviewed'::character varying, 'failed'::character varying]::text[])", name: "receipts_status_allowed"
+  end
+
   create_table "transaction_lines", force: :cascade do |t|
     t.bigint "transaction_id", null: false
     t.bigint "category_id"
@@ -127,6 +176,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160400) do
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "categories", "categories", column: "parent_id"
+  add_foreign_key "receipt_items", "categories"
+  add_foreign_key "receipt_items", "categories", column: "suggested_category_id"
+  add_foreign_key "receipt_items", "receipts"
+  add_foreign_key "receipts", "transactions", on_delete: :nullify
   add_foreign_key "transaction_lines", "categories"
   add_foreign_key "transaction_lines", "transactions"
   add_foreign_key "transactions", "accounts"

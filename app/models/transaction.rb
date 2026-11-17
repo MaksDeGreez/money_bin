@@ -40,6 +40,8 @@ class Transaction < ApplicationRecord
   belongs_to :payee, optional: true
   has_many :lines, -> { order(:id) }, class_name: "TransactionLine", foreign_key: :transaction_id, inverse_of: :parent,
     dependent: :destroy
+  # The receipt this transaction was booked from, if any. Destroying the transaction keeps the receipt.
+  has_one :receipt, foreign_key: :transaction_id, inverse_of: :ledger_transaction, dependent: :nullify
 
   accepts_nested_attributes_for :lines, allow_destroy: true
 
