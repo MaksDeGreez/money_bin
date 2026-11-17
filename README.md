@@ -230,7 +230,10 @@ bin/worktree-remove PATH        # retire one: drops its test databases, removes 
 
 All worktrees share the development database and Redis database 5. Each one gets its own test database
 (`money_bin_v2_test_<worktree>`) and test Redis database (one of 7..15), so test runs in two worktrees
-never wipe each other's data (`config/worktree_isolation.rb`).
+never wipe each other's data (`config/worktree_isolation.rb`). A known limit: the worktree name is
+lowercased and every run of other characters becomes `_`, so two names that differ only in case or
+punctuation (`a-1` and `a1`, `Fix` and `fix`) get the same test database; give worktrees names that
+differ in letters or digits.
 
 ## Contributing
 

@@ -13,7 +13,8 @@ module MoneyBin
   #   money_bin_v2_test and Redis database 6.
   # - <name> is git's own name for the worktree: the directory's basename, made unique by git when two
   #   worktrees share one. Cleaned to [a-z0-9_] and cut to MAX_SUFFIX_LENGTH, it becomes the database
-  #   suffix.
+  #   suffix. Known limit: names that differ only in case or punctuation ("a-1" and "a1") get the same
+  #   suffix, so the same test database.
   # - Redis has 16 databases (0..15). This app uses 4 (production), 5 (development) and 6 (tests in the
   #   main checkout). Another local app on the same Redis uses 0, 1 and 2, and its own worktrees take test
   #   databases from 3 upward, so the two only meet when it runs tests in several worktrees at once (a
