@@ -1,0 +1,7 @@
+# Sidekiq process configuration. Started by bin/dev (Procfile.dev) with
+# `bundle exec sidekiq -C config/sidekiq.yml`.
+:concurrency: 5
+:queues:
+  - default
+  - mailers
+:timeout: 25

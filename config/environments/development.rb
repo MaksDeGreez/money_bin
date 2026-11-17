@@ -25,8 +25,11 @@ Rails.application.configure do
     config.action_controller.perform_caching = false
   end
 
-  # Change to :null_store to avoid any caching.
-  config.cache_store = :memory_store
+  # Redis-backed cache, in its own namespace so it never mixes with production.
+  config.cache_store = :redis_cache_store, {
+    url: MoneyBin::RedisUrl.for("development"),
+    namespace: "money_bin_v2_development"
+  }
 
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local
@@ -38,7 +41,7 @@ Rails.application.configure do
   config.action_mailer.perform_caching = false
 
   # Set localhost to be used by links generated in mailer templates.
-  config.action_mailer.default_url_options = { host: "localhost", port: 3000 }
+  config.action_mailer.default_url_options = { host: "localhost", port: ENV.fetch("PORT", 3100).to_i }
 
   # Print deprecation notices to the Rails logger.
   config.active_support.deprecation = :log
@@ -62,7 +65,7 @@ Rails.application.configure do
   config.assets.quiet = true
 
   # Raises error for missing translations.
-  # config.i18n.raise_on_missing_translations = true
+  config.i18n.raise_on_missing_translations = true
 
   # Annotate rendered view with file names.
   config.action_view.annotate_rendered_view_with_filenames = true

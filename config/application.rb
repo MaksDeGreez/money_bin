@@ -18,6 +18,8 @@ require "rails/test_unit/railtie"
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
 
+require_relative "redis_url"
+
 module MoneyBin
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
@@ -28,15 +30,20 @@ module MoneyBin
     # Common ones are `templates`, `generators`, or `middleware`, for example.
     config.autoload_lib(ignore: %w[assets tasks])
 
-    # Configuration for the application, engines, and railties goes here.
-    #
-    # These settings can be overridden in specific environments using the files
-    # in config/environments, which are processed later.
-    #
-    # config.time_zone = "Central Time (US & Canada)"
-    # config.eager_load_paths << Rails.root.join("extras")
+    # Slim is the only template language. Generators write .slim views, no system tests,
+    # no helper files and no stylesheets.
+    config.generators do |g|
+      g.template_engine :slim
+      g.system_tests nil
+      g.helper false
+      g.stylesheets false
+    end
 
-    # Don't generate system test files.
-    config.generators.system_tests = nil
+    # Everything is shown in Kyiv time. Timestamps stay UTC in the database (the Active Record default);
+    # Time.zone converts them on read, so Date.current is today in Kyiv.
+    config.time_zone = "Europe/Kyiv"
+
+    # Sidekiq runs every Active Job. The test environment uses the :test adapter instead.
+    config.active_job.queue_adapter = :sidekiq
   end
 end
