@@ -14,7 +14,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `accounts` | A place where money is kept, in one currency | `name` (unique), `kind` (cash, debit, credit, savings, ewallet, business), `currency` (ISO 4217), `archived`, `external_id` (optional, unique) |
 | `categories` | A group (root) or a category (child of a group) | `parent_id`, `name`, `slug` (unique), `position`, `description` |
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
-| `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `external_id`, `status`, `transfer_id`, `lock_version` |
+| `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
 | `receipts` | A photographed shop receipt and its OCR result | `transaction_id` (nullable), `status`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `qr_payload`, `batch`, `sha256` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
@@ -47,6 +47,10 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
     `merchant` is the cleaned shop name. `comment` is a note from a person.
   - `source` says where the row came from: `legacy` (the history import), `receipt`, `manual`, `api`
     (the AI agent or another client) or `bank`. `external_id` is that source's own id for the row.
+  - `source_system` is the system a row first came from, set by importers; it is free text and may be nil.
+    `source` says which writer of this app stored the row (the history import stores every row as
+    `legacy`); `source_system` keeps what the old data knew about its own origin (a bank feed, another
+    budgeting app).
   - `status` says whether the money is booked:
     - `draft`: a proposal that nobody has accepted yet. It is **not counted**: balances and reports leave
       it out. Drafts are expected to come from an AI agent that proposes a transaction through the API, and

@@ -15,7 +15,8 @@
 # the account's (a USD purchase paid from a UAH card). Both or neither; same sign as `amount`.
 #
 # `source` says where the row came from; with `external_id` (that source's own id for it) it makes imports
-# idempotent. `status` says whether the money is booked:
+# idempotent. `source_system` is the system a row first came from (a bank feed, an older budgeting app),
+# set by importers; it is free text and may be nil. `status` says whether the money is booked:
 # - `draft`: a proposal (from an AI agent, or waiting for a receipt) that nobody has accepted yet. It is not
 #   counted in balances or reports, but every other rule (the line sum, the transfer rules) still applies;
 # - `needs_review`: booked and counted, but a person should still look (an uncategorised line);
