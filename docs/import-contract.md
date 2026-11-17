@@ -164,7 +164,7 @@ importer does all the work, prints the counts, and rolls back.
 Things that can still stop the import at this stage (and roll everything back):
 
 - the taxonomy is not loaded (`Category.uncategorised` is missing: run `bin/rails db:seed`);
-- a model refuses a row, for example an account name that another account of the app already uses, or an
+- a model refuses a row, for example an account name that an account outside this export already uses, or an
   account currency that would change while the account has transactions;
 - replacing a transfer pair would delete a stored transaction that is not in this export (see below);
 - `Transaction.transfer_problems` finds a problem in an imported pair after the writes.
@@ -261,21 +261,25 @@ an amount: not in its normal output, not in its error messages, and Active Recor
 while it runs. Errors name the file, the line number, the `legacy_id` (when it looks like an id), the
 field and the kind of problem. Model refusals are reported as attribute names and error types
 (`name taken`), never as Active Record's messages; a model rule that gives a sentence instead of a type is
-shown as `invalid` (`currency invalid`), since a sentence may quote a value. The manifest's `warnings` are only counted.
+shown as `invalid` (`currency invalid`), since a sentence may quote a value. The manifest's `warnings`
+are only counted.
 
-A successful run prints, for example:
+A successful first run of the fixture export prints:
 
 ```
 Legacy import: export schema 1, dates 2026-01-01 to 2026-03-31, 1 manifest warning
 Accounts: 5 created, 0 updated, 0 unchanged (0 with local edits kept)
 Payees: 4 created, 0 updated, 0 unchanged, 1 folded into another payee
-Transactions: 11 created, 0 updated, 0 unchanged (0 with local edits kept), 2 transfer pairs (0 recreated)
-Lines: 6 mapped to a taxonomy category, 1 sent to Uncategorised (no mapping), 1 sent to Uncategorised (names not in the taxonomy), 1 without a category
-Status: 8 confirmed, 3 needs_review
+Transactions: 14 created, 0 updated, 0 unchanged (0 with local edits kept), 3 transfer pairs (0 recreated)
+Lines: 7 mapped to a taxonomy category, 1 sent to Uncategorised (no mapping), 1 sent to Uncategorised (names not in the taxonomy), 1 without a category
+Status: 11 confirmed, 3 needs_review
 Warnings: 1
   - 1 old category name a group and category that are not in the taxonomy; their lines went to Uncategorised (legacy_ids 15)
 Done: the import was committed.
 ```
+
+A second run of the same export prints `0 created, 0 updated, 5 unchanged` for the accounts and
+`0 created, 0 updated, 14 unchanged` for the transactions, with the same `Lines` and `Status` counts.
 
 A failed run prints the problems to standard error and exits with status 1:
 

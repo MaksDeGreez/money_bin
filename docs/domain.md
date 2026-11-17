@@ -215,8 +215,8 @@ A bank fee is never hidden inside a leg. When moving 1000 costs 10, the out leg 
 +1000, and the fee is a separate expense of -10 with its own category ("Interest & bank fees"). So a
 same-currency transfer always nets to zero, and the fee shows in spending reports. A surplus (the receiving
 side got more) is a separate income the same way. The history export splits old transfers like this (see
-"A fee or a surplus inside a same-currency transfer" in [`import-contract.md`](import-contract.md)). A cross-currency pair may
-have any two amounts: the exchange rate is implied by them.
+"A fee or a surplus inside a same-currency transfer" in [`import-contract.md`](import-contract.md)). A
+cross-currency pair may have any two amounts: the exchange rate is implied by them.
 
 ## Receipts
 
