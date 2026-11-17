@@ -177,6 +177,65 @@ class LeakCheckTest < ActiveSupport::TestCase
     assert status.success?, output
   end
 
+  test "a term inside a binary file or a file marked -diff blocks the push" do
+    git("switch", "-q", "-c", "feature")
+    File.binwrite(File.join(@work, "photo.bin"), "\x89PNG\0\x01 zorblax \0\xFF".b)
+    sha = commit({ ".gitattributes" => "notes.dat -diff\n", "notes.dat" => "one\nQuuxwidget\n" }, "Add files")
+
+    output, status = push("feature")
+
+    assert_blocked output, status
+    assert_includes output, "commit #{sha[0, 12]} photo.bin line 1: term on line 3 of the terms file"
+    assert_includes output, "commit #{sha[0, 12]} notes.dat line 2: term on line 4 of the terms file"
+  end
+
+  test "a tag that points at a blob or a tree is checked" do
+    blob = git("hash-object", "-w", "--stdin", stdin: "plain\nzorblax\n").strip
+    git("tag", "blob-tag", blob)
+
+    output, status = push("blob-tag")
+    assert_blocked output, status
+    assert_includes output, "tag refs/tags/blob-tag line 2: term on line 3 of the terms file"
+
+    commit({ "quuxwidget.txt" => "plain\n" }, "Add file")
+    git("tag", "-a", "-m", "A tree", "tree-tag", "HEAD^{tree}")
+    output, status = push("tree-tag")
+    assert_blocked output, status
+    assert_includes output, "tag refs/tags/tree-tag path <term 4>.txt: term on line 4 of the terms file"
+  end
+
+  test "--history checks tags that point at a blob, and tag messages" do
+    blob = git("hash-object", "-w", "--stdin", stdin: "Zorblax\n").strip
+    git("tag", "blob-tag", blob)
+    git("tag", "-a", "-m", "Release for quuxwidget", "v1")
+
+    output, status = leak_check("--history")
+
+    assert_blocked output, status
+    assert_includes output, "tag refs/tags/blob-tag line 1: term on line 3 of the terms file"
+    assert_includes output, "tag refs/tags/v1 message line 1: term on line 4 of the terms file"
+  end
+
+  test "a term matches whether it is written composed or decomposed" do
+    composed = "Квойдрик" # an invented word; "й" as one code point
+    decomposed = composed.unicode_normalize(:nfd) # "и" followed by a combining breve
+    assert_not_equal composed, decomposed
+
+    File.write(@terms_file, "#{decomposed}\n")
+    git("switch", "-q", "-c", "feature")
+    commit({ "a.txt" => "Чек: #{composed.upcase}\n" }, "Add a")
+    output, status = push("feature")
+    assert_blocked output, status
+    assert_includes output, "a.txt line 1: term on line 1 of the terms file"
+
+    File.write(@terms_file, "#{composed}\n")
+    commit({ "b.txt" => "#{decomposed}\n" }, "Add b")
+    output, status = leak_check("--tree")
+    assert_blocked output, status
+    assert_includes output, "b.txt line 1: term on line 1 of the terms file"
+    assert_no_match(/квойдрик/i, output.unicode_normalize(:nfc))
+  end
+
   test "deleting a remote branch passes" do
     git("push", "-q", "--no-verify", "origin", "main:refs/heads/zorblax-old")
 
@@ -226,6 +285,15 @@ class LeakCheckTest < ActiveSupport::TestCase
     assert_includes output, "new-<term 4>.txt line 2: term on line 3 of the terms file"
   end
 
+  test "--tree checks the content of binary files too" do
+    File.binwrite(File.join(@work, "photo.bin"), "\x89PNG\0\x01 zorblax \0\xFF".b)
+
+    output, status = leak_check("--tree")
+
+    assert_blocked output, status
+    assert_includes output, "photo.bin line 1: term on line 3 of the terms file"
+  end
+
   test "--history checks every commit of the local branches" do
     git("switch", "-q", "-c", "feature")
     sha = commit({ "a.txt" => "plain\n" }, "Mention quuxwidget")
@@ -259,8 +327,8 @@ class LeakCheckTest < ActiveSupport::TestCase
     }.merge(extra)
   end
 
-  def git(*args, chdir: @work)
-    output, status = Open3.capture2e(env, "git", *args, chdir:)
+  def git(*args, chdir: @work, stdin: "")
+    output, status = Open3.capture2e(env, "git", *args, chdir:, stdin_data: stdin)
     assert status.success?, "git #{args.join(' ')} failed: #{output}"
     output
   end

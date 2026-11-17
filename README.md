@@ -188,12 +188,17 @@ This repository will be public. No secrets and no personal data may enter it.
 - **The leak check** (`bin/leak-check`) reads forbidden terms from
   `~/Documents/money_bin_data/leak_terms.txt`, a file outside the repository (`LEAK_TERMS_FILE` names
   another one). One term per line; blank lines and lines starting with `#` are ignored; matching is
-  literal and ignores case. Before a push it checks the added lines, the paths of added or renamed files
-  and the messages of every commit the remote does not have yet, plus the pushed ref names. A hit blocks
-  the push; the report names the commit, the file and the line, and the line of the terms file, but
-  never the term. Without the terms file it warns and passes. `bin/leak-check --tree` checks every file
+  literal, ignores case, and puts both sides in Unicode NFC form first (so "й" matches whether it is one
+  code point or two). Before a push it checks the added lines, the paths of added or renamed files
+  and the messages of every commit the remote does not have yet, plus the pushed ref names, the messages
+  of annotated tags and the content of a tag that points at a blob or a tree. Binary files and files
+  marked `-diff` are read as text. A hit blocks the push; the report names the commit, the file and the
+  line, and the line of the terms file, but never the term. Without the terms file it warns and passes. `bin/leak-check --tree` checks every file
   in the working tree that git tracks or would track (`bin/ci` runs it), and `bin/leak-check --history`
-  checks every commit of the local branches and tags: run both before making the repository public.
+  checks every commit of the local branches and tags, and every tag: run both before making the
+  repository public. It does **not** look at the names and e-mail addresses of authors, committers and
+  taggers, nor at text that is not stored as UTF-8 (inside a compressed file or a PDF, for example);
+  check `git log --format='%an %ae %cn %ce' | sort -u` by hand.
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and on pushes to `main`, in three jobs:
   `rails` (RuboCop, slim-lint, Brakeman, bundler-audit, importmap audit, Tailwind build, tests with the
   coverage minimum, seeds), `python` (ruff, pytest) and `gitleaks` (a secret scan of the whole history).
