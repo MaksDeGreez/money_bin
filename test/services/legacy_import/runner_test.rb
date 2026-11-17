@@ -278,6 +278,29 @@ module LegacyImport
       assert_not account(5).archived?
     end
 
+    test "a row that moves to an account in the same currency is updated in place, in another currency recreated" do
+      import
+      bread, salary = legacy(1001), legacy(1002)
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") do |rows|
+          rows[0]["account_legacy_id"] = 3
+          rows[1].merge!("account_legacy_id" => 4, "currency" => "USD", "amount" => "750.00",
+            "lines" => [ { "amount" => "750.00", "category_legacy_id" => 13 } ])
+        end
+        report = import(dir)
+
+        assert_equal [ 0, 2, 9 ], report.counts(:transactions).values
+      end
+
+      assert_equal [ bread.id, account(3) ], [ legacy(1001).id, legacy(1001).account ]
+      moved = legacy(1002)
+      assert_not_equal salary.id, moved.id
+      assert_equal [ account(4), BigDecimal("750"), "USD" ], [ moved.account, moved.amount, moved.account.currency ]
+      assert_equal [ BigDecimal("750") ], moved.lines.map(&:amount)
+      assert_equal "January pay", moved.comment
+    end
+
     test "a same-currency pair whose amounts changed is destroyed and created again" do
       import
       old_ids = [ legacy(1007).id, legacy(1008).id ]

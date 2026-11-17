@@ -194,7 +194,9 @@ Things that can still stop the import at this stage (and roll everything back):
 - Payees: an existing payee is never renamed. Several old payees whose names normalise to the same key
   fold into one payee (the first one in the file names it); the report counts how many folded.
 - Transactions: the fields are written in place; the lines are replaced only when they differ (amount,
-  category, old path or comment, in order).
+  category, old path or comment, in order). A row that moves to an account in another currency cannot be
+  changed in place (the app refuses that move); it is destroyed and created again, with the same
+  `source` and `external_id`, in the same database transaction.
 - Transfer pairs: a pair is written only when the digest of at least one of its legs changed (or the rows
   are not yet this pair). When only details of the changed legs differ (dates, comment, payee, ...), those
   legs are saved in place and the other leg is left alone. When an account, an amount or the status of a

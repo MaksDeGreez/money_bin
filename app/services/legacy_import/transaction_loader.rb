@@ -16,7 +16,9 @@ module LegacyImport
   # comment, payee, ...). When an account, an amount or the status of such a leg changes, or the rows were
   # not yet this pair, the stored legs are destroyed and the pair is created again from the export: the legs
   # of a same-currency pair cannot change their amounts one at a time. A row that switches between ordinary
-  # and transfer leg is replaced the same way. After all writes every pair is checked with
+  # and transfer leg is replaced the same way, and so is an ordinary row that moves to an account in another
+  # currency (the model refuses that move, since the amount means money in the account currency). After all
+  # writes every pair is checked with
   # Transaction.transfer_problems.
   #
   # The importer never deletes a row the export does not have: if replacing a pair would destroy such a row
@@ -64,7 +66,7 @@ module LegacyImport
         return unchanged(stored, attributes, lines) if stored && !stored.transfer_leg? && stored.import_digest == digest
 
         attributes[:import_digest] = digest
-        if stored&.transfer_leg?
+        if stored && (stored.transfer_leg? || stored.account.currency != attributes[:account].currency)
           destroy(stored)
           stored = nil
         end
