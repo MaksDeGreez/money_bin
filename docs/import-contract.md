@@ -136,6 +136,8 @@ written:
   missing, its SHA-256 or its line count does not match, or it is not valid UTF-8;
 - a line is empty, is not valid JSON, or is not a JSON object;
 - a required key is missing, or a value has the wrong type or form (see the tables);
+- a text value (a name, a path, a comment, an id, ...) holds a NUL character (`\u0000`), which the database
+  cannot store;
 - a duplicate `legacy_id` inside a file, a blank one, or one with whitespace at the start or the end; two
   accounts with the same name;
 - an account `kind` outside the list;

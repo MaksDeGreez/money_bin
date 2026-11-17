@@ -82,6 +82,33 @@ module LegacyImport
         problems(transaction_edit(1001) { |row| row["account_legacy_id"] = "1 " })
     end
 
+    test "a NUL character in any text field stops it with its file, line and field" do
+      nul = "x\u0000y"
+      found = problems(
+        "accounts.jsonl" => ->(rows) { rows[0]["name"] = nul },
+        "categories.jsonl" => ->(rows) { rows[0].merge!("legacy_path" => nul, "group_en" => nul) },
+        "payees.jsonl" => ->(rows) { rows[0]["name"] = nul },
+        "transactions.jsonl" => lambda do |rows|
+          rows[1].merge!("comment" => nul, "bank_description" => nul, "merchant" => nul, "source_system" => nul)
+          rows[1]["lines"][0]["comment"] = nul
+          rows[6]["transfer_key"] = nul
+        end
+      )
+
+      assert_equal [
+        "accounts.jsonl line 1 (legacy_id 1): name contains a NUL character",
+        "categories.jsonl line 1 (legacy_id 10): legacy_path contains a NUL character",
+        "categories.jsonl line 1 (legacy_id 10): group_en contains a NUL character",
+        "payees.jsonl line 1 (legacy_id 20): name contains a NUL character",
+        "transactions.jsonl line 2 (legacy_id 1002): comment contains a NUL character",
+        "transactions.jsonl line 2 (legacy_id 1002): bank_description contains a NUL character",
+        "transactions.jsonl line 2 (legacy_id 1002): merchant contains a NUL character",
+        "transactions.jsonl line 2 (legacy_id 1002): source_system contains a NUL character",
+        "transactions.jsonl line 2 (legacy_id 1002): lines[0].comment contains a NUL character",
+        "transactions.jsonl line 7 (legacy_id 1007): transfer_key contains a NUL character"
+      ], found
+    end
+
     test "two accounts with one name stop it" do
       found = problems("accounts.jsonl" => ->(rows) { rows[3]["name"] = " #{rows[0]['name']} " })
 

@@ -25,7 +25,7 @@ module LegacyImport
         raise Invalid, "is empty" if value.strip.empty?
         raise Invalid, "has spaces at the start or the end" if value.strip != value
 
-        value
+        no_nul(value)
       else raise Invalid, "must be an integer or a string"
       end
     end
@@ -74,11 +74,19 @@ module LegacyImport
       raise Invalid, "must be a string" unless value.is_a?(String)
       raise Invalid, "is blank" if value.strip.empty?
 
-      value
+      no_nul(value)
     end
 
     def text_or_nil(value)
       raise Invalid, "must be a string or null" unless value.nil? || value.is_a?(String)
+
+      value && no_nul(value)
+    end
+
+    # PostgreSQL cannot store a NUL character in text, so such a value would stop the import at write time
+    # with no location. It is refused here, where the file, line and field are known.
+    def no_nul(value)
+      raise Invalid, "contains a NUL character" if value.include?("\u0000")
 
       value
     end
