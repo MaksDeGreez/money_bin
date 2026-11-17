@@ -1,0 +1,300 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Keeps personal data out of git. Reads forbidden terms (names, account numbers, anything private) from a
+# file OUTSIDE the repository and looks for them in what is about to be published.
+#
+#   bin/leak-check --pre-push REMOTE   # used by .githooks/pre-push: reads git's ref lines from stdin
+#   bin/leak-check --tree              # every file git tracks or would track: its path and its lines
+#   bin/leak-check --history           # every commit reachable from a local branch or tag
+#
+# The terms file is ~/Documents/money_bin_data/leak_terms.txt, or the file named by LEAK_TERMS_FILE.
+# One term per line; blank lines and lines starting with "#" are ignored. Matching is literal (not a
+# regular expression) and ignores case. Both the terms and the text are put in Unicode NFC form first, so
+# a letter such as "й" matches whether it is written as one code point or as two. When the file is missing
+# the check prints a warning and passes, so a machine without it (GitHub CI, another contributor) is not
+# blocked.
+#
+# For every commit the remote does not have yet, --pre-push checks the lines the commit adds, the paths of
+# the files it adds or renames, and its message. It also checks the names of the pushed refs, the
+# messages of pushed annotated tags, and the content of a tag that points at a blob or a tree instead of a
+# commit. "The remote does not have it" means: not reachable from the ref's old value on the remote nor
+# from any remote-tracking branch of that remote, so a new branch is compared with everything the remote
+# already has. Deleting a ref publishes nothing. Every file counts as text, binary files and files marked
+# "-diff" in .gitattributes included: a term stored as UTF-8 inside them is found.
+#
+# What it does NOT look at: the names and e-mail addresses of authors, committers and taggers, the
+# dates, and text that is not stored as UTF-8 (a term inside a compressed file or a PDF, for example).
+#
+# A report never prints a term. It names the commit, the file and the line, and the line of the terms file
+# that matched. A term inside a printed path or ref name is replaced by "<term N>".
+#
+# Exit codes: 0 nothing found (or no terms file), 1 a term was found, 2 a usage or git error.
+# No Rails and no gems: the hook must be fast and must work before `bundle install`.
+
+require "open3"
+require "set"
+
+module LeakCheck
+  DEFAULT_TERMS_FILE = "~/Documents/money_bin_data/leak_terms.txt"
+  ZERO_SHA = /\A0+\z/
+
+  Term = Struct.new(:text, :line)
+  Error = Class.new(StandardError)
+
+  module_function
+
+  def terms_file
+    File.expand_path(ENV.fetch("LEAK_TERMS_FILE", "").empty? ? DEFAULT_TERMS_FILE : ENV["LEAK_TERMS_FILE"])
+  end
+
+  def load_terms(path)
+    lines = File.readlines(path, chomp: true, encoding: "bom|utf-8").map { |raw| utf8(raw).strip }
+    lines.each_with_index.reject { |text, _| text.empty? || text.start_with?("#") }
+      .map { |text, index| Term.new(fold(text), index + 1) }
+  end
+
+  # Lower case in Unicode NFC form: the form both terms and text are compared in.
+  def fold(text)
+    lower = text.downcase
+    lower.ascii_only? ? lower : lower.unicode_normalize(:nfc)
+  end
+
+  def nfc(text)
+    text.ascii_only? ? text : text.unicode_normalize(:nfc)
+  end
+
+  def utf8(text)
+    text.dup.force_encoding(Encoding::UTF_8).scrub("?")
+  end
+
+  # Runs git and returns its output as UTF-8. A git failure is an error: the check must not pass silently.
+  def git(*args)
+    out, err, status = Open3.capture3("git", "-c", "core.quotePath=false", *args, binmode: true)
+    raise Error, "git #{args.first} failed: #{utf8(err).strip}" unless status.success?
+
+    utf8(out)
+  end
+
+  # Git C-quotes a path with unusual characters: "a\tb", "caf\303\251".
+  def unquote(path)
+    return path unless path.start_with?('"') && path.end_with?('"')
+
+    escapes = { "a" => "\a", "b" => "\b", "t" => "\t", "n" => "\n", "v" => "\v", "f" => "\f", "r" => "\r" }
+    bytes = path[1..-2].b.gsub(/\\([0-7]{3}|.)/n) do
+      code = Regexp.last_match(1)
+      code.length == 3 ? code.to_i(8).chr : escapes.fetch(code, code)
+    end
+    utf8(bytes)
+  end
+
+  class Scanner
+    attr_reader :findings
+
+    def initialize(terms)
+      @terms = terms
+      @findings = []
+      @scanned = Set.new
+    end
+
+    # Records a finding for every term in `text`; `where` says where the text came from.
+    def check(text, where)
+      lower = LeakCheck.fold(text)
+      @terms.each do |term|
+        @findings << "#{where}: term on line #{term.line} of the terms file" if lower.include?(term.text)
+      end
+    end
+
+    # Replaces every term in text that is about to be printed.
+    def mask(text)
+      @terms.reduce(LeakCheck.nfc(text)) { |masked, term| masked.gsub(/#{Regexp.escape(term.text)}/i, "<term #{term.line}>") }
+    end
+
+    def check_pre_push(remote, input)
+      known_remote = LeakCheck.git("remote").lines(chomp: true).include?(remote)
+      input.each_line do |line|
+        local_ref, local_sha, remote_ref, remote_sha = line.split
+        next unless remote_sha
+
+        next if local_sha.match?(ZERO_SHA) # a deleted ref publishes nothing
+
+        check(remote_ref, "ref #{mask(remote_ref)}")
+        check_tag_message(local_sha, local_ref)
+        next check_tagged_content(local_sha, local_ref) unless object?("#{local_sha}^{commit}")
+
+        exclude = remote_sha.match?(ZERO_SHA) || !object?(remote_sha) ? [] : [ remote_sha ]
+        exclude << "--remotes=#{remote}" if known_remote
+        LeakCheck.git("rev-list", "#{local_sha}^{commit}", "--not", *exclude).split.each { |sha| check_commit(sha) }
+      end
+    end
+
+    # rev-list skips a tag that points at a blob or a tree, so tags are also walked one by one.
+    def check_history
+      LeakCheck.git("for-each-ref", "--format=%(objectname) %(refname)", "refs/tags").each_line(chomp: true) do |line|
+        sha, ref = line.split(" ", 2)
+        check_tag_message(sha, ref)
+        check_tagged_content(sha, ref) unless object?("#{sha}^{commit}")
+      end
+      LeakCheck.git("rev-list", "--branches", "--tags").split.each { |sha| check_commit(sha) }
+    end
+
+    def check_tree
+      paths = LeakCheck.git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0").uniq
+      paths.each do |path|
+        check(path, "path #{mask(path)}")
+        next unless File.lstat(path).file?
+
+        LeakCheck.utf8(File.binread(path)).each_line.with_index(1) { |text, number| check(text, "#{mask(path)} line #{number}") }
+      rescue Errno::ENOENT
+        next # tracked but deleted in the working tree
+      end
+    end
+
+    private
+
+    def object?(sha)
+      system("git", "cat-file", "-e", sha, out: File::NULL, err: File::NULL)
+    end
+
+    # A tag of a blob or a tree publishes that content without a commit.
+    def check_tagged_content(sha, ref)
+      target = LeakCheck.git("rev-parse", "#{sha}^{}").strip
+      where = "tag #{mask(ref)}"
+      case LeakCheck.git("cat-file", "-t", target).strip
+      when "blob" then check_blob(target, where)
+      when "tree"
+        LeakCheck.git("ls-tree", "-r", "-z", target).split("\0").each do |entry|
+          info, path = entry.split("\t", 2)
+          check(path, "#{where} path #{mask(path)}")
+          check_blob(info.split[2], "#{where} #{mask(path)}") if info.split[1] == "blob"
+        end
+      end
+    end
+
+    def check_blob(sha, where)
+      LeakCheck.git("cat-file", "blob", sha).each_line.with_index(1) { |text, number| check(text, "#{where} line #{number}") }
+    end
+
+    def check_tag_message(sha, ref)
+      return unless LeakCheck.git("cat-file", "-t", sha).strip == "tag"
+
+      body = LeakCheck.git("cat-file", "tag", sha).split("\n\n", 2)[1].to_s
+      body.each_line.with_index(1) { |text, number| check(text, "tag #{mask(ref)} message line #{number}") }
+    end
+
+    def check_commit(sha)
+      return unless @scanned.add?(sha)
+
+      short = sha[0, 12]
+      LeakCheck.git("log", "-1", "--format=%B", sha).each_line.with_index(1) do |text, number|
+        check(text, "commit #{short} message line #{number}")
+      end
+      new_paths(sha).each { |path| check(path, "commit #{short} added file #{mask(path)}") }
+      added_lines(sha) { |path, number, text| check(text, "commit #{short} #{mask(path)} line #{number}") }
+    end
+
+    # Paths the commit adds or renames to. A merge (combined status such as "AA") counts only paths that
+    # are new against every parent: the others came from a parent, which is checked on its own.
+    def new_paths(sha)
+      fields = LeakCheck.git("diff-tree", "-r", "-z", "-M", "--cc", "--name-status", "--root", "--no-commit-id", sha)
+        .split("\0")
+      paths = []
+      until fields.empty?
+        status = fields.shift
+        if status.start_with?("R", "C")
+          fields.shift
+          paths << fields.shift
+        else
+          path = fields.shift
+          paths << path if status.match?(/\AA+\z/)
+        end
+      end
+      paths
+    end
+
+    # Yields path, line number and text of every line the commit adds. Works for plain and combined (merge)
+    # diffs: a combined diff has one marker column per parent, and a line is new only when every column is
+    # "+" (otherwise it came from a parent). --text shows binary files and files marked "-diff" as text.
+    def added_lines(sha)
+      patch = LeakCheck.git("diff-tree", "-p", "--text", "--cc", "-M", "-U0", "--root", "--no-commit-id", "--no-color",
+                            "--no-ext-diff", "--no-textconv", sha)
+      path = nil
+      columns = 1
+      number = 0
+      patch.each_line(chomp: true) do |line|
+        if line.start_with?("diff ")
+          path = nil
+        elsif path.nil? && line.start_with?("+++ ")
+          path = LeakCheck.unquote(line.delete_prefix("+++ ")).delete_prefix("b/")
+        elsif (hunk = line.match(/\A(@{2,}) .*\+(\d+)(?:,\d+)? @{2,}/))
+          columns = hunk[1].length - 1
+          number = hunk[2].to_i
+        elsif path && !line.start_with?("\\")
+          markers = line[0, columns].to_s
+          next if markers.include?("-")
+
+          yield path, number, line[columns..].to_s if markers == "+" * columns
+          number += 1
+        end
+      end
+    end
+  end
+
+  SCOPES = {
+    "--pre-push" => "the commits being pushed",
+    "--tree" => "the tracked files",
+    "--history" => "the history"
+  }.freeze
+
+  def usage_error?(mode, args)
+    return true unless SCOPES.key?(mode)
+
+    mode == "--pre-push" ? !args.size.between?(1, 2) : !args.empty?
+  end
+
+  def main(argv, stdin)
+    mode, *args = argv
+    if usage_error?(mode, args)
+      warn "usage: bin/leak-check --pre-push REMOTE [URL] | --tree | --history"
+      return 2
+    end
+
+    path = terms_file
+    unless File.file?(path)
+      warn "leak-check: WARNING no terms file at #{path}; nothing was checked (LEAK_TERMS_FILE names another file)"
+      return 0
+    end
+    terms = load_terms(path)
+    if terms.empty?
+      warn "leak-check: WARNING the terms file #{path} has no terms; nothing was checked"
+      return 0
+    end
+
+    scanner = Scanner.new(terms)
+    case mode
+    when "--pre-push" then scanner.check_pre_push(args.first, stdin.read)
+    when "--tree"
+      Dir.chdir(git("rev-parse", "--show-toplevel").strip) { scanner.check_tree }
+    when "--history" then scanner.check_history
+    end
+
+    if scanner.findings.empty?
+      puts "leak-check: no forbidden terms in #{SCOPES[mode]} (#{terms.size} term#{'s' unless terms.size == 1} checked)"
+      return 0
+    end
+
+    count = scanner.findings.size
+    warn "leak-check: #{count} forbidden term#{'s' unless count == 1} found in #{SCOPES[mode]}."
+    scanner.findings.each { |finding| warn "  #{finding}" }
+    warn "The terms themselves are not printed. Terms file: #{scanner.mask(path)}"
+    if mode == "--pre-push"
+      warn "The push is blocked. Remove the terms from those commits (git commit --amend, git rebase -i), then push again."
+    end
+    1
+  rescue Error => e
+    warn "leak-check: #{e.message}"
+    2
+  end
+end
+
+exit LeakCheck.main(ARGV.dup, $stdin) if $PROGRAM_NAME == __FILE__

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Runs before every push. Two checks; either one blocks the push.
+#
+# 1. No direct pushes to main. Every change reaches main through a pull request. Branch protection is not
+#    available for this repository, so this hook is the guard. In a real emergency
+#    ALLOW_PUSH_TO_MAIN=1 skips this check (and only this one).
+# 2. The leak check (bin/leak-check): forbidden terms from a file outside the repository must not
+#    appear in the commits being pushed.
+#
+# git passes the remote name and URL as arguments and one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+
+root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
+refs=$(cat)
+
+if [ "${ALLOW_PUSH_TO_MAIN:-}" != 1 ] &&
+  printf '%s\n' "$refs" | awk '$3 == "refs/heads/main" { found = 1 } END { exit !found }'; then
+  echo "pre-push: refusing to update main on the remote. Push a branch and open a pull request instead:" >&2
+  echo "  git switch -c my-change && git push -u origin my-change && gh pr create" >&2
+  echo "In a real emergency only: ALLOW_PUSH_TO_MAIN=1 git push ... (the leak check still runs)." >&2
+  exit 1
+fi
+
+printf '%s\n' "$refs" | "$root/bin/leak-check" --pre-push "$@"

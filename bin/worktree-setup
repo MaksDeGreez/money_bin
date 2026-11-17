@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Prepares a linked git worktree (for example one created by a coding agent): links the git-ignored
+# per-machine files from the main checkout so they live in one place (.env, .env.local,
+# config/master.key), then runs bin/setup --skip-server. Safe to run again. In the main checkout it only
+# runs setup.
+#
+# Every worktree shares the development database (money_bin_v2_development) and Redis database 5.
+# Tests are per worktree (config/worktree_isolation.rb): money_bin_v2_test_<worktree name> and a Redis
+# database from 7..15, claimed once and freed when git removes the worktree. The main checkout keeps
+# money_bin_v2_test and Redis database 6. Two worktree names that differ only in case or punctuation
+# ("a-1" and "a1") map to the same test database, so give worktrees names that differ in letters or digits.
+#
+# Cleanup: deleting a worktree leaves its test databases behind (the base one and the parallel workers'
+# `_N` copies). `bin/worktree-remove PATH` drops them, removes the worktree and deletes a merged branch.
+set -euo pipefail
+
+if [ $# -gt 0 ]; then
+  echo "usage: bin/worktree-setup   (no arguments; run from inside the worktree)" >&2
+  exit 2
+fi
+
+root=$(git rev-parse --show-toplevel)
+main=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+cd "$root"
+
+link_from_main() { # $1 = relative path; links it when the main checkout has it and this tree does not
+  if [ -e "$1" ]; then
+    echo "present"
+  elif [ -e "$main/$1" ]; then
+    ln -sfn "$main/$1" "$1" # -f also replaces a dangling link
+    echo "linked"
+  else
+    echo "missing"
+  fi
+}
+
+if [ "$root" = "$main" ]; then
+  links="main-checkout"
+else
+  links="env=$(link_from_main .env) env.local=$(link_from_main .env.local) master.key=$(link_from_main config/master.key)"
+fi
+
+if ! bin/setup --skip-server; then
+  echo "worktree-setup: FAILED in bin/setup (root=$root $links)"
+  exit 1
+fi
+
+# bin/setup's db:prepare (development) prepares the test database too, under this worktree's name.
+isolation=$(ruby -r ./config/worktree_isolation -e '
+  isolation = MoneyBin::WorktreeIsolation
+  suffix = isolation.database_suffix
+  print "test_db=#{isolation.test_database} test_redis_db=#{isolation.test_redis_db}",
+        " suffix=#{suffix.empty? ? "none" : suffix}"')
+
+echo "worktree-setup: ok root=$root $links $isolation (the development database and Redis 5 are shared)"

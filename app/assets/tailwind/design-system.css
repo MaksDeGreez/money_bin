@@ -1,0 +1,278 @@
+/* Design system: tokens, base element styles and component classes.
+   Adapted from buildermethods/bm-skills (bm-design-system, MIT (c) 2026 CasJam
+   Media LLC) for a Rails + Slim + Hotwire app.
+
+   Web fonts are loaded with <link> tags in app/views/layouts/_head.html.slim,
+   not with @import here: this file is inlined after Tailwind's own rules, so a
+   CSS @import at this point would be dropped by browsers. */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --breakpoint-xs: 400px;
+
+  --font-display: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+
+  --color-page: #ffffff;
+  --color-surface: #f8fafc;
+  --color-hairline: #e2e8f0;
+  --color-ink-body: #334155;
+  --color-ink-display: #0f172a;
+  --color-ink-muted: #64748b;
+  --color-accent: oklch(71.5% 0.143 215.221);
+  --color-accent-faded: oklch(96% 0.025 215.221);
+  --color-accent-display: oklch(62% 0.135 215.221);
+  --color-signal: #fcd34d;
+  --color-signal-faded: #fffaea;
+  --color-signal-display: oklch(76% 0.165 82);
+  --color-danger: oklch(64% 0.22 25);
+  --color-danger-faded: oklch(96% 0.025 25);
+  --color-danger-display: oklch(55% 0.20 25);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --color-page: #121212;
+  --color-surface: #1c1c1c;
+  --color-hairline: #2e2e2e;
+  --color-ink-body: #e4e4e4;
+  --color-ink-display: #f5f5f5;
+  --color-ink-muted: #a1a1a1;
+  --color-accent: oklch(78.9% 0.154 211.53);
+  --color-accent-faded: oklch(22% 0.045 211.53);
+  --color-accent-display: oklch(86% 0.135 211.53);
+  --color-signal: #fcd34d;
+  --color-signal-faded: #2f2b21;
+  --color-signal-display: oklch(93% 0.13 95);
+  --color-danger: oklch(72% 0.20 22);
+  --color-danger-faded: oklch(22% 0.05 22);
+  --color-danger-display: oklch(82% 0.18 22);
+}
+
+/* ---------------------------------------------------------------------------
+   Base element styles. Bare semantic HTML is already styled; do not re-apply
+   size/weight/color utilities to h1–h6, p, a, strong, label, ul/ol, blockquote.
+   --------------------------------------------------------------------------- */
+@layer base {
+  html {
+    background-color: var(--color-page);
+    color: var(--color-ink-body);
+    font-family: var(--font-sans);
+    font-size: 106.25%; /* 17px base — scales every rem-based size */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-page);
+    color: var(--color-ink-body);
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--color-ink-display);
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+
+  h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.03em; }
+  @media (min-width: 400px) {
+    h1 { font-size: 2.25rem; }
+  }
+  h2 { font-size: 1.7rem;  letter-spacing: -0.03em; }
+  h3 { font-size: 1.3rem; }
+  h4 { font-size: 1.1rem; }
+  h5 { font-size: 1rem; }
+  h6 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-ink-muted); }
+
+  a {
+    color: var(--color-accent-display);
+    text-decoration: none;
+    transition: color 120ms ease;
+  }
+  a:hover { color: color-mix(in oklab, var(--color-accent-display), black 15%); }
+
+  p { color: var(--color-ink-body); }
+
+  strong { color: var(--color-ink-display); font-weight: 600; }
+
+  label, legend {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-ink-display);
+  }
+
+  ul, ol {
+    color: var(--color-ink-body);
+    list-style: none;
+    padding-left: 0;
+  }
+
+  li { padding-left: 0; }
+  li + li { margin-top: 0; }
+
+  blockquote {
+    border-left: 3px solid var(--color-accent);
+    padding-left: 1rem;
+    color: var(--color-ink-muted);
+    font-style: italic;
+  }
+
+  hr {
+    border: 0;
+    border-top: 1px solid var(--color-hairline);
+    margin: 2rem 0;
+  }
+
+  code, pre, kbd, samp {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  }
+
+  /* Machine text shown as it is (JSON payloads): small, scrolls sideways instead of wrapping. */
+  pre {
+    font-size: 0.75rem;
+    line-height: 1.625;
+    overflow-x: auto;
+    color: var(--color-ink-body);
+    margin: 0;
+  }
+
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+}
+
+/* Long-form prose. Wrap rendered content in .body-content instead of using
+   the Tailwind typography plugin. */
+.body-content > * + * {
+  margin-top: 1.5rem;
+}
+
+.body-content > h2:not(:first-child),
+.body-content > h3:not(:first-child),
+.body-content > h4:not(:first-child) {
+  padding-top: 1rem;
+}
+
+.body-content ul,
+.body-content ol {
+  padding-left: 1.5rem;
+}
+.body-content ul { list-style: disc; }
+.body-content ol { list-style: decimal; }
+.body-content li { padding-left: 0.25rem; }
+.body-content li + li { margin-top: 0.25rem; }
+
+/* ---------------------------------------------------------------------------
+   Component classes. Plain CSS, always emitted, so they are safe to build from
+   strings in Ruby (e.g. "btn-#{variant}"). Utilities are not: write them out.
+   --------------------------------------------------------------------------- */
+@layer components {
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium cursor-pointer transition-colors;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-page;
+    @apply disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50;
+    @apply h-10 px-4 text-sm;
+  }
+  .btn-small { @apply h-8 px-3 text-sm; }
+  .btn-large { @apply h-11 px-5 text-base; }
+  .btn-icon  { @apply h-10 w-10 px-0; }
+
+  .btn-primary   { @apply bg-accent text-page hover:bg-accent/90 hover:text-page; }
+  .btn-secondary { @apply bg-surface text-ink-display border border-hairline hover:bg-hairline/40 hover:text-ink-display; }
+  .btn-ghost     { @apply text-ink-body hover:bg-surface hover:text-ink-body; }
+  .btn-soft      { @apply bg-accent-faded text-accent hover:bg-accent-faded/80 hover:text-accent; }
+  .btn-danger    { @apply bg-danger text-page hover:bg-danger/90 hover:text-page; }
+  .btn-link      { @apply text-accent underline-offset-2 hover:underline hover:text-accent p-0 h-auto; }
+
+  /* Form fields (input, select, textarea) */
+  .form-control {
+    @apply flex h-10 w-full rounded-md border border-hairline bg-page px-3 py-2 text-sm text-ink-body;
+    @apply placeholder:text-ink-muted;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-page focus-visible:border-accent focus-visible:bg-accent-faded/50;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
+    @apply aria-invalid:border-danger;
+  }
+  .form-control-select { @apply appearance-none pr-9; }
+  .form-control-textarea { @apply h-auto min-h-[6rem] py-2 leading-normal; }
+  .form-select-wrapper { @apply relative; }
+  .form-select-chevron { @apply pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted; }
+
+  .form-check, .form-radio {
+    @apply h-4 w-4 shrink-0 border border-hairline bg-page text-accent accent-[var(--color-accent)];
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-page;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .form-check { @apply rounded-md; }
+  .form-radio { @apply rounded-full; }
+  .form-check-label { @apply flex items-center gap-2 text-sm font-normal text-ink-body; }
+  .form-radio-group { @apply flex flex-col gap-3; }
+  .form-radio-group-horizontal { @apply flex-row flex-wrap; }
+
+  .field { @apply space-y-2; }
+  .field-hint { @apply text-xs text-ink-muted; }
+  .field-error { @apply text-xs text-danger-display; }
+
+  /* Badges */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium leading-none;
+  }
+  .badge-neutral { @apply bg-surface text-ink-body border border-hairline; }
+  .badge-accent  { @apply bg-accent-faded text-accent-display; }
+  .badge-signal  { @apply bg-signal-faded text-signal-display; }
+  .badge-muted   { @apply bg-transparent text-ink-muted border border-hairline; }
+  .badge-solid   { @apply bg-accent text-page; }
+  .badge-danger  { @apply bg-danger-faded text-danger-display; }
+
+  /* Page header */
+  .page-header { @apply border-b border-hairline pb-6; }
+  .page-header-row { @apply flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between; }
+  .page-header-actions { @apply flex shrink-0 items-center gap-2; }
+
+  /* Listings */
+  .listing { @apply divide-y divide-hairline rounded-md border border-hairline bg-page; }
+  .listing-item {
+    @apply flex items-center gap-3 px-4 py-3 transition-colors hover:bg-surface;
+    @apply first:rounded-t-md last:rounded-b-md;
+  }
+
+  /* Data table (definition list) */
+  .data-table { @apply divide-y divide-hairline border-y border-hairline; }
+  .data-row { @apply grid gap-1 py-4 md:grid-cols-4 md:gap-6 xl:grid-cols-5; }
+  .data-row-title { @apply text-sm font-medium text-ink-muted md:col-span-1 md:pt-0.5; }
+  .data-row-value { @apply text-ink-body md:col-span-3 xl:col-span-4; }
+
+  /* Data grid: a real <table> for collections with several columns */
+  .data-grid-wrapper { @apply overflow-x-auto rounded-md border border-hairline; }
+  .data-grid { @apply w-full border-collapse text-sm; }
+  .data-grid th {
+    @apply whitespace-nowrap border-b border-hairline bg-surface px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-ink-muted;
+  }
+  .data-grid td { @apply border-b border-hairline px-3 py-2.5 align-top text-ink-body; }
+  .data-grid tbody tr { @apply transition-colors hover:bg-surface; }
+  .data-grid tbody tr:last-child td { @apply border-b-0; }
+  .data-grid .data-grid-num { @apply whitespace-nowrap text-right tabular-nums; }
+  .data-grid .data-grid-sub td { @apply text-ink-body; }
+  .data-grid .data-grid-sub td:first-child { @apply pl-8; }
+  .data-grid .data-grid-group td { @apply font-medium text-ink-display; }
+  /* The link to the record, in the row's primary cell. Other cells stay plain, selectable text. */
+  .data-grid-link { @apply text-ink-display no-underline hover:underline; }
+  /* The last cell: inline row actions (small ghost buttons), as narrow as its content. */
+  .data-grid .data-grid-actions { @apply w-0 whitespace-nowrap py-1.5 text-right; }
+
+  /* Callouts */
+  .callout {
+    @apply bg-surface border border-hairline rounded-lg p-5;
+  }
+  .callout-accent { @apply bg-accent-faded; }
+  .callout-signal { @apply bg-signal-faded; }
+  .callout-danger { @apply bg-danger-faded; }
+}

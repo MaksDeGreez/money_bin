@@ -1,0 +1,51 @@
+[project]
+name = "money-bin-ml"
+version = "0.1.0"
+description = "Receipt OCR and item categorisation service for money_bin."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.163.1",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.3",
+    "python-multipart>=0.0.34",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.2",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.5",
+]
+
+[tool.uv]
+# This is an application, not a library: uv installs the dependencies only.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=70"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # import sorting
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+    "N",   # pep8 naming
+    "RUF", # ruff-specific rules
+]

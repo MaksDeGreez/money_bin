@@ -1,0 +1,14 @@
+market_photo:
+  name: images
+  record: market_receipt (Receipt)
+  blob: market_photo
+
+corner_photo:
+  name: images
+  record: corner_receipt (Receipt)
+  blob: corner_photo
+
+new_photo:
+  name: images
+  record: new_receipt (Receipt)
+  blob: new_photo

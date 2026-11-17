@@ -1,0 +1,22 @@
+# Invented accounts in two currencies (plus one archived wallet in a third).
+cash_uah:
+  name: Cash wallet
+  kind: cash
+  currency: UAH
+
+card_uah:
+  name: Everyday card
+  kind: debit
+  currency: UAH
+  external_id: example-bank-card-0001
+
+savings_usd:
+  name: Savings USD
+  kind: savings
+  currency: USD
+
+old_wallet:
+  name: Old e-wallet
+  kind: ewallet
+  currency: EUR
+  archived: true

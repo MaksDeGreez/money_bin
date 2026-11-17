@@ -1,0 +1,64 @@
+- content_for :title, "API tokens · Money Bin"
+
+= render "ui/page_header", title: "API tokens", description: "A token lets an AI agent or a script call the Money Bin API as you. Give each agent its own token, so you can revoke one without touching the others."
+
+section.mt-8
+  h2.text-base New token
+  / Not a Turbo form: the answer is a normal page that shows the new token once (see the controller).
+  = form_with model: @api_token, url: settings_api_tokens_path, data: { turbo: false }, class: "mt-4 max-w-xl space-y-5" do |f|
+    .field
+      = f.label :name
+      = f.text_field :name, required: true, maxlength: ApiToken::NAME_MAX_LENGTH, placeholder: "Laptop agent"
+      = f.hint "Where the token will be used. Unique among your active tokens."
+      = f.error_for :name
+    fieldset.field
+      legend.text-sm.font-medium Scope
+      .form-radio-group
+        label.form-check-label
+          = f.radio_button :scope, "read"
+          span Read: GET requests only
+        label.form-check-label
+          = f.radio_button :scope, "read_write"
+          span Read and write: every request, including changes to the ledger
+      = f.error_for :scope
+    = f.submit "Create token"
+
+section.mt-10
+  h2.text-base Your tokens
+  - if @api_tokens.empty?
+    p.mt-2.text-sm.text-ink-muted No tokens yet.
+  - else
+    .data-grid-wrapper.mt-4
+      table.data-grid
+        thead
+          tr
+            th Name
+            th Scope
+            th Created
+            th Last used
+            th State
+            th
+              span.sr-only Actions
+        tbody
+          - @api_tokens.each do |api_token|
+            tr id=dom_id(api_token)
+              td = api_token.name
+              td
+                - if api_token.read_write?
+                  = ui_badge "read and write", tone: :signal
+                - else
+                  = ui_badge "read", tone: :neutral
+              td.whitespace-nowrap = time_tag api_token.created_at, l(api_token.created_at, format: :short)
+              td.whitespace-nowrap
+                - if api_token.last_used_at
+                  = time_tag api_token.last_used_at, l(api_token.last_used_at, format: :short)
+                - else
+                  span.text-ink-muted Never
+              td
+                - if api_token.active?
+                  = ui_badge "Active", tone: :accent
+                - else
+                  = ui_badge "Revoked", tone: :muted, title: l(api_token.revoked_at, format: :short)
+              td.data-grid-actions
+                - if api_token.active?
+                  = ui_button_to "Revoke", settings_api_token_path(api_token), method: :delete, variant: :ghost, size: :sm, form: { data: { turbo_confirm: "Revoke “#{api_token.name}”? Anything that uses it loses access at once." } }

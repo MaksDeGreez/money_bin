@@ -1,0 +1,6 @@
+/ Flash messages as callouts, above the page content.
+- flash.each do |key, message|
+  - next if message.blank?
+  .mb-6 role="status"
+    = render "ui/callout", tone: ui_flash_tone(key) do
+      p.text-sm = message

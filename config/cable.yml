@@ -1,10 +1,14 @@
+# Action Cable uses Redis everywhere except tests, so broadcasts sent from
+# Sidekiq jobs reach the Puma process.
 development:
-  adapter: async
+  adapter: redis
+  url: <%= MoneyBin::RedisUrl.for("development") %>
+  channel_prefix: money_bin_v2_development
 
 test:
   adapter: test
 
 production:
   adapter: redis
-  url: <%= ENV.fetch("REDIS_URL") { "redis://localhost:6379/1" } %>
-  channel_prefix: money_bin_production
+  url: <%= MoneyBin::RedisUrl.for("production") %>
+  channel_prefix: money_bin_v2_production

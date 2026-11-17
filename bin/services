@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Makes sure PostgreSQL and Redis, which this app needs, are reachable.
+#
+#   bin/services          # check both; start a stopped one with Homebrew when it can
+#   bin/services --check  # only report, exit 1 if a service is down
+#
+# A service counts as up when it answers: `pg_isready` for PostgreSQL (DATABASE_URL when set) and
+# `redis-cli ping` for Redis (REDIS_URL when set). When one is down and Homebrew manages it,
+# `brew services start` starts it. Used by bin/setup and bin/dev.
+
+def command?(name)
+  system("command -v #{name} > /dev/null 2>&1")
+end
+
+def postgres_up?
+  return false unless command?("pg_isready")
+
+  args = ENV["DATABASE_URL"] ? [ "-d", ENV["DATABASE_URL"] ] : []
+  system("pg_isready", "-q", *args)
+end
+
+def redis_up?
+  return false unless command?("redis-cli")
+
+  args = ENV["REDIS_URL"] ? [ "-u", ENV["REDIS_URL"] ] : []
+  IO.popen([ "redis-cli", *args, "ping" ], err: File::NULL, &:read).strip == "PONG"
+end
+
+# The Homebrew formula behind a service, e.g. "postgresql@18", or nil.
+def brew_formula(pattern)
+  return unless command?("brew")
+
+  `brew services list 2>/dev/null`.lines.map { |line| line.split.first }.compact.find { |name| name.match?(pattern) }
+end
+
+def wait_until(seconds)
+  deadline = Time.now + seconds
+  until (up = yield) || Time.now > deadline
+    sleep 0.5
+  end
+  up
+end
+
+SERVICES = [
+  { name: "PostgreSQL", formula: /\Apostgresql(@\d+)?\z/, up: method(:postgres_up?) },
+  { name: "Redis", formula: /\Aredis\z/, up: method(:redis_up?) }
+].freeze
+
+check_only = ARGV.include?("--check")
+failed = false
+
+SERVICES.each do |service|
+  if service[:up].call
+    puts "✓ #{service[:name]} is running"
+    next
+  end
+
+  formula = brew_formula(service[:formula]) unless check_only
+  if formula && system("brew", "services", "start", formula) && wait_until(15) { service[:up].call }
+    puts "✓ #{service[:name]} started (brew services start #{formula})"
+  else
+    warn "✗ #{service[:name]} is not reachable#{" and could not be started" if formula}"
+    failed = true
+  end
+end
+
+exit(failed ? 1 : 0)

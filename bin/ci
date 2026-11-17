@@ -1,4 +1,34 @@
 #!/usr/bin/env ruby
+
+# `bin/ci --summary` runs the same steps but prints one line per step, the test totals, the Ruby line
+# coverage, and the output of failed steps only; the full log goes to tmp/ci/last.log. A plain run prints several hundred lines,
+# and a failure in the middle is easy to miss.
+if ARGV.delete("--summary")
+  require "fileutils"
+  require "rbconfig"
+
+  log = File.expand_path("../tmp/ci/last.log", __dir__)
+  FileUtils.mkdir_p(File.dirname(log))
+  passed = system(RbConfig.ruby, __FILE__, *ARGV, out: log, err: %i[child out])
+  section = []
+  steps = 0
+  lines = File.read(log, encoding: "UTF-8", invalid: :replace).gsub(/\e\[[0-9;]*m/, "").lines(chomp: true)
+  lines.each do |line|
+    section << line
+    puts "     #{line}" if line.match?(/\d+ runs, \d+ assertions|\ALine coverage|below the expected minimum/)
+    next unless (result = line.match(/\A(✅|❌) (.+) (passed|failed) in (\S+)/))
+
+    steps += 1
+    puts "#{result[3] == 'passed' ? 'ok  ' : 'FAIL'} #{result[2]} (#{result[4]})"
+    puts section.reject(&:empty?).last(60).map { |text| "     #{text}" } if result[3] == "failed" && result[2] != "Continuous Integration"
+    section = []
+  end
+  # The run died before any step reported (e.g. a syntax error in config/ci.rb): show why.
+  puts "no step result in the log; its last lines:", lines.last(30).map { |text| "     #{text}" } if steps.zero?
+  puts "full log: tmp/ci/last.log"
+  exit(passed ? 0 : 1)
+end
+
 require_relative "../config/boot"
 require "active_support/continuous_integration"
 

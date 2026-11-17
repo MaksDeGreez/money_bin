@@ -1,0 +1,29 @@
+# Blob rows for the receipt photos. The bytes are not stored (the repository holds no image files), so
+# these blobs cannot be downloaded; tests that need real bytes attach tiny images they build themselves
+# (test/support/receipt_images.rb).
+market_photo:
+  key: fixture-market-photo
+  filename: market.jpg
+  content_type: image/jpeg
+  metadata: '{"identified":true}'
+  service_name: test
+  byte_size: 2048
+  checksum: 1B2M2Y8AsgTpgAmY7PhCfg==
+
+corner_photo:
+  key: fixture-corner-photo
+  filename: corner.jpg
+  content_type: image/jpeg
+  metadata: '{"identified":true}'
+  service_name: test
+  byte_size: 2048
+  checksum: 1B2M2Y8AsgTpgAmY7PhCfg==
+
+new_photo:
+  key: fixture-new-photo
+  filename: new.jpg
+  content_type: image/jpeg
+  metadata: '{"identified":true}'
+  service_name: test
+  byte_size: 2048
+  checksum: 1B2M2Y8AsgTpgAmY7PhCfg==

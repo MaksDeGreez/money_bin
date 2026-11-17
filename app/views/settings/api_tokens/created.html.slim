@@ -1,0 +1,23 @@
+/ The only page that ever shows a plain token. Turbo must not keep a snapshot of it for the back button.
+- content_for :head do
+  meta name="turbo-cache-control" content="no-cache"
+- content_for :title, "Token created · Money Bin"
+
+= render "ui/page_header", title: "Token created", description: "“#{@api_token.name}”, scope: #{@api_token.read_write? ? 'read and write' : 'read'}."
+
+.mt-8.max-w-2xl.space-y-4 data-controller="clipboard"
+  = render "ui/callout", tone: :signal do
+    p.text-sm
+      strong Copy the token now. You will not see it again:
+      |  Money Bin keeps only a fingerprint of it. If you lose it, revoke it and create a new one.
+  .field
+    label for="plain_token" Token
+    .flex.gap-2
+      input#plain_token.form-control.font-mono.text-sm type="text" value=@plain_token readonly=true autocomplete="off" spellcheck="false" data-clipboard-target="source"
+      = ui_button variant: :secondary, data: { action: "clipboard#copy" } do
+        = ui_icon "copy"
+        span data-clipboard-target="label" Copy
+  p.text-sm.text-ink-muted
+    | Send it in the Authorization header:
+    code.ml-1 Authorization: Bearer &lt;token&gt;
+  = ui_link_button "Done", settings_api_tokens_path, variant: :primary

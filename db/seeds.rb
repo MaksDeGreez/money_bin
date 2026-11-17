@@ -1,9 +1,7 @@
-# This file should ensure the existence of records required to run the application in every environment (production,
-# development, test). The code here should be idempotent so that it can be executed at any point in every environment.
-# The data can then be loaded with the bin/rails db:seed command (or created alongside the database with db:setup).
-#
-# Example:
-#
-#   ["Action", "Comedy", "Drama", "Horror"].each do |genre_name|
-#     MovieGenre.find_or_create_by!(name: genre_name)
-#   end
+# Records every environment needs (development, test, production). Safe to run any number of times:
+# `bin/rails db:seed` twice gives the same data as running it once.
+
+# The category taxonomy (groups and categories), from db/seeds/taxonomy.yml.
+result = Categories::TaxonomyLoader.call
+puts "Taxonomy: #{result.groups} groups, #{result.categories} categories " \
+  "(#{result.created} created, #{result.updated} updated)" unless Rails.env.test?

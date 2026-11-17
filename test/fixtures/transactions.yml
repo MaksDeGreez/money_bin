@@ -1,0 +1,87 @@
+# Invented ledger rows. Balances, transfers included:
+#   card_uah 4334.60 UAH, cash_uah 1940.00 UAH, savings_usd 1000.00 USD, old_wallet 0.
+salary:
+  account: card_uah
+  occurred_on: 2026-10-01
+  amount: 50000.00
+  payee: employer
+  comment: October salary
+  source: manual
+
+coffee:
+  account: card_uah
+  occurred_on: 2026-10-02
+  occurred_at: 2026-10-02T08:15:00+03:00
+  amount: -85.00
+  payee: corner_cafe
+  mcc: "5814"
+  bank_description: CORNER CAFE
+  merchant: Corner Cafe
+  source: bank
+  external_id: example-bank-0001
+
+# A supermarket receipt split into two categories (see the market receipt).
+market_split:
+  account: card_uah
+  occurred_on: 2026-10-03
+  occurred_at: 2026-10-03T18:40:00+03:00
+  amount: -1250.40
+  payee: example_market
+  merchant: Example Market
+  source: receipt
+
+# An old-app row: the line keeps the old category path.
+snack:
+  account: cash_uah
+  occurred_on: 2026-10-04
+  amount: -60.00
+  comment: Pastry on the way home
+  source: legacy
+  external_id: legacy-row-0001
+
+# A purchase in USD paid from the UAH card; not categorised yet.
+subscription:
+  account: card_uah
+  occurred_on: 2026-10-05
+  occurred_at: 2026-10-05T02:00:00+03:00
+  amount: -830.00
+  original_amount: -20.00
+  original_currency: USD
+  mcc: "4899"
+  bank_description: EXAMPLE STREAMING
+  merchant: Example Streaming
+  source: bank
+  external_id: example-bank-0002
+  status: needs_review
+
+# A same-currency transfer: cash taken out of the card. The two amounts net to zero.
+withdrawal_out:
+  account: card_uah
+  occurred_on: 2026-10-06
+  amount: -2000.00
+  comment: Cash withdrawal
+  source: manual
+  transfer_id: 0b5c3f6e-0d4a-4a63-9d7e-1f2a3b4c5d01
+
+withdrawal_in:
+  account: cash_uah
+  occurred_on: 2026-10-06
+  amount: 2000.00
+  comment: Cash withdrawal
+  source: manual
+  transfer_id: 0b5c3f6e-0d4a-4a63-9d7e-1f2a3b4c5d01
+
+# A cross-currency transfer: UAH bought into USD savings. Any two amounts are fine.
+savings_out:
+  account: card_uah
+  occurred_on: 2026-10-07
+  amount: -41500.00
+  source: manual
+  transfer_id: 0b5c3f6e-0d4a-4a63-9d7e-1f2a3b4c5d02
+
+savings_in:
+  account: savings_usd
+  occurred_on: 2026-10-07
+  amount: 1000.00
+  source: manual
+  transfer_id: 0b5c3f6e-0d4a-4a63-9d7e-1f2a3b4c5d02

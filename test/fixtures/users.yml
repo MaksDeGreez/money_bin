@@ -1,0 +1,4 @@
+# The one user. The password is SessionTestHelper::OWNER_PASSWORD (test data only).
+owner:
+  email_address: owner@example.com
+  password_digest: <%= BCrypt::Password.create(SessionTestHelper::OWNER_PASSWORD, cost: BCrypt::Engine::MIN_COST) %>

@@ -6,3 +6,26 @@ inherit_gem: { rubocop-rails-omakase: rubocop.yml }
 # # Use `[a, [b, c]]` not `[ a, [ b, c ] ]`
 # Layout/SpaceInsideArrayLiteralBrackets:
 #   Enabled: false
+
+# rubocop-rails excludes bin/* by default, so the Ruby scripts in bin/ (no file extension, found by their
+# ruby shebang) would never be linted. Replace the inherited exclusion list with the same one minus bin/*.
+AllCops:
+  inherit_mode:
+    override:
+      - Exclude
+  Exclude:
+    # rubocop's defaults
+    - "node_modules/**/*"
+    - "tmp/**/*"
+    - "vendor/**/*"
+    - ".git/**/*"
+    # rubocop-rails' defaults, without bin/*
+    - "**/app/assets/**/*"
+    - "db/*schema.rb"
+    - "log/**/*"
+    - "public/**/*"
+    - "storage/**/*"
+    # rubocop-rails-omakase
+    - "data/**/*"
+    # The Python ML service has its own linter (ruff).
+    - "ml/**/*"

@@ -1,0 +1,33 @@
+linters:
+  LineLength:
+    enabled: false
+  RuboCop:
+    enabled: true
+    ignored_cops:
+      - Layout/ArgumentAlignment
+      - Layout/ArrayAlignment
+      - Layout/BlockAlignment
+      - Layout/EndAlignment
+      - Layout/FirstArgumentIndentation
+      - Layout/FirstHashElementIndentation
+      - Layout/HashAlignment
+      - Layout/IndentationConsistency
+      - Layout/IndentationWidth
+      - Layout/InitialIndentation
+      - Layout/LineLength
+      - Layout/MultilineOperationIndentation
+      - Layout/TrailingEmptyLines
+      - Layout/TrailingWhitespace
+      - Lint/BlockAlignment
+      - Lint/EndAlignment
+      - Lint/UselessAssignment
+      - Lint/Void
+      - Metrics/BlockLength
+      - Metrics/BlockNesting
+      - Metrics/LineLength
+      - Naming/FileName
+      - Style/FrozenStringLiteralComment
+      - Style/IfUnlessModifier
+      - Style/Next
+      - Style/WhileUntilDo
+      - Style/WhileUntilModifier

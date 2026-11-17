@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Waits for a pull request's checks, merge and main CI, so agents stop hand-writing polling
+# loops (and their race bugs). Start it as a background command and keep working.
+# Bash 3.2 compatible; no `timeout` (the deadline is a date-based loop).
+
+usage() {
+  cat <<'EOF'
+usage: bin/pr-wait <pr> [--merged] [--main-ci] [--timeout SECONDS]
+
+  (default)    wait for the PR's checks to finish (an already merged PR reports MERGED;
+               a closed or conflicted one reports CLOSED / CONFLICT in every mode)
+  --merged     also wait until the PR is MERGED; runs `gh pr update-branch` when it is BEHIND
+  --main-ci    also wait for main's CI run on the merge commit (implies --merged)
+  --timeout N  overall deadline in seconds (default 1500; the agent harness stops background commands at 30 minutes)
+
+Progress goes to stderr; exactly one final line goes to stdout:
+  PR 247 GREEN
+  PR 247 MERGED sha=<40-char sha> [main_ci=success]
+  PR 247 FAILED check=test            (failing job's log tail on stderr)
+  PR 247 TIMEOUT state=checks_pending
+  PR 247 CLOSED | PR 247 CONFLICT | PR 247 ERROR <reason>
+
+PR_WAIT_INTERVAL overrides the poll interval (default 20 s).
+
+Exit codes: 0 green/merged (and main CI success), 1 a check or main CI failed,
+2 usage error or PR not found, 3 timeout, 4 PR closed unmerged or has merge conflicts.
+EOF
+}
+
+die_usage() { echo "bin/pr-wait: $1 (see --help)" >&2; usage | head -1 >&2; exit 2; }
+
+pr="" want_merged=0 want_main=0 timeout_s=1500
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --merged) want_merged=1 ;;
+    --main-ci) want_merged=1; want_main=1 ;;
+    --timeout)
+      [ $# -ge 2 ] || die_usage "--timeout needs a value"
+      timeout_s=$2; shift ;;
+    --timeout=*) timeout_s=${1#--timeout=} ;;
+    -*) die_usage "unknown option $1" ;;
+    *) [ -z "$pr" ] || die_usage "unexpected argument $1"; pr=$1 ;;
+  esac
+  shift
+done
+[ -n "$pr" ] || die_usage "missing PR number"
+case $pr in *[!0-9]*) die_usage "PR must be a number, got '$pr'" ;; esac
+case $timeout_s in ''|*[!0-9]*) die_usage "--timeout must be whole seconds, got '$timeout_s'" ;; esac
+
+INTERVAL=${PR_WAIT_INTERVAL:-20} # seconds between polls
+deadline=$(( $(date +%s) + timeout_s ))
+phase=""
+
+finish() { echo "PR $pr $2"; exit "$1"; }
+progress() { [ "$1" = "$phase" ] || echo "pr-wait: $1" >&2; phase=$1; } # $1 is a token
+pause() { # sleep one interval, or report TIMEOUT once the deadline has passed
+  local left=$(( deadline - $(date +%s) ))
+  [ "$left" -gt 0 ] || finish 3 "TIMEOUT state=${phase:-starting}"
+  sleep $(( left < INTERVAL ? left : INTERVAL ))
+}
+
+# Fail fast on a wrong number or a gh auth problem instead of polling until the deadline.
+if ! gh pr view "$pr" --json number > /dev/null 2>&1; then
+  finish 2 "ERROR not found (gh pr view $pr failed)"
+fi
+
+print_failed_log() { # $1 = check link, e.g. https://github.com/o/r/actions/runs/123/job/456
+  local job
+  job=$(printf '%s\n' "$1" | sed -nE 's|.*/actions/runs/[0-9]+/job/([0-9]+).*|\1|p')
+  [ -n "$job" ] || return 0
+  echo "--- gh run view --job $job --log-failed (tail) ---" >&2
+  gh run view --job "$job" --log-failed 2>&1 | sed 's/^[^Z]*Z //' | tail -80 >&2
+}
+
+# Phase 1: checks (and, with --merged, the merge itself).
+updated_head="" green_polls=0 auto_merge_warned=0
+while true; do
+  view=$(gh pr view "$pr" --json state,mergeStateStatus,headRefOid,autoMergeRequest \
+    --jq '[.state, .mergeStateStatus, .headRefOid, (.autoMergeRequest != null)] | @tsv' 2>/dev/null)
+  if [ -z "$view" ]; then progress gh_view_failed; pause; continue; fi
+  IFS=$'\t' read -r state merge_state head auto_merge <<< "$view"
+
+  [ "$state" = MERGED ] && break
+  [ "$state" = CLOSED ] && finish 4 CLOSED
+  # In every mode: GitHub runs no workflows on a conflicted PR, so its checks would never finish.
+  [ "$merge_state" = DIRTY ] && finish 4 CONFLICT
+
+  if [ "$want_merged" = 1 ]; then
+    # Auto-merge silently stalls on a BEHIND branch. Update once per head commit:
+    # GitHub reports the new head a few seconds after update-branch returns.
+    if [ "$merge_state" = BEHIND ] && [ "$head" != "$updated_head" ]; then
+      progress behind_update_branch
+      gh pr update-branch "$pr" > /dev/null 2>&1 || echo "pr-wait: gh pr update-branch failed" >&2
+      updated_head=$head green_polls=0
+      pause; continue
+    fi
+  fi
+
+  # The checks list is empty for a while after every push; gh then exits non-zero.
+  checks=$(gh pr checks "$pr" --json name,bucket,link \
+    --jq '.[] | [.bucket, .name, .link] | @tsv' 2>/dev/null)
+  if [ -z "$checks" ]; then progress no_checks; green_polls=0; pause; continue; fi
+
+  failed=$(printf '%s\n' "$checks" | awk -F'\t' '$1 == "fail" || $1 == "cancel"' | head -1)
+  if [ -n "$failed" ]; then
+    IFS=$'\t' read -r _ fname flink <<< "$failed"
+    print_failed_log "$flink"
+    finish 1 "FAILED check=$fname"
+  fi
+
+  pending=$(printf '%s\n' "$checks" | awk -F'\t' '$1 == "pending"' | wc -l | tr -d ' ')
+  if [ "$pending" -gt 0 ]; then progress checks_pending; green_polls=0; pause; continue; fi
+
+  if [ "$want_merged" = 0 ]; then
+    # Workflows register at different times after a push; require two all-green polls.
+    green_polls=$(( green_polls + 1 ))
+    [ "$green_polls" -ge 2 ] && finish 0 GREEN
+    progress checks_green_confirming
+    pause; continue
+  fi
+
+  if [ "$auto_merge" != true ] && [ "$auto_merge_warned" = 0 ]; then
+    echo "pr-wait: auto-merge is not enabled; waiting for someone to merge" >&2
+    auto_merge_warned=1
+  fi
+  progress "waiting_merge:$merge_state"
+  pause
+done
+
+sha=$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null)
+case $sha in
+  *[!0-9a-f]*|"") finish 1 "ERROR merged but no merge commit sha (got '$sha')" ;;
+esac
+[ ${#sha} -eq 40 ] || finish 1 "ERROR merge commit sha is not 40 chars: $sha"
+[ "$want_main" = 1 ] || finish 0 "MERGED sha=$sha"
+
+# Phase 2: main CI for the merge commit. `gh run list --commit` needs the full SHA, and the
+# run appears a few seconds after the merge.
+while true; do
+  runs=$(gh run list --branch main --commit "$sha" --workflow ci.yml --event push \
+    --json status,conclusion --jq '.[] | [.status, .conclusion] | @tsv' 2>/dev/null)
+  if [ -z "$runs" ]; then progress main_ci_not_started; pause; continue; fi
+  if printf '%s\n' "$runs" | awk -F'\t' '$1 != "completed"' | grep -q .; then
+    progress main_ci_pending; pause; continue
+  fi
+  conclusion=$(printf '%s\n' "$runs" | awk -F'\t' '$2 != "success" { print $2; exit }')
+  if [ -z "$conclusion" ]; then finish 0 "MERGED sha=$sha main_ci=success"; fi
+  finish 1 "MERGED sha=$sha main_ci=$conclusion"
+done

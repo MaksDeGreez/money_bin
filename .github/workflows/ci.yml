@@ -1,105 +1,214 @@
 name: CI
 
+# Three jobs run in parallel: the Rails app (style, security scans, assets, tests, seeds), the Python ML
+# service in ml/ (ruff, pytest) and a secret scan of the whole git history (gitleaks). The fourth job,
+# named "CI", passes only when all three passed. It is the one status check a pull request needs.
+# bin/ci runs the same Rails and Python steps locally (config/ci.rb).
+#
+# Nothing here needs model weights, receipt images or personal data: the tests use synthetic fixtures,
+# the ML service runs its stub backend and no test reaches the network.
+
 on:
   pull_request:
   push:
     branches: [ main ]
+  workflow_dispatch:
+
+# A new push to a pull request cancels the run it replaces. Every push to main gets a group of its own,
+# so runs on main never cancel each other.
+concurrency:
+  group: ci-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
 
 jobs:
-  scan_ruby:
+  rails:
     runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-
-      - name: Scan for common Rails security vulnerabilities using static analysis
-        run: bin/brakeman --no-pager
-      
-      - name: Scan for known security vulnerabilities in gems used
-        run: bin/bundler-audit
-      
-  scan_js:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-
-      - name: Scan for security vulnerabilities in JavaScript dependencies
-        run: bin/importmap audit
-
-  lint:
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
+      RAILS_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/money_bin_v2_test
+      REDIS_URL: redis://localhost:6379/0
       RUBOCOP_CACHE_ROOT: tmp/rubocop
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+
+      # libvips for Active Storage variants (ruby-vips), libpq-dev to build the pg gem.
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libvips libpq-dev
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
           bundler-cache: true
 
-      - name: Prepare RuboCop cache
-        uses: actions/cache@v4
+      - name: Prepare the RuboCop cache
+        uses: actions/cache@v6
         env:
-          DEPENDENCIES_HASH: ${{ hashFiles('.ruby-version', '**/.rubocop.yml', '**/.rubocop_todo.yml', 'Gemfile.lock') }}
+          DEPENDENCIES_HASH: ${{ hashFiles('.ruby-version', '**/.rubocop.yml', 'Gemfile.lock') }}
         with:
           path: ${{ env.RUBOCOP_CACHE_ROOT }}
           key: rubocop-${{ runner.os }}-${{ env.DEPENDENCIES_HASH }}-${{ github.ref_name == github.event.repository.default_branch && github.run_id || 'default' }}
           restore-keys: |
             rubocop-${{ runner.os }}-${{ env.DEPENDENCIES_HASH }}-
 
-      - name: Lint code for consistent style
+      # Static checks first: they need no database, and a style failure ends the job early.
+      - name: Lint Ruby
         run: bin/rubocop -f github
 
-  test:
+      - name: Lint Slim
+        run: bin/slim-lint app/views
+
+      - name: Scan the code for security problems (Brakeman)
+        run: bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
+
+      - name: Scan the gems for known vulnerabilities
+        run: bin/bundler-audit
+
+      - name: Scan the JavaScript dependencies for known vulnerabilities
+        run: bin/importmap audit
+
+      - name: Build Tailwind
+        run: bin/rails tailwindcss:build
+
+      - name: Prepare the test database
+        run: bin/rails db:test:prepare
+
+      # test/support/coverage.rb fails the run below 80% line coverage, but only on a full run (every
+      # test file loaded, no name filter). The check after the tests makes sure this run was a full one,
+      # so the minimum really applied.
+      - name: Run the tests (80% line coverage minimum)
+        run: |
+          set -o pipefail
+          mkdir -p tmp
+          bin/rails test 2>&1 | tee tmp/test-output.log
+          if ! grep -q '^Line coverage' tmp/test-output.log || grep -q 'Coverage minimum .* not checked' tmp/test-output.log; then
+            echo "::error::The coverage minimum was not checked: this was not a full test run."
+            exit 1
+          fi
+
+      - name: Check the seeds
+        run: bin/rails db:seed:replant
+
+      - name: Upload the coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-ruby
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  python:
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
-
-      # redis:
-      #   image: valkey/valkey:8
-      #   ports:
-      #     - 6379:6379
-      #   options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ml
 
     steps:
-      - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips
-
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+      # uv installs the Python version from ml/.python-version. setup-uv publishes no moving major tag,
+      # so the exact release is pinned; Dependabot updates it.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          bundler-cache: true
+          working-directory: ml
 
-      - name: Run tests
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint (ruff check)
+        run: uv run --frozen ruff check .
+
+      - name: Check formatting (ruff format)
+        run: uv run --frozen ruff format --check .
+
+      # The 70% coverage minimum is in ml/pyproject.toml.
+      - name: Run the tests (pytest)
+        run: uv run --frozen pytest
+
+  # A secret scan of every commit, not only the change: a key committed and then deleted is still in the
+  # history. The release binary is pinned and its checksum verified (the gitleaks GitHub Action needs a
+  # paid licence for repositories owned by an organisation).
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      # From gitleaks_8.30.1_checksums.txt of the GitHub release.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+    steps:
+      - name: Checkout code with the full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          sudo install -m 0755 "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
+          gitleaks version
+
+      # Without --log-opts gitleaks reads `git log -p --full-history --all`: every branch and tag.
+      - name: Scan the git history for secrets
+        run: gitleaks git --redact --no-banner --verbose .
+
+  # The single status check that decides a merge. It runs even when a job above failed or was skipped,
+  # and passes only when every one of them succeeded. bin/pr-wait and the ship skill wait for it, and it
+  # is the name to require once branch protection is available; keep the name.
+  ci:
+    name: CI
+    needs: [ rails, python, gitleaks ]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check that every job succeeded
         env:
-          RAILS_ENV: test
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432
-          # RAILS_MASTER_KEY: ${{ secrets.RAILS_MASTER_KEY }}
-          # REDIS_URL: redis://localhost:6379/0
-        run: bin/rails db:test:prepare test
+          RAILS: ${{ needs.rails.result }}
+          PYTHON: ${{ needs.python.result }}
+          GITLEAKS: ${{ needs.gitleaks.result }}
+        run: |
+          echo "rails=$RAILS python=$PYTHON gitleaks=$GITLEAKS"
+          for result in "$RAILS" "$PYTHON" "$GITLEAKS"; do
+            if [ "$result" != success ]; then
+              echo "::error::Not every CI job succeeded (rails=$RAILS python=$PYTHON gitleaks=$GITLEAKS)."
+              exit 1
+            fi
+          done

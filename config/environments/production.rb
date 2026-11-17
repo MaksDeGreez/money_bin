@@ -46,11 +46,13 @@ Rails.application.configure do
   # Don't log any deprecations.
   config.active_support.report_deprecations = false
 
-  # Replace the default in-process memory cache store with a durable alternative.
-  # config.cache_store = :mem_cache_store
+  # Redis-backed cache, in its own namespace so it never mixes with development.
+  config.cache_store = :redis_cache_store, {
+    url: MoneyBin::RedisUrl.for("production"),
+    namespace: "money_bin_v2_production"
+  }
 
-  # Replace the default in-process and non-durable queuing backend for Active Job.
-  # config.active_job.queue_adapter = :resque
+  # Active Job runs on Sidekiq (config/application.rb).
 
   # Ignore bad email addresses and do not raise email delivery errors.
   # Set this to true and configure the email server for immediate delivery to raise delivery errors.
@@ -78,12 +80,12 @@ Rails.application.configure do
   # Only use :id for inspections in production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
-  #
+  # Enable DNS rebinding protection and other `Host` header attacks. The app runs on the owner's machine,
+  # so it answers to the localhost names only, plus APP_HOST when the owner serves it under another name
+  # (for example a name on the home network). A web page that points a name of its own at 127.0.0.1
+  # gets a 403.
+  config.hosts = [ "localhost", IPAddr.new("127.0.0.1"), IPAddr.new("::1"), ENV["APP_HOST"].presence ].compact
+
   # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end

@@ -1,0 +1,61 @@
+# Money Bin
+
+Master's capstone project (MSc Data Science, engineering project): a personal finance tracker for one person and an AI agent, local-first, running on the owner's machine. Receipt photo → OCR by the Python ML service → categorised items → ledger. A REST API and an MCP server for agents come later, and so does an import of the history kept by the previous version of the app. Current phase: 1, the skeleton and the data model. The repository will be made public: nothing private may enter it.
+
+## Domain
+
+`docs/domain.md` is the reference: entities, invariants and the reasons behind them. Read it before touching models, migrations or anything that computes money. Money is always a decimal (`numeric` columns, `BigDecimal` in Ruby, decimal strings over HTTP), never a float.
+
+`docs/decisions/` holds the architecture decision records, numbered (`0001-stack.md`: why Rails + PostgreSQL + Redis/Sidekiq + a separate FastAPI ML service, local-first; `0002-authentication-and-api-tokens.md`: sign-in, one user, Sidekiq Web protection, API tokens). Add a new numbered record for each infrastructure or process decision.
+
+## Stack
+
+- Ruby 4.0.7, Rails 8.1, PostgreSQL 18, Redis 8 (Homebrew on the owner's machine).
+- Slim is the only template language (`config.generators` emits Slim). No ERB views.
+- Tailwind CSS v4 via `tailwindcss-rails` (standalone CLI, no Node). Entry: `app/assets/tailwind/application.css`; the component classes (`btn-*`, `badge-*`, `callout-*`, `form-control`) are in `app/assets/tailwind/design-system.css`.
+- Hotwire (Turbo + Stimulus) over importmap. No React/Vue/bundlers. Behaviour goes in `app/javascript/controllers/*_controller.js`.
+- Sidekiq is the Active Job adapter (`config/sidekiq.yml`); Redis is also the cache store and the Action Cable adapter. No Solid Queue/Cache/Cable.
+- Active Storage on the local disk (`storage/`, git-ignored). Receipt photos never leave the machine unless the owner turns on a hosted OCR backend. Rails' own Active Storage routes are not drawn (`config.active_storage.draw_routes = false`): they skip sign-in. Uploading or showing a photo goes through an app controller behind the `Authentication` concern, never `url_for(blob)` or `rails_blob_path`.
+- The ML service: `ml/`, Python 3.12, FastAPI, managed with `uv`. Endpoints `/health`, `/ocr` (1-3 images → receipt with items), `/categorise` (texts → 3 category candidates each). The backend is chosen by `OCR_BACKEND`: `stub` (default, invented data in the final shapes), `mlx` and `openrouter` (placeholders, HTTP 501). `ml/README.md` is the contract.
+- Minitest + fixtures, WebMock (no test reaches the network), SimpleCov. No RSpec, no FactoryBot, no system tests. Python: pytest, ruff.
+- Authentication: the Rails 8 generator's code (`Authentication` concern, `Session`, `Current`), bcrypt. Exactly one `User`, created on the command line; no sign-up, no e-mailed password reset. Every page needs a signed-in session unless the controller calls `allow_unauthenticated_access`. The cookies are `money_bin_v2_session_id` (sign-in, `Session::COOKIE_NAME`) and `_money_bin_v2_session` (Rails session), not the defaults another local app would share; sign-in and sign-out reset the Rails session. Sidekiq Web (`/sidekiq`) sits behind a route constraint on the session cookie (a 404 otherwise).
+- API: personal API tokens (`ApiToken`: `mbt_` prefix, SHA-256 digest stored, scopes `read` / `read_write`, revoked never deleted). API controllers live in `app/controllers/api/v1/` and inherit from `Api::BaseController` (`ActionController::API`, `Authorization: Bearer` only, errors `{"error": {"code", "message"}}`). Browser cookies never authenticate the API.
+- Times are shown in Kyiv time (`config.time_zone = "Europe/Kyiv"`); the database stores UTC.
+- `dotenv` loads `.env*` in development and production (`.env.example` lists the settings). Test runs read no `.env` file (`config/application.rb`); only real environment variables reach them.
+
+## Running it
+
+- `bin/setup` — gems, `uv sync` in `ml/`, `.env` from `.env.example`, `git config core.hooksPath .githooks`, services, `db:prepare`, then `bin/dev` (`--skip-server` to stop before it). `bin/worktree-setup` does the same in a linked git worktree and links `.env`, `.env.local` and `config/master.key` from the main checkout. `bin/worktree-remove PATH` retires a clean worktree: drops its test databases, removes it, prunes (freeing its test Redis database) and deletes the local branch when GitHub shows its pull request merged.
+- `bin/rails user:create` — creates the one user (asks, or reads `MONEY_BIN_EMAIL` / `MONEY_BIN_PASSWORD`); `bin/rails user:password` sets a new password and ends every browser session. Logic in `Users::CommandLine`. Never print or log a password or a plain token.
+- `bin/dev` — Puma on port 3100, Sidekiq, the Tailwind watcher and the ML service on 127.0.0.1:8100 (`Procfile.dev`, foreman). Wipes compiled assets first. Skips the ML service when `uv` is missing.
+- `bin/services` — checks PostgreSQL and Redis and starts a stopped one with `brew services` (`--check` only reports).
+- `bin/ci --summary` — the full check suite, one line per step plus the output of failed steps (full log in `tmp/ci/last.log`): setup, RuboCop, slim-lint, bundler-audit, importmap audit, Brakeman, the leak check of the tracked files, Tailwind build, Rails tests, seeds, ruff check, ruff format, pytest. Run it before every push. GitHub CI is the merge gate.
+- `bin/rails test path/to/test.rb[:LINE]` for targeted tests. Only a full `bin/rails test` checks the 80% line coverage minimum (`test/support/coverage.rb`). In `ml/`: `uv run pytest` (70% minimum), `uv run ruff check .`, `uv run ruff format --check .`.
+- `bin/pr-wait <n>` — waits for a pull request's checks and prints one final line (`GREEN`, `FAILED check=<job>`, `CONFLICT`, ...); run it as a background command.
+- `bin/leak-check --tree` / `--history` — looks for the forbidden terms of `~/Documents/money_bin_data/leak_terms.txt` (outside the repository) in the working tree / in every local commit; the pre-push hook runs `--pre-push`. Prints where, never the term.
+
+Databases: `money_bin_v2_development`, `money_bin_v2_production`, and for tests `money_bin_v2_test` in the main checkout or `money_bin_v2_test_<worktree>` in a linked worktree (`config/worktree_isolation.rb`). Redis databases: 4 production, 5 development, 6 tests in the main checkout, one of 7..15 for tests in a worktree (`config/redis_url.rb`). Another local app on the same Redis uses 0, 1 and 2, and its git worktrees take test databases from 3 upward, lowest free first; the two apps can only meet when that app has several worktrees running tests at once, a known and accepted limit (it is no longer developed). The way out, if it ever matters, is `REDIS_URL` pointing at another Redis instance. The names, numbers and ports are chosen not to clash with that app. `DATABASE_URL` and `REDIS_URL` override them (CI uses both).
+
+## Working with the owner
+
+- For non-trivial work: research, write a plan with recommended defaults, put the open decisions to the owner as short questions (at most four at a time, recommended option first), and wait for approval before implementing.
+- Commit, push or open a pull request only when the owner asks. When they ask for a PR they expect the whole run: the `ship` skill (`.claude/skills/ship/`) is that pipeline.
+- Every change goes through a branch and a pull request. Never push to `main` (the pre-push hook refuses it; `ALLOW_PUSH_TO_MAIN` is the owner's emergency switch, never an agent's). Pull requests are squash-merged once the `CI` check is green; squash is the only merge method and `--admin` is never used.
+- Small commits with plain messages. Commit messages and pull requests never carry AI attribution of any kind: no co-author trailers, no "generated with" footers.
+- Do not end a turn to wait for CI. Start `bin/pr-wait` as a background command and carry on with whatever does not depend on it.
+- Keep changes you did not make: other sessions and agents may be working in the same tree. Do not revert unrelated work.
+- Sub-agents: the `implementer` agent (`.claude/agents/implementer.md`) for sizeable implementation, the `reviewer` agent (`.claude/agents/reviewer.md`, read-only) on every non-trivial diff before the PR and on plans. Brief them with the goal, the scope and what the owner has already decided; give the reviewer the code, not your conclusion; trace every review finding in the code before acting on it. Independent streams of work each get their own worktree (`bin/worktree-setup`).
+- The previous version of the app, kept outside this repository, is a read-only reference for conventions: never write to it, never run its scripts, never connect to its databases, and copy no data or personal detail from it.
+- The shell is zsh on macOS: quote globs, there is no `timeout` command.
+
+## Conventions
+
+- Keep `README.md`, this file and `docs/` current in the same change: `docs/domain.md` for the model and its reasoning, `docs/decisions/` for infrastructure and process decisions.
+- No secrets and no personal data in git: not in code, fixtures, docs, commit messages or branch names. Fixtures and examples are synthetic. Secrets live in `.env` (git-ignored); private files live outside the repository. `.githooks/pre-commit` (gitleaks) and `.githooks/pre-push` (leak check) back this up, and CI scans the history with gitleaks.
+- Tests: controller tests sign in with `sign_in_as users(:owner)` (`test/support/session_test_helper.rb`); API tests send `bearer(plain_token(:agent_read))` (`test/support/api_token_test_helper.rb`; fixtures store only digests). The suite checks that every fixture is valid (`test/models/fixtures_test.rb`): add new models there.
+- CI never needs model weights, receipt images or personal data. Tests stub HTTP with WebMock; the ML tests use the stub backend.
+- Views: Slim only. Use the UI helpers before writing markup: `ui_button`, `ui_link_button`, `ui_button_to` (variants `primary`, `secondary`, `ghost`, `soft`, `danger`, `link`; sizes `sm`, `md`, `lg`, `icon`), `ui_badge` (tones `neutral`, `accent`, `signal`, `muted`, `solid`, `danger`), `ui_icon` (Lucide), `ui_classes` (merges Tailwind classes), the partials `ui/page_header`, `ui/callout`, `ui/flash`, `ui/theme_toggle`, and `UiFormBuilder` (the default form builder: `f.text_field` and friends, `f.select`, `f.check_box`, `f.radio_button`, `f.submit`, `f.hint`, `f.error_for`). Prefer adding a helper or partial over a one-off.
+- Tailwind utilities must appear literally in `app/views`, `app/helpers`, `app/form_builders` or `app/javascript`; never build `"bg-#{tone}"`. Utilities with `:`, `/`, `[` or `]` go in `class="…"` in Slim, not in dot shorthand. No inline JS: the one exception is the theme boot script in `app/views/layouts/_head.html.slim`, which carries the CSP nonce. The Content Security Policy (`config/initializers/content_security_policy.rb`) blocks any inline script or style without the nonce, `on…=` attributes included, and allows only this app plus the Google Fonts hosts.
+- `.rubocop.yml` (rails-omakase, also lints the Ruby scripts in `bin/`), `.slim-lint.yml` and ruff (`ml/pyproject.toml`) are the style authorities; `bin/ci` runs all three.
+- Dates and times are shown in Kyiv time through `config.time_zone`; nothing converts time zones by hand.
+- The ML service's contract is `ml/README.md`: money and quantities are decimal strings, every error has the shape `{"error": {"code", "message"}}`. A new backend is a class in `ml/app/backends/` registered in `BACKENDS`; it never commits keys or weights.
