@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Retires a linked git worktree: drops its test databases (the base one and the parallel workers'
+# `_N` / `-N` copies, which `git worktree remove` knows nothing about), removes the worktree, prunes
+# git's records (which also frees the worktree's test Redis database, see config/worktree_isolation.rb)
+# and deletes the local branch when GitHub says its pull request is merged.
+#
+#   bin/worktree-remove PATH
+#
+# It only ever drops databases named money_bin_v2_test_<this worktree's suffix>, optionally followed by
+# a worker number: the pattern comes from MoneyBin::WorktreeIsolation.worktree_test_database_pattern,
+# which refuses the main checkout. No other database can match it.
+#
+# Refuses the main checkout and any worktree with uncommitted or untracked changes: finish or discard
+# them first. A branch without a merged pull request is kept and named in the summary. Run it from
+# any checkout of this repository.
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: bin/worktree-remove PATH   (a linked worktree of this repository)" >&2
+  exit 2
+fi
+
+target=$(cd "$1" 2>/dev/null && pwd -P) || { echo "worktree-remove: $1 is not a directory" >&2; exit 2; }
+here=$(git rev-parse --show-toplevel)
+main=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+
+if [ "$target" = "$main" ]; then
+  echo "worktree-remove: $target is the main checkout" >&2
+  exit 2
+fi
+if ! git worktree list --porcelain | grep -qx "worktree $target"; then
+  echo "worktree-remove: $target is not a linked worktree of $main" >&2
+  exit 2
+fi
+if [ -n "$(git -C "$target" status --short)" ]; then
+  echo "worktree-remove: $target has uncommitted or untracked changes; finish or discard them first" >&2
+  git -C "$target" status --short | head -20 >&2
+  exit 1
+fi
+
+branch=$(git -C "$target" rev-parse --abbrev-ref HEAD)
+pattern=$(cd "$here" && ruby -r ./config/worktree_isolation \
+  -e 'print MoneyBin::WorktreeIsolation.worktree_test_database_pattern(ARGV[0])' "$target") || {
+  echo "worktree-remove: could not work out the test database names of $target" >&2
+  exit 1
+}
+case $pattern in
+  "^money_bin_v2_test_"*) ;;
+  *) echo "worktree-remove: unexpected database pattern '$pattern'" >&2; exit 1 ;;
+esac
+
+databases=$(psql -d postgres -Atc "select datname from pg_database where datname ~ '$pattern' order by datname")
+dropped=0
+for db in $databases; do
+  dropdb "$db"
+  dropped=$((dropped + 1))
+done
+
+git worktree remove "$target"
+git worktree prune
+
+branch_note="branch $branch kept"
+if [ "$branch" != "HEAD" ] && command -v gh >/dev/null 2>&1; then
+  merged=$(gh pr list --head "$branch" --state merged --json number --jq '.[0].number' 2>/dev/null || true)
+  if [ -n "$merged" ]; then
+    git branch -D "$branch" >/dev/null
+    branch_note="branch $branch deleted (PR #$merged merged)"
+  else
+    branch_note="branch $branch kept (no merged pull request found)"
+  fi
+fi
+
+echo "worktree-remove: ok removed=$target databases_dropped=$dropped (pattern $pattern) $branch_note"

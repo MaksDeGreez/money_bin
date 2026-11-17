@@ -3,8 +3,12 @@ require "fileutils"
 
 APP_ROOT = File.expand_path("..", __dir__)
 
-def system!(*args)
-  system(*args, exception: true)
+def system!(*args, **options)
+  system(*args, exception: true, **options)
+end
+
+def command?(name)
+  system("command -v #{name} > /dev/null 2>&1")
 end
 
 FileUtils.chdir APP_ROOT do
@@ -15,10 +19,25 @@ FileUtils.chdir APP_ROOT do
   puts "== Installing dependencies =="
   system("bundle check") || system!("bundle install")
 
-  # puts "\n== Copying sample files =="
-  # unless File.exist?("config/database.yml")
-  #   FileUtils.cp "config/database.yml.sample", "config/database.yml"
-  # end
+  if File.exist?("ml/pyproject.toml")
+    if command?("uv")
+      puts "\n== Installing Python dependencies (ml/) =="
+      system!("uv", "sync", chdir: "ml")
+    else
+      puts "\n== Skipping Python dependencies: uv is not installed (https://docs.astral.sh/uv/) =="
+    end
+  end
+
+  puts "\n== Copying sample files =="
+  FileUtils.cp ".env.example", ".env" unless File.exist?(".env")
+
+  if Dir.exist?(".githooks")
+    puts "\n== Using the git hooks in .githooks =="
+    system! "git config core.hooksPath .githooks"
+  end
+
+  puts "\n== Checking services =="
+  system! "bin/services"
 
   puts "\n== Preparing database =="
   system! "bin/rails db:prepare"

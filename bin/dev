@@ -1,16 +1,41 @@
-#!/usr/bin/env sh
+#!/usr/bin/env ruby
+# frozen_string_literal: true
 
-if ! gem list foreman -i --silent; then
-  echo "Installing foreman..."
-  gem install foreman
-fi
+# Starts the development stack from Procfile.dev: Puma on port 3100, Sidekiq, the Tailwind watcher and
+# the Python ML service on port 8100. Any extra arguments are passed to foreman.
+#
+# Before booting it removes compiled assets (from an earlier `assets:precompile`), so Propshaft never
+# serves an old build and Tailwind changes always show up.
 
-# Default to port 3000 if not specified
-export PORT="${PORT:-3000}"
+require "fileutils"
 
-# Let the debug gem allow remote connections,
-# but avoid loading until `debugger` is called
-export RUBY_DEBUG_OPEN="true"
-export RUBY_DEBUG_LAZY="true"
+APP_ROOT = File.expand_path("..", __dir__)
+Dir.chdir(APP_ROOT)
 
-exec foreman start -f Procfile.dev "$@"
+def system!(*args)
+  system(*args, exception: true)
+end
+
+puts "== Checking services =="
+system! "bin/services"
+
+puts "\n== Removing compiled assets and caches =="
+FileUtils.rm_rf(Dir.glob("app/assets/builds/*").reject { |path| File.basename(path) == ".keep" })
+FileUtils.rm_rf("public/assets")
+FileUtils.rm_rf("tmp/cache/assets")
+
+# The ML service needs ml/pyproject.toml and uv. Without them, start everything else.
+formation = []
+unless File.exist?("ml/pyproject.toml") && system("command -v uv > /dev/null 2>&1")
+  puts "\n== Skipping the ML service: ml/pyproject.toml or uv is missing =="
+  formation = [ "-m", "all=1,ml=0" ]
+end
+
+puts "\n== Starting development server =="
+ENV["RAILS_ENV"] = "development"
+ENV["PORT"] ||= "3100"
+STDOUT.flush
+# --env /dev/null keeps foreman from reading .env itself; dotenv does that inside Rails.
+# -t 30: foreman's default of 5 seconds before SIGKILL would cut Sidekiq's 25-second shutdown short.
+exec "bundle", "exec", "foreman", "start", "-t", "30", "-f", "Procfile.dev", "--env", "/dev/null",
+  "-p", ENV["PORT"], *formation, *ARGV

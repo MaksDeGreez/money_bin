@@ -1,2 +1,4 @@
-web: bin/rails server
+web: bin/rails server -p ${PORT:-3100}
+sidekiq: bundle exec sidekiq -C config/sidekiq.yml
 css: bin/rails tailwindcss:watch
+ml: sh -c 'cd ml && exec uv run uvicorn app.main:app --host 127.0.0.1 --port 8100'
