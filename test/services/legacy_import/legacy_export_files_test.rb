@@ -11,7 +11,7 @@ class LegacyExportFilesTest < ActiveSupport::TestCase
 
       assert_equal stored, LegacyExportFiles.manifest(dir), "re-hash the fixture (see test/support/legacy_export_files.rb)"
     end
-    assert_equal 11, stored["counts"]["transactions.jsonl"]
+    assert_equal 14, stored["counts"]["transactions.jsonl"]
   end
 
   test "the fixture folder is not ignored by git" do

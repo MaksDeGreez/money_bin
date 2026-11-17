@@ -36,11 +36,11 @@ module LegacyImport
     test "imports the fixture export" do
       report = import
 
-      assert_equal({ accounts: [ 5, 0, 0 ], payees: [ 3, 0, 1 ], transactions: [ 11, 0, 0 ] }, counts(report))
+      assert_equal({ accounts: [ 5, 0, 0 ], payees: [ 3, 0, 1 ], transactions: [ 14, 0, 0 ] }, counts(report))
       assert_equal 1, report.payees_folded
-      assert_equal 2, report.transfer_pairs
-      assert_equal({ mapped: 6, unmapped: 1, not_in_taxonomy: 1, no_category: 1 }, report.lines)
-      assert_equal({ "confirmed" => 8, "needs_review" => 3 }, report.statuses)
+      assert_equal 3, report.transfer_pairs
+      assert_equal({ mapped: 7, unmapped: 1, not_in_taxonomy: 1, no_category: 1 }, report.lines)
+      assert_equal({ "confirmed" => 11, "needs_review" => 3 }, report.statuses)
       assert_equal 1, report.manifest_warnings
     end
 
@@ -130,12 +130,27 @@ module LegacyImport
       assert_empty usd_leg.transfer_problems
     end
 
+    test "a fee cut from a transfer is an expense row of its own, with a string id" do
+      import
+
+      out_leg, in_leg, fee = legacy(1012), legacy(1013), legacy("1012-fee")
+      assert_equal [ BigDecimal("-2000"), BigDecimal("2000") ], [ out_leg.amount, in_leg.amount ]
+      assert_empty out_leg.transfer_problems
+      assert_not fee.transfer_leg?
+      assert_equal [ account(2), BigDecimal("-20"), out_leg.occurred_on, out_leg.occurred_at ],
+        [ fee.account, fee.amount, fee.occurred_on, fee.occurred_at ]
+      assert_equal [ category("Debt & credit", "Interest & bank fees"), "Bank / Fees" ],
+        [ fee.lines.sole.category, fee.lines.sole.legacy_category_path ]
+      assert fee.confirmed?
+      assert_equal [ fee ], Transaction.expenses.where(account: account(2), occurred_on: fee.occurred_on).to_a
+    end
+
     test "a second run of the same export changes nothing" do
       import
       before = snapshot
       report = import
 
-      assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 11 ] }, counts(report))
+      assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 14 ] }, counts(report))
       assert_equal 0, report.pairs_recreated
       assert_equal before, snapshot
     end
@@ -156,7 +171,7 @@ module LegacyImport
       assert_match(/\A\h{64}\z/, legacy(1001).import_digest)
       assert_match(/\A\h{64}\z/, legacy(1007).import_digest)
       assert_match(/\A\h{64}\z/, account(1).import_digest)
-      assert_equal 11, Transaction.from_legacy.where.not(import_digest: nil).count
+      assert_equal 14, Transaction.from_legacy.where.not(import_digest: nil).count
     end
 
     test "a second run of the same export keeps the changes made in the app" do
@@ -165,10 +180,10 @@ module LegacyImport
       before = snapshot
       report = import
 
-      assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 11 ] }, counts(report))
+      assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 14 ] }, counts(report))
       assert_equal [ 1, 3 ], [ report.kept(:accounts), report.kept(:transactions) ]
       assert_includes @output.string, "Accounts: 0 created, 0 updated, 5 unchanged (1 with local edits kept)"
-      assert_includes @output.string, "Transactions: 0 created, 0 updated, 11 unchanged (3 with local edits kept)"
+      assert_includes @output.string, "Transactions: 0 created, 0 updated, 14 unchanged (3 with local edits kept)"
       assert_equal before, snapshot
       assert legacy(1005).confirmed?
       assert_equal category("Groceries", "Groceries"), legacy(1005).lines.sole.category
@@ -184,7 +199,7 @@ module LegacyImport
         LegacyExportFiles.edit(dir, "accounts.jsonl") { |rows| rows[0]["archived"] = true }
         report = import(dir)
 
-        assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 1, 10 ] }, counts(report))
+        assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 1, 13 ] }, counts(report))
         assert_equal [ 0, 2 ], [ report.kept(:accounts), report.kept(:transactions) ]
       end
 
@@ -203,7 +218,7 @@ module LegacyImport
       account(2).update_columns(import_digest: nil)
       report = import
 
-      assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 1, 10 ] }, counts(report))
+      assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 1, 13 ] }, counts(report))
       assert_nil legacy(1001).comment
       assert_match(/\A\h{64}\z/, legacy(1001).import_digest)
       assert_match(/\A\h{64}\z/, account(2).import_digest)
@@ -218,7 +233,7 @@ module LegacyImport
         LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[6]["comment"] = "Changed in the export" }
         report = import(dir)
 
-        assert_equal [ 0, 1, 10 ], report.counts(:transactions).values
+        assert_equal [ 0, 1, 13 ], report.counts(:transactions).values
         assert_equal [ 0, 1 ], [ report.pairs_recreated, report.kept(:transactions) ]
       end
 
@@ -226,7 +241,7 @@ module LegacyImport
       assert_equal [ "Edited leg", other_leg_version ], [ legacy(1008).comment, legacy(1008).lock_version ]
     end
 
-    test "the same export spelled differently is the same export" do
+    test "the same export spelled differently is the same export (12 and \"12\" are one id)" do
       import
       before = snapshot
 
@@ -241,13 +256,21 @@ module LegacyImport
           rows[1]["occurred_at"] = "2026-01-10T07:00:00.000Z"
           rows[3].merge!("original_amount" => "-10", "occurred_at" => "2026-01-15T09:45:00+02:00")
           rows[6]["transfer_key"] = "T-0001"
+          rows[11]["account_legacy_id"] = "2"
+          rows[13].merge!("account_legacy_id" => "2", "lines" => [ { "amount" => "-20", "category_legacy_id" => "17" } ])
           rows.map! { |row| row.to_a.reverse.to_h }
         end
-        LegacyExportFiles.edit(dir, "payees.jsonl") { |rows| rows[2]["name"] = "CORNER  bakery" }
-        LegacyExportFiles.edit(dir, "categories.jsonl") { |rows| rows[0]["group_en"] = " Groceries " }
+        LegacyExportFiles.edit(dir, "payees.jsonl") do |rows|
+          rows[2]["name"] = "CORNER  bakery"
+          rows.each { |row| row["legacy_id"] = row["legacy_id"].to_s }
+        end
+        LegacyExportFiles.edit(dir, "categories.jsonl") do |rows|
+          rows[0]["group_en"] = " Groceries "
+          rows.each { |row| row["legacy_id"] = row["legacy_id"].to_s }
+        end
         report = import(dir)
 
-        assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 11 ] }, counts(report))
+        assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 14 ] }, counts(report))
       end
       assert_equal before, snapshot
     end
@@ -266,7 +289,7 @@ module LegacyImport
         LegacyExportFiles.edit(dir, "accounts.jsonl") { |rows| rows[4]["archived"] = false }
         report = import(dir)
 
-        assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 3, 8 ] }, counts(report))
+        assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 3, 11 ] }, counts(report))
       end
 
       assert_equal bread.id, legacy(1001).id
@@ -308,7 +331,7 @@ module LegacyImport
         end
         report = import(dir)
 
-        assert_equal [ 0, 2, 9 ], report.counts(:transactions).values
+        assert_equal [ 0, 2, 12 ], report.counts(:transactions).values
       end
 
       assert_equal [ bread.id, account(3) ], [ legacy(1001).id, legacy(1001).account ]
@@ -332,7 +355,7 @@ module LegacyImport
         end
         report = import(dir)
 
-        assert_equal [ 0, 3, 8 ], report.counts(:transactions).values
+        assert_equal [ 0, 3, 11 ], report.counts(:transactions).values
         assert_equal 1, report.pairs_recreated
       end
 
@@ -352,7 +375,7 @@ module LegacyImport
         LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[8..9].each { |row| row["transfer_key"] = "T-0099" } }
         report = import(dir)
 
-        assert_equal [ 0, 2, 9 ], report.counts(:transactions).values
+        assert_equal [ 0, 2, 12 ], report.counts(:transactions).values
       end
 
       assert_equal TransferId.for("T-0099"), legacy(1009).transfer_id
@@ -370,7 +393,7 @@ module LegacyImport
         end
         report = import(dir)
 
-        assert_equal [ 0, 3, 8 ], report.counts(:transactions).values
+        assert_equal [ 0, 3, 11 ], report.counts(:transactions).values
       end
 
       assert_not legacy(1007).transfer_leg?
@@ -414,7 +437,7 @@ module LegacyImport
       before = snapshot
       report = import(dry_run: true)
 
-      assert_equal [ 11, 0, 0 ], report.counts(:transactions).values
+      assert_equal [ 14, 0, 0 ], report.counts(:transactions).values
       assert_includes @output.string, "Legacy import (dry run)"
       assert_includes @output.string, "Dry run: everything was rolled back, nothing was written."
       assert_equal before, snapshot

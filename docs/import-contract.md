@@ -289,16 +289,48 @@ Nothing was written.
 
 - Send the **final account kinds** (`cash`, `debit`, `credit`, `savings`, `ewallet`, `business`); the
   importer does not translate kinds and stops on any other value.
-- A bank fee inside a transfer must become a **separate expense row** (with its own line and category), so
-  the two legs of a same-currency transfer net to exactly zero.
 - **Both legs** of a transfer must be in the export, with the same `transfer_key`. A date window must not
   cut a pair: widen the window or include the other leg.
 - Transfer legs have `lines: []`.
 - An uncategorised line has `category_legacy_id: null`.
 - A line's `comment` is optional: leave it out or send `null` when there is none.
 - Amounts are strings with at most two decimal places (`"-1250.50"`), never JSON numbers and never zero.
-- `occurred_at` carries seconds and an offset (`"2026-01-10T09:00:00+02:00"`), or is `null`.
 - Each transaction's `currency` equals its account's currency; an amount in another currency goes to
   `original_amount` / `original_currency`.
-- Every listed key is present in every row (use `null`), each `legacy_id` is unique in its file, and the
-  manifest's `counts` and `sha256` are computed on the final files.
+- Each `legacy_id` is unique in its file and the same on every run, so a second export finds the rows of
+  the first.
+
+### A fee or a surplus inside a same-currency transfer
+
+The two legs of a same-currency transfer must net to exactly zero. When the old data has legs of different
+sizes (the bank took a fee, or added something), the exporter splits the difference into a row of its own:
+
+- **both legs** carry the **smaller** of the two magnitudes (one negative, one positive);
+- the **difference** becomes **one extra transaction on the account whose leg was larger**: an **expense**
+  on the sending account for a fee (the out leg was larger), an **income** on the receiving account for a
+  surplus (the in leg was larger). So the sum of each account's rows does not change;
+- the extra row has `transfer_key: null`, the `occurred_on` and `occurred_at` of the leg it is cut from,
+  its `currency`, and **one line** with its full amount and its category (for a fee usually the old
+  category that maps to `Debt & credit` / `Interest & bank fees`);
+- its `legacy_id` is **unique in the file and the same on every run**. The agreed form is the leg's id
+  with a suffix, as a string: `"1007-fee"`.
+
+For example, moving 1000 that cost 10: the out leg `-1000.00`, the in leg `1000.00`, and the row
+`"1007-fee"` with `-10.00`. The fixture export has such a transfer (`T-0010`, legacy ids 1012, 1013 and
+`"1012-fee"`).
+
+### What the exporter writes
+
+Both sides agree that the exporter writes exactly this, and the importer checks it:
+
+- every key of the tables above is always present in every row, with `null` when there is no value, never
+  missing; the only exception is a line's optional `comment`;
+- `occurred_at` is ISO 8601 in UTC with `Z` and whole seconds (`"2026-01-10T07:00:00Z"`), or `null`; the
+  importer also reads other offsets and a fraction of at most six digits;
+- `counts` and `sha256` in `MANIFEST.json` are keyed by data file name (`"accounts.jsonl"`, ...), list the
+  four data files and do not list the manifest itself; they are computed on the final files;
+- every line of a data file ends with `\n`, the last one too;
+- `mcc` is exactly four digits as a string (`"5411"`) or `null`;
+- `legacy_id` (and every reference to one) is a JSON integer or a string, compared as text (`12` and `"12"`
+  are the same id); a string has no whitespace at either end;
+- `source_system` may be `null`.

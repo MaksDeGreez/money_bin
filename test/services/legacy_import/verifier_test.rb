@@ -21,7 +21,7 @@ module LegacyImport
     test "turns the fixture into typed rows" do
       dataset = verify
 
-      assert_equal [ 5, 7, 5, 11 ], [ dataset.accounts, dataset.categories, dataset.payees, dataset.transactions ].map(&:size)
+      assert_equal [ 5, 8, 5, 14 ], [ dataset.accounts, dataset.categories, dataset.payees, dataset.transactions ].map(&:size)
       split = dataset.transactions.find { |row| row.legacy_id == "1003" }
       assert_equal BigDecimal("-900"), split.amount
       assert_equal [ "11", "12", nil ], split.lines.map(&:category_legacy_id)
@@ -55,7 +55,8 @@ module LegacyImport
         "payees.jsonl line 1 (legacy_id 20): name must be a string",
         # The category without an id and the account whose id became a duplicate are now unknown.
         "transactions.jsonl line 1 (legacy_id 1001): lines[0].category_legacy_id names a category that is not in categories.jsonl",
-        "transactions.jsonl line 4 (legacy_id 1004): account_legacy_id names an account that is not in accounts.jsonl"
+        "transactions.jsonl line 4 (legacy_id 1004): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 13 (legacy_id 1013): account_legacy_id names an account that is not in accounts.jsonl"
       ], found
     end
 
@@ -76,7 +77,9 @@ module LegacyImport
         "transactions.jsonl line 3 (legacy_id 1003): payee_legacy_id names a payee that is not in payees.jsonl",
         "transactions.jsonl line 6 (legacy_id 1006): account_legacy_id names an account that is not in accounts.jsonl",
         "transactions.jsonl line 7 (legacy_id 1007): account_legacy_id names an account that is not in accounts.jsonl",
-        "transactions.jsonl line 9 (legacy_id 1009): account_legacy_id names an account that is not in accounts.jsonl"
+        "transactions.jsonl line 9 (legacy_id 1009): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 12 (legacy_id 1012): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 14 (legacy_id 1012-fee): account_legacy_id names an account that is not in accounts.jsonl"
       ], found
       assert_equal [ "transactions.jsonl line 1 (legacy_id 1001): account_legacy_id has spaces at the start or the end" ],
         problems(transaction_edit(1001) { |row| row["account_legacy_id"] = "1 " })
@@ -236,7 +239,7 @@ module LegacyImport
       LegacyExportFiles.temp_copy do |dir|
         LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows.find { |row| row["legacy_id"] == 1010 }["amount"] = "99.13" }
 
-        assert_equal 11, verify(dir).transactions.size
+        assert_equal 14, verify(dir).transactions.size
       end
     end
 
