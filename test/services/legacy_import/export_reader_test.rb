@@ -50,6 +50,28 @@ module LegacyImport
       end
     end
 
+    test "the informational manifest fields have their types" do
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit_manifest(dir) do |manifest|
+          manifest.merge!("exported_at" => 1_700_000_000, "legacy_git_sha" => [ "abc" ], "date_from" => "01.01.2026",
+            "date_to" => "2026-02-30", "warnings" => "none")
+        end
+
+        assert_equal [
+          "MANIFEST.json: warnings must be a JSON array",
+          "MANIFEST.json: exported_at must be a string or null",
+          "MANIFEST.json: legacy_git_sha must be a string or null",
+          "MANIFEST.json: date_from must be a real date written YYYY-MM-DD, or null",
+          "MANIFEST.json: date_to must be a real date written YYYY-MM-DD, or null"
+        ], problems(dir)
+
+        LegacyExportFiles.edit_manifest(dir) do |manifest|
+          manifest.merge!("exported_at" => nil, "legacy_git_sha" => nil, "date_from" => nil, "date_to" => nil, "warnings" => [])
+        end
+        assert_nil ExportReader.call(dir).manifest["date_from"]
+      end
+    end
+
     test "a wrong hash or a wrong count stops it" do
       LegacyExportFiles.temp_copy do |dir|
         LegacyExportFiles.edit_manifest(dir) do |manifest|

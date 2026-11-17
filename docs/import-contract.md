@@ -132,7 +132,9 @@ The importer reads and checks the whole export first. Any of these stops the imp
 written:
 
 - the folder or `MANIFEST.json` is missing, the manifest is not a JSON object, a manifest key is missing,
-  `schema_version` is not `1`, `counts` / `sha256` are not objects or `warnings` is not an array;
+  `schema_version` is not `1`, `counts` / `sha256` are not objects, `warnings` is not an array,
+  `exported_at` / `legacy_git_sha` are neither a string nor null, or `date_from` / `date_to` are neither a real
+  `YYYY-MM-DD` date nor null;
 - a data file is not listed in both `counts` and `sha256`, the manifest lists another file, a listed file is
   missing, its SHA-256 or its line count does not match, or it is not valid UTF-8;
 - a line is empty, is not valid JSON, or is not a JSON object;

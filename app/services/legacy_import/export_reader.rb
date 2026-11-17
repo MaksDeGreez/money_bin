@@ -66,6 +66,14 @@ module LegacyImport
           "#{MANIFEST}: #{key} must be a JSON object" unless manifest[key].is_a?(Hash)
         end
         problems << "#{MANIFEST}: warnings must be a JSON array" unless manifest["warnings"].is_a?(Array)
+        %w[exported_at legacy_git_sha].each do |key|
+          problems << "#{MANIFEST}: #{key} must be a string or null" unless manifest[key].nil? || manifest[key].is_a?(String)
+        end
+        %w[date_from date_to].each do |key|
+          Values.date(manifest[key]) unless manifest[key].nil?
+        rescue Values::Invalid
+          problems << "#{MANIFEST}: #{key} must be a real date written YYYY-MM-DD, or null"
+        end
         raise Error, problems if problems.any?
       end
 
