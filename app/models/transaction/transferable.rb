@@ -1,0 +1,119 @@
+# A transfer moves money between two own accounts. It is stored as two transactions (legs), one on each
+# account, that share a `transfer_id`:
+#
+# - exactly two legs, on two different accounts, with opposite signs (one out, one in);
+# - legs have no lines (a transfer is not spending or income);
+# - when both accounts use the same currency, the two amounts net to exactly zero. A bank fee is never
+#   hidden inside a leg: it is a separate expense transaction;
+# - when the currencies differ, the two amounts may be anything (the exchange rate is implied).
+#
+# Where each rule lives:
+# - the unique index index_transactions_one_leg_per_side allows one negative and one positive leg per
+#   transfer_id, so the database itself refuses a third leg or two legs of the same sign;
+# - saving a leg checks it against its saved counterpart, so a single save cannot break an existing pair;
+# - a lone leg is valid on its own (the first leg of a pair is always saved alone). Writers create both legs
+#   in one database transaction: Transaction.transfer! does that, and an importer that writes legs itself
+#   calls Transaction.transfer_problems(transfer_id) after the second one;
+# - destroying one leg destroys the other.
+#
+# A leg cannot leave its transfer (`transfer_id` cannot change once set), because the other leg would be
+# left alone. Amounts of a same-currency pair cannot be changed one leg at a time; destroy the pair and
+# create it again.
+module Transaction::Transferable
+  extend ActiveSupport::Concern
+
+  included do
+    after_destroy :destroy_counterpart
+
+    validate :transfer_leg_rules, if: :transfer_leg?
+    validate :transfer_id_fixed, on: :update
+  end
+
+  class_methods do
+    # Creates both legs in one database transaction and returns them as [out_leg, in_leg].
+    #
+    # `amount` is the positive amount that leaves `from`, in its currency; the out leg stores it negative.
+    # `to_amount` is the positive amount that arrives on `to`, in its currency. It defaults to `amount` when
+    # both accounts use the same currency and is required when they do not. Amounts must be Numeric (the
+    # caller parses text); a String raises ArgumentError instead of being guessed at.
+    def transfer!(from:, to:, amount:, occurred_on:, to_amount: nil, occurred_at: nil, comment: nil, payee: nil,
+                  source: :manual, status: :confirmed)
+      raise ArgumentError, "a transfer needs two different accounts" if from == to
+
+      to_amount = amount if to_amount.nil? && from.currency == to.currency
+      raise ArgumentError, "to_amount is required when the accounts use different currencies" if to_amount.nil?
+
+      { amount:, to_amount: }.each do |name, value|
+        unless value.is_a?(Numeric) && value.real? && value.finite? && value.positive?
+          raise ArgumentError, "#{name} must be a positive number, got #{value.inspect}"
+        end
+      end
+
+      shared = { transfer_id: SecureRandom.uuid, occurred_on:, occurred_at:, comment:, payee:, source:, status: }
+      transaction do
+        [ create!(shared.merge(account: from, amount: -amount)), create!(shared.merge(account: to, amount: to_amount)) ]
+      end
+    end
+
+    # Everything wrong with the transfer `transfer_id` as it is stored now, as sentences. An empty list
+    # means the pair is valid.
+    def transfer_problems(transfer_id)
+      legs = where(transfer_id:).includes(:account, :lines).order(:id).to_a
+      problems = []
+      problems << "a transfer needs exactly two legs, found #{legs.size}" unless legs.size == 2
+      problems << "a transfer leg cannot have lines" if legs.any? { |leg| leg.lines.any? }
+      problems.concat(pair_problems(*legs)) if legs.size == 2
+      problems
+    end
+
+    # The rules between two legs (the counting and the lines are checked by the callers).
+    def pair_problems(leg, other)
+      problems = []
+      problems << "the two legs must be on different accounts" if leg.account_id == other.account_id
+      return problems if leg.amount.blank? || other.amount.blank?
+
+      if leg.amount.positive? == other.amount.positive?
+        problems << "the two legs must have opposite signs"
+      elsif leg.account&.currency == other.account&.currency && leg.amount + other.amount != 0
+        problems << "the two legs must net to zero when both accounts use the same currency " \
+          "(a fee is a separate expense)"
+      end
+      problems
+    end
+  end
+
+  # The other leg of this transfer, or nil.
+  def counterpart
+    return unless transfer_leg?
+
+    self.class.where(transfer_id:).where.not(id:).first
+  end
+
+  # Transaction.transfer_problems for this leg's transfer; empty for a transaction that is not a leg.
+  def transfer_problems
+    transfer_leg? ? self.class.transfer_problems(transfer_id) : []
+  end
+
+  private
+    def transfer_leg_rules
+      errors.add(:lines, "must be empty for a transfer leg") if kept_lines.any?
+
+      others = self.class.where(transfer_id:).where.not(id:).includes(:account).to_a
+      if others.size > 1
+        errors.add(:transfer_id, "already has two legs")
+      elsif others.one?
+        self.class.pair_problems(self, others.first).each { |problem| errors.add(:base, problem.upcase_first) }
+      end
+    end
+
+    def transfer_id_fixed
+      return unless transfer_id_changed? && transfer_id_was.present?
+
+      errors.add(:transfer_id, "cannot change once set: the other leg would be left alone")
+    end
+
+    # Ends after one hop: by the time the counterpart looks for its own counterpart, this row is gone.
+    def destroy_counterpart
+      counterpart&.destroy!
+    end
+end

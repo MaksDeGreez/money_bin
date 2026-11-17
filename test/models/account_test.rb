@@ -73,8 +73,9 @@ class AccountTest < ActiveSupport::TestCase
   end
 
   test "balance is the sum of the transaction amounts" do
-    assert_equal BigDecimal("47834.60"), accounts(:card_uah).balance
-    assert_equal BigDecimal("-60"), accounts(:cash_uah).balance
+    assert_equal BigDecimal("4334.60"), accounts(:card_uah).balance
+    assert_equal BigDecimal("1940"), accounts(:cash_uah).balance
+    assert_equal BigDecimal("1000"), accounts(:savings_usd).balance
     assert_equal BigDecimal("0"), accounts(:old_wallet).balance
     assert_kind_of BigDecimal, accounts(:card_uah).balance
   end

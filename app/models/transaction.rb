@@ -26,6 +26,8 @@ class Transaction < ApplicationRecord
   AMOUNT_LIMIT = 10**13
   MCC_FORMAT = /\A\d{4}\z/
 
+  include Transferable
+
   enum :source, { legacy: "legacy", receipt: "receipt", manual: "manual", api: "api", bank: "bank" },
     prefix: :from, validate: true
   enum :status, { draft: "draft", needs_review: "needs_review", confirmed: "confirmed" }, validate: true
