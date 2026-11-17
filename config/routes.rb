@@ -14,6 +14,13 @@ Rails.application.routes.draw do
     resources :api_tokens, only: %i[ index create destroy ]
   end
 
+  # The REST API for AI agents and scripts: personal API tokens only (Api::BaseController).
+  namespace :api, defaults: { format: :json } do
+    namespace :v1 do
+      resource :status, only: :show, controller: :status
+    end
+  end
+
   # Sidekiq's dashboard, for a signed-in browser only (the same session cookie as every page). For anyone
   # else the route does not match, so they get a plain 404 and cannot tell that it exists.
   constraints ->(request) { Session.from_cookies(request.cookie_jar).present? } do
