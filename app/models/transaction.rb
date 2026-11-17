@@ -47,8 +47,10 @@ class Transaction < ApplicationRecord
   belongs_to :payee, optional: true
   has_many :lines, -> { order(:id) }, class_name: "TransactionLine", foreign_key: :transaction_id, inverse_of: :parent,
     dependent: :destroy
-  # The receipt this transaction was booked from, if any. Destroying the transaction keeps the receipt.
-  has_one :receipt, foreign_key: :transaction_id, inverse_of: :ledger_transaction, dependent: :nullify
+  # The receipt this transaction was booked from, if any. Destroying the transaction keeps the receipt and
+  # sends it back to review (release_receipt).
+  has_one :receipt, foreign_key: :transaction_id, inverse_of: :ledger_transaction
+  before_destroy :release_receipt
 
   accepts_nested_attributes_for :lines, allow_destroy: true
 
@@ -114,6 +116,18 @@ class Transaction < ApplicationRecord
       yield
     ensure
       @managing_lines = was_managing
+    end
+
+    # A `reviewed` receipt means "booked into the ledger". Without its transaction it is not, so it goes back
+    # to `extracted` and can be accepted again; its items stay. Runs in the destroy's database transaction,
+    # so a failed destroy changes nothing. update_columns: the unlink must not depend on the receipt's other
+    # validations.
+    def release_receipt
+      receipt = Receipt.lock.find_by(transaction_id: id)
+      return unless receipt
+
+      status = receipt.reviewed? ? "extracted" : receipt.status
+      receipt.update_columns(transaction_id: nil, status:, updated_at: Time.current)
     end
 
     # A save that changes only lines would not write the transaction row, so it would not check or bump

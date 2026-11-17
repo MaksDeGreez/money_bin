@@ -248,11 +248,48 @@ class ReceiptTest < ActiveSupport::TestCase
     end
   end
 
-  test "destroying the transaction keeps the receipt, unlinked" do
+  test "destroying the transaction keeps the receipt, unlinked and back in review" do
     receipt = receipts(:market_receipt)
     transactions(:market_split).destroy!
 
-    assert_nil receipt.reload.transaction_id
+    receipt.reload
+    assert_nil receipt.transaction_id
+    assert receipt.extracted?
+    assert_equal 3, receipt.items.count
+    assert Receipts::Accept.call(receipt, account: accounts(:card_uah)).persisted?
+  end
+
+  test "a receipt on a destroyed transfer leg goes back to review, also through the other leg" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(transaction_id: transactions(:withdrawal_in).id, status: "reviewed")
+
+    transactions(:withdrawal_out).destroy!
+
+    receipt.reload
+    assert_nil receipt.transaction_id
+    assert receipt.extracted?
+  end
+
+  test "a failed destroy leaves the receipt reviewed and linked" do
+    receipt = receipts(:market_receipt)
+    stale = Transaction.find(transactions(:market_split).id)
+    transactions(:market_split).update!(comment: "Edited elsewhere")
+
+    assert_raises(ActiveRecord::StaleObjectError) { stale.destroy }
+
+    receipt.reload
+    assert receipt.reviewed?
+    assert_equal transactions(:market_split).id, receipt.transaction_id
+  end
+
+  test "a linked receipt that was never accepted keeps its status when the transaction goes" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(transaction_id: transactions(:coffee).id)
+
+    transactions(:coffee).destroy!
+
+    assert receipt.reload.extracted?
+    assert_nil receipt.transaction_id
   end
 
   test "the database checks status, currency and fingerprint" do

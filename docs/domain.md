@@ -100,6 +100,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A receipt has 1 to 3 photos, of photo formats only (JPEG, PNG, WebP, HEIC/HEIF), all different | Model only |
 | A receipt's `sha256` is present, 64 lower-case hex characters, and unique | Model + DB |
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
+| A `reviewed` receipt has a transaction: destroying the transaction moves its receipt back to `extracted` | Model (in the destroy's database transaction); the foreign key only nullifies the link |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
 
 ### The line sum is enforced in the model, not by a trigger
@@ -228,6 +229,7 @@ Who moves the status:
 | `processing` | `extracted` | `Receipts::ApplyOcr`, with the result |
 | `processing` | `failed` | `ReceiptOcrJob`, on a permanent failure or when the retries run out |
 | `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
+| `reviewed` | `extracted` | destroying its transaction (the receipt is unlinked, keeps its items and can be accepted again) |
 
 The job starts only on `uploaded`, `processing` (its own retry, or a run that died) and `failed` (try
 again by enqueuing it once more). It leaves `extracted` and `reviewed` receipts alone, so running it twice
