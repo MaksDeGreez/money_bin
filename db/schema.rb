@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_160100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_160200) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -69,6 +69,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160100) do
     t.check_constraint "(parent_id IS NULL) = (strpos(slug::text, '/'::text) = 0)", name: "categories_slug_matches_level"
     t.check_constraint "parent_id <> id", name: "categories_not_own_parent"
     t.check_constraint "slug::text ~ '^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)?$'::text", name: "categories_slug_format"
+  end
+
+  create_table "payees", force: :cascade do |t|
+    t.string "name", null: false
+    t.string "normalized_name", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["normalized_name"], name: "index_payees_on_normalized_name", unique: true
   end
 
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"

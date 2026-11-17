@@ -1,0 +1,11 @@
+example_market:
+  name: Example Market
+  normalized_name: example market
+
+corner_cafe:
+  name: Corner Cafe
+  normalized_name: corner cafe
+
+employer:
+  name: Example Employer Ltd
+  normalized_name: example employer ltd
