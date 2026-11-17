@@ -10,7 +10,9 @@ meta name="application-name" content="Money Bin"
 link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48"
 link rel="icon" href="/favicon-96.png" type="image/png" sizes="96x96"
 link rel="apple-touch-icon" href="/apple-touch-icon.png"
-meta name="theme-color" content="#1c1c1c"
+/ The browser bar takes the page colour (--color-page in design-system.css) of the system's theme.
+meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff"
+meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121212"
 
 / Web fonts (display: Inter, body: DM Sans). Loaded here instead of a CSS
 / @import, which would be dropped because it lands after Tailwind's rules.

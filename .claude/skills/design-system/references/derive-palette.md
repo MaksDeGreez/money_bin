@@ -5,7 +5,7 @@ The palette is fifteen tokens in two modes, all in `app/assets/tailwind/design-s
 Inputs:
 
 - `accent`: Tailwind cyan (cyan-500 in light mode, cyan-400 in dark mode)
-- `signal`: `#fcd34d` (Tailwind amber-300), the same shade in both modes
+- `signal`: `#fcd34d` (amber-300 of Tailwind v3), the same shade in both modes
 - `danger`: a red at hue 25 (light) / 22 (dark)
 - `neutral`: Tailwind slate in light mode; a plain grey ramp in dark mode
 
@@ -42,7 +42,22 @@ Rules, for a base colour given as `oklch(L C H)`:
 
 - **Base.** Light mode uses the brand shade; dark mode uses one step lighter on the same scale (cyan-500 → cyan-400), so a fill keeps its weight on a dark page. `signal` is the exception: it is pinned to one light tint in both modes, so badges and callouts read the same.
 - **`-faded`.** Keep the hue. Light: lightness 96%, chroma about 0.025. Dark: lightness 22%, chroma about 0.045 to 0.05.
-- **`-display`.** Keep the hue. Light: about 9 points darker than the base at slightly less chroma (it must reach 4.5:1 on `page` and on `-faded`). Dark: about 7 to 10 points lighter than the base.
-- **`signal-faded`** was mixed by hand, not taken from oklch: the signal at 12% on `#ffffff` (light) and at 18% on `#020617` (dark). The formula, for a foreground `F` at share `p` on a background `B`, per channel: `round(F * p + B * (1 - p))`.
+- **`-display`.** Keep the hue. Light: about 9 points darker than the base at slightly less chroma. Dark: about 7 to 10 points lighter than the base. `signal-display` in light mode is the exception: the signal is too light to darken by 9 points, so it sits at lightness 76% and a browner hue (82).
+- **`signal-faded`** was mixed by hand, not taken from oklch: the signal at 12% on `#ffffff` (light) and at 18% on `#020617` (dark). That dark background is slate-950, the dark page of the upstream palette, not today's `#121212`; mix on the current page when deriving it again. The formula, for a foreground `F` at share `p` on a background `B`, per channel: `round(F * p + B * (1 - p))`.
 
-After a change, check the contrast of every `-display` token on `page`, `surface` and its own `-faded` background in both modes, and of `text-page` on the `accent` and `danger` fills (the primary and danger buttons).
+## Contrast of the shipped values
+
+WCAG contrast ratios, computed from the values above. 4.5:1 is the target for text.
+
+| Pair                               | Light  | Dark    |
+|------------------------------------|--------|---------|
+| `accent-display` on `page`         | 3.36:1 | 12.70:1 |
+| `accent-display` on `accent-faded` | 3.01:1 | 11.55:1 |
+| `signal-display` on `page`         | 2.18:1 | 15.16:1 |
+| `signal-display` on `signal-faded` | 2.09:1 | 11.42:1 |
+| `danger-display` on `page`         | 5.38:1 | 8.52:1  |
+| `danger-display` on `danger-faded` | 4.71:1 | 7.99:1  |
+| `page` text on the `accent` fill   | 2.36:1 | 10.35:1 |
+| `page` text on the `danger` fill   | 3.74:1 | 6.52:1  |
+
+Dark mode passes everywhere. In light mode only the danger text passes: links and accent badges, signal badges and the labels of the primary and danger buttons are below 4.5:1. That is a known gap of the current palette, not a rule to copy: when deriving new values, darken the light `-display` tokens and the light fills until these pairs reach 4.5:1, and check them again in both modes.
