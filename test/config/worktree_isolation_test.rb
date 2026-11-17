@@ -5,7 +5,7 @@ class WorktreeIsolationTest < ActiveSupport::TestCase
   Isolation = MoneyBin::WorktreeIsolation
 
   test "sanitize produces a safe suffix that a parallel worker number cannot imitate" do
-    assert_equal "feat_favicon", Isolation.sanitize("feat-favicon")
+    assert_equal "feat_login", Isolation.sanitize("feat-login")
     assert_equal "money_bin1", Isolation.sanitize("Money Bin-1")
     assert_equal "feature1", Isolation.sanitize("feature_1")
     assert_equal "wt42", Isolation.sanitize("42")
