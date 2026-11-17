@@ -46,6 +46,14 @@ htmlcov/
 # Personal data never enters the repository: any folder named "data", at any depth.
 data/
 
+# A second line of defence for receipt photos and for the output of tools/receipt_ingest/, which both
+# live outside the repository: iPhone photos and the numbered receipt images.
+*.heic
+*.HEIC
+*.heif
+*.HEIF
+rcpt_*.jpg
+
 # Python caches and virtual environments.
 .venv/
 __pycache__/

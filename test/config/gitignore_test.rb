@@ -10,6 +10,8 @@ class GitignoreTest < ActiveSupport::TestCase
     storage/ab/cd/abcdef data/receipts.csv ml/data/sample.jpg
     ml/models/weights.safetensors model.gguf model.bin model.pt model.pth model.h5 checkpoints/last.ckpt
     model.onnx model.mlx arrays.npz
+    IMG_0001.HEIC photos/img_0001.heic scan.heif scan.HEIF
+    rcpt_000123_1.jpg receipts/images/rcpt_000123_1_crop.jpg
   ].freeze
   KEPT = %w[ .env.example config/credentials.yml.enc config/credentials/production.yml.enc ].freeze
 
