@@ -8,6 +8,9 @@ module LegacyImport
   # - each data file exists, is UTF-8, and its SHA-256 and its number of lines match the manifest;
   # - every line is one JSON object.
   #
+  # Each data file is read once: the rows are parsed from the same bytes that were hashed and counted, so a
+  # file that changes on disk during the import is never parsed unchecked.
+  #
   # Returns an Export with the parsed lines; raises Error with every problem found. It never writes.
   class ExportReader
     SCHEMA_VERSION = 1
@@ -34,6 +37,7 @@ module LegacyImport
       raise Error, "the export folder does not exist or is not a folder" unless @dir.directory?
 
       manifest = read_manifest
+      @bytes = {}
       check_files(manifest)
       Export.new(manifest:, rows: read_rows)
     end
@@ -80,7 +84,7 @@ module LegacyImport
         path = @dir.join(file)
         return [ "#{file} is listed in #{MANIFEST} but missing" ] unless path.file?
 
-        bytes = path.binread
+        bytes = @bytes[file] = path.binread
         problems = []
         expected_hash = hashes[file]
         if !expected_hash.is_a?(String) || !expected_hash.downcase.match?(SHA256_HEX)
@@ -106,7 +110,7 @@ module LegacyImport
       def read_rows
         problems = []
         rows = FILES.index_with do |file|
-          text = @dir.join(file).read(encoding: Encoding::UTF_8)
+          text = @bytes.fetch(file).dup.force_encoding(Encoding::UTF_8)
           text.each_line.with_index(1).filter_map do |line, number|
             data = line.strip.empty? ? :empty : parse_json(line)
             next RawRow.new(file:, line: number, data:) if data.is_a?(Hash)

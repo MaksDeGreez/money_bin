@@ -66,7 +66,8 @@ optional (and recommended). Empty lines are not allowed. A file with no rows is 
 `counts` and `sha256` must list exactly the four data files (`accounts.jsonl`, `categories.jsonl`,
 `payees.jsonl`, `transactions.jsonl`), no more and no fewer. The line count is the number of `\n` characters,
 plus one when the file is not empty and does not end with `\n`. The hash is over the exact bytes of the
-file.
+file. Each file is read once, and its rows are parsed from the bytes that were hashed, so a file that
+changes during the import is never read unchecked.
 
 ### `accounts.jsonl`
 

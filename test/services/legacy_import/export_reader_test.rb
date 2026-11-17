@@ -78,6 +78,22 @@ module LegacyImport
       end
     end
 
+    test "the rows are parsed from the bytes that were hashed, even when the file changes after" do
+      LegacyExportFiles.temp_copy do |dir|
+        path = File.join(dir, "payees.jsonl")
+        hashed = File.binread(path)
+        # The file is replaced on disk just after its bytes were hashed.
+        hexdigest = lambda do |bytes|
+          File.write(path, %({"legacy_id":99,"name":"Late Shop"}\n)) if bytes == hashed
+          Digest::SHA256.new.update(bytes).hexdigest
+        end
+        export = with_singleton_method(Digest::SHA256, :hexdigest, hexdigest) { ExportReader.call(dir) }
+
+        assert_equal [ 20, 21, 22, 23, 24 ], export.rows.fetch("payees.jsonl").map { |row| row.data["legacy_id"] }
+        assert_includes File.read(path), "Late Shop"
+      end
+    end
+
     test "every data file must be listed and present, and no other file may be listed" do
       LegacyExportFiles.temp_copy do |dir|
         LegacyExportFiles.edit_manifest(dir) do |manifest|
