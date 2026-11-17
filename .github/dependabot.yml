@@ -1,12 +1,77 @@
 version: 2
+
+# Weekly updates, grouped so one pull request (and one CI run) covers a batch instead of one per package.
+# Major versions stay out of the groups: each one comes as a pull request of its own.
 updates:
-- package-ecosystem: bundler
-  directory: "/"
-  schedule:
-    interval: weekly
-  open-pull-requests-limit: 10
-- package-ecosystem: github-actions
-  directory: "/"
-  schedule:
-    interval: weekly
-  open-pull-requests-limit: 10
+  - package-ecosystem: bundler
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      rails-framework:
+        patterns:
+          - "rails"
+          - "action*"
+          - "active*"
+        update-types:
+          - "minor"
+          - "patch"
+      ruby-tooling:
+        dependency-type: development
+        patterns:
+          - "rubocop*"
+          - "brakeman"
+          - "bundler-audit"
+          - "slim_lint"
+          - "simplecov"
+          - "webmock"
+        update-types:
+          - "minor"
+          - "patch"
+      ruby-minor-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "rails"
+          - "action*"
+          - "active*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The Python ML service (ml/pyproject.toml and ml/uv.lock).
+  - package-ecosystem: uv
+    directory: "/ml"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-tooling:
+        dependency-type: development
+        patterns:
+          - "ruff"
+          - "pytest*"
+          - "httpx*"
+        update-types:
+          - "minor"
+          - "patch"
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
