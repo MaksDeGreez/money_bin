@@ -10,9 +10,23 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_135321) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "accounts", force: :cascade do |t|
+    t.string "name", null: false
+    t.string "kind", null: false
+    t.string "currency", limit: 3, null: false
+    t.boolean "archived", default: false, null: false
+    t.string "external_id"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["external_id"], name: "index_accounts_on_external_id", unique: true
+    t.index ["name"], name: "index_accounts_on_name", unique: true
+    t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "accounts_currency_format"
+    t.check_constraint "kind::text = ANY (ARRAY['cash'::character varying, 'debit'::character varying, 'credit'::character varying, 'savings'::character varying, 'ewallet'::character varying, 'business'::character varying]::text[])", name: "accounts_kind_allowed"
+  end
 
   create_table "active_storage_attachments", force: :cascade do |t|
     t.string "name", null: false
