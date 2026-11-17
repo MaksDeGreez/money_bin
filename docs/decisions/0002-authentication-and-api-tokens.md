@@ -31,7 +31,9 @@ identity, with as little machinery as possible.
   session.
 - **Passwords** have at least 12 characters (and at most 72 bytes, the bcrypt limit). Changing the
   password ends every other session. Signing out deletes the session row, so an old cookie stops
-  working.
+  working. Signing in and signing out both reset the Rails session (`reset_session`), so nothing in it
+  (the CSRF token, the flash) is carried across the change; only the page to return to after signing in
+  is kept.
 - **The session cookie** is the generator's: signed, `HttpOnly`, `SameSite=Lax`, permanent. It is not
   marked `Secure` by the code, so it works over plain HTTP on localhost; in production `force_ssl` marks
   every cookie `Secure`.
