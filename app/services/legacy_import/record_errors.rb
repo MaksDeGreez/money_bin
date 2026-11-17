@@ -20,11 +20,15 @@ module LegacyImport
       raise Error, "#{location}: the database refused the row (#{error.class.name})"
     end
 
-    # "name taken; lines.amount too_many_decimal_places". Error types are symbols (:taken, :blank), or the
-    # fixed sentence a model passed to errors.add; neither carries the refused value.
+    # A message for an error added as a sentence, not as a type.
+    CUSTOM = "invalid".freeze
+
+    # "name taken; lines.amount invalid". An error type (:taken, :blank) is printed as it is. An error a model
+    # added as a sentence is printed as CUSTOM: a sentence may quote a value ("UAH to USD"), and this text
+    # goes to the terminal.
     def describe(record)
       details = record.errors.details.flat_map do |attribute, list|
-        list.map { |detail| "#{attribute} #{detail[:error]}" }
+        list.map { |detail| "#{attribute} #{detail[:error].is_a?(Symbol) ? detail[:error] : CUSTOM}" }
       end
       details.uniq.join("; ").presence || "no reason given"
     end

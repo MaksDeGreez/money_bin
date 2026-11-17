@@ -274,7 +274,7 @@ module LegacyImport
       with_singleton_method(TransferId, :for, ->(_key) { "not a uuid" }) do
         error = assert_raises(Error) { import }
 
-        assert_equal [ "transactions.jsonl line 7 (legacy_id 1007): the transaction was refused (lines must have at least one line)" ],
+        assert_equal [ "transactions.jsonl line 7 (legacy_id 1007): the transaction was refused (lines invalid)" ],
           error.problems
       end
       assert_equal before, snapshot

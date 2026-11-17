@@ -230,7 +230,8 @@ The importer prints counts and warnings only. It never prints a name, a payee, a
 an amount: not in its normal output, not in its error messages, and Active Record's SQL log is silenced
 while it runs. Errors name the file, the line number, the `legacy_id` (when it looks like an id), the
 field and the kind of problem. Model refusals are reported as attribute names and error types
-(`name taken`), never as Active Record's messages. The manifest's `warnings` are only counted.
+(`name taken`), never as Active Record's messages; a model rule that gives a sentence instead of a type is
+shown as `invalid` (`currency invalid`), since a sentence may quote a value. The manifest's `warnings` are only counted.
 
 A successful run prints, for example:
 
