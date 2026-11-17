@@ -65,6 +65,7 @@ class Transaction < ApplicationRecord
   validates :external_id, uniqueness: { scope: :source }, allow_nil: true
   validate :payee_exists, if: -> { payee_id.present? && will_save_change_to_payee_id? }
   validate :original_amount_is_consistent
+  validate :account_currency_fixed, on: :update, if: :will_save_change_to_account_id?
   validate :lines_add_up, unless: :transfer_leg?
 
   def transfer_leg?
@@ -122,6 +123,16 @@ class Transaction < ApplicationRecord
     # ActiveRecord::InvalidForeignKey.
     def payee_exists
       errors.add(:payee, "does not exist") if payee.nil?
+    end
+
+    # The amount is in the account currency, so moving it to an account in another currency would keep the
+    # number and change its meaning (UAH -100 would become USD -100). Same-currency moves are fine.
+    def account_currency_fixed
+      old_currency = Account.where(id: account_id_in_database).pick(:currency)
+      return if account.nil? || old_currency.nil? || old_currency == account.currency
+
+      errors.add(:account, "cannot change to an account in another currency (#{old_currency} to #{account.currency}): " \
+        "the amount would keep its number and change its meaning; enter it again on the new account")
     end
 
     # Mirrors the check constraint transactions_original_amount_consistent, plus the rule the database

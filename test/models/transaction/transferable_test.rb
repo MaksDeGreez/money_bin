@@ -152,6 +152,21 @@ class Transaction::TransferableTest < ActiveSupport::TestCase
     assert_includes leg.errors[:base], "The two legs must be on different accounts"
   end
 
+  test "a leg cannot move to an account in another currency" do
+    leg = transactions(:withdrawal_in)
+
+    assert_not leg.update(account: accounts(:savings_usd))
+    assert_match "cannot change to an account in another currency (UAH to USD)", leg.errors[:account].to_sentence
+  end
+
+  test "a cross-currency leg can move to another account in its currency" do
+    leg = transactions(:savings_out)
+    other_uah = Account.create!(name: "Second card", kind: :debit, currency: "UAH")
+
+    assert leg.update(account: other_uah)
+    assert_empty leg.transfer_problems
+  end
+
   test "other fields of a leg can change" do
     assert transactions(:withdrawal_in).update(comment: "ATM on the corner", occurred_on: Date.new(2026, 10, 7))
   end

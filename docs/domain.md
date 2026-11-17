@@ -35,6 +35,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
 - **Payee.** `name` is how the payee is shown. `normalized_name` is the matching key (see Decisions).
 - **Transaction.**
   - `amount` is signed, in the account currency: an expense is negative, an income positive.
+    Because the number means money in that currency, a transaction cannot move to an account in another
+    currency (UAH -100 would silently become USD -100); it is entered again on the new account instead.
   - `occurred_on` is the calendar date in Kyiv; every list and report uses it. `occurred_at` is the exact
     moment, when a source knows it (a bank feed, a receipt), else nil. Neither is derived from the other: a
     hand-entered expense has a date and no time, and a bank time near midnight belongs to the date the bank
@@ -76,6 +78,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | Enum values (account kind, transaction source and status, receipt status) are from their lists | Model (`enum ..., validate: true`) + DB (`*_allowed` check constraints) |
 | Account names are unique; an account `external_id` is unique when present | Model + DB (unique indexes) |
 | An account's currency cannot change once it has transactions | Model only |
+| A transaction (a transfer leg too) can move only to an account in the same currency | Model only |
 | An account, a payee or a category that is in use cannot be destroyed | Model (`restrict_with_error`) + DB (foreign keys) |
 | Categories have two levels: a category's parent is a group; a group with categories gets no parent; nothing is its own parent | Model; DB for "not its own parent" (`categories_not_own_parent`) |
 | A category does not become a group, nor a group a category, while child categories, transaction lines or receipt items (accepted or suggested) point at it | Model only |

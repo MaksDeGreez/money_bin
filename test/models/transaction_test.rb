@@ -175,6 +175,17 @@ class TransactionTest < ActiveSupport::TestCase
     assert_includes expense.errors[:original_amount], "must be less than 10000000000000 in magnitude"
   end
 
+  test "a transaction can move to another account in the same currency only" do
+    coffee = transactions(:coffee)
+
+    assert_not coffee.update(account: accounts(:savings_usd))
+    assert_includes coffee.errors[:account], "cannot change to an account in another currency (UAH to USD): " \
+      "the amount would keep its number and change its meaning; enter it again on the new account"
+    assert_equal accounts(:card_uah), coffee.reload.account
+
+    assert coffee.update(account: accounts(:cash_uah))
+  end
+
   test "a payee id that does not exist is a validation error" do
     expense = build_expense(payee_id: Payee.maximum(:id) + 1)
 
