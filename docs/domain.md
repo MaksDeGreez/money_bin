@@ -114,10 +114,17 @@ PostgreSQL trigger could (a deferred constraint trigger that re-sums at commit),
   line cannot be destroyed on its own at all;
 - the trigger would have to be deferred to commit time (a transaction and its lines are written in
   several statements), which makes errors hard to read and tests slow to write;
-- the importer is the only bulk writer, and it can check its result with plain SQL.
+- parallel writers are kept safe by the models too: optimistic locking and a row lock (see "Concurrent
+  writers"), not by the database re-checking the sum.
 
-The cost: raw SQL or `insert_all` can still write unbalanced lines. If the API or an import ever writes
-lines past the models, the trigger should come back on the table.
+The cost: anything that skips the models skips these rules. Bulk writes (`insert_all`, `upsert_all`,
+`update_all`, `delete_all`), `update_column(s)` and raw SQL do not check the line sum, the transfer rules,
+the decimal places or the lock version. So **every writer goes through the models**: the browser UI, the
+API, and the future history importer too (`Transaction.create!` with `lines_attributes`,
+`Transaction.transfer!`), even though one-by-one saves are slower than a bulk insert. Code that must skip
+the models (a data migration, a test that builds bad data on purpose) checks its result itself, for example
+with `Transaction.transfer_problems` and a SQL query that compares each transaction with the sum of its
+lines. If a writer past the models ever becomes necessary, the trigger should come back on the table.
 
 Transfers follow the same idea. The database refuses a third leg and two legs with the same sign. The
 other rules are checked when a leg is saved, against its saved counterpart, so a single save cannot break
@@ -173,7 +180,9 @@ A transfer moves money between two own accounts. It is two transactions, one per
 - `leg.counterpart` returns the other leg.
 - Destroying one leg destroys the other.
 - The amounts of a same-currency pair cannot be changed one leg at a time (each save would break the
-  zero sum). Destroy the pair and create it again.
+  zero sum). Destroy the pair and create it again. This also applies to an import that runs again and
+  finds that the source changed the amount of a same-currency transfer: it destroys the stored pair (found
+  by `source` and `external_id`) and creates a new one with `transfer!`, in one database transaction.
 
 A bank fee is never hidden inside a leg. When moving 1000 costs 10, the out leg is -1000, the in leg is
 +1000, and the fee is a separate expense of -10 with its own category ("Interest & bank fees"). So a
