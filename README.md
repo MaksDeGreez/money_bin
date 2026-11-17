@@ -20,6 +20,8 @@ stay there.
 The decisions behind this stack are in [`docs/decisions/0001-stack.md`](docs/decisions/0001-stack.md), and
 the ones behind sign-in and API tokens in
 [`docs/decisions/0002-authentication-and-api-tokens.md`](docs/decisions/0002-authentication-and-api-tokens.md).
+How coding agents share the work is in
+[`docs/decisions/0003-agent-tooling.md`](docs/decisions/0003-agent-tooling.md).
 
 ## Status
 
@@ -192,9 +194,11 @@ the numbers and names.
 ```
 app/              Rails app: models, controllers, Slim views, UI helpers (app/helpers/ui_helper.rb,
                   app/views/ui/, app/form_builders/ui_form_builder.rb), jobs
-bin/              setup, dev, ci, services, worktree and pull request scripts, leak-check
+bin/              setup, dev, ci, services, worktree and pull request scripts, leak-check, codex-review,
+                  favicon
 config/           Rails config; ci.rb (the bin/ci steps), redis_url.rb, worktree_isolation.rb
 db/               migrations, schema, seeds
+design/           favicon/source.png, the artwork behind the logo and the favicons
 docs/             domain.md (the data model), import-contract.md (the history export) and decisions/
                   (architecture decision records)
 ml/               the Python ML service (FastAPI, uv); see ml/README.md
@@ -203,6 +207,20 @@ test/             Minitest tests and invented fixtures; test/support/coverage.rb
 .github/          CI workflow and Dependabot
 .claude/          settings, agents and skills for coding agents; CLAUDE.md is their guide
 ```
+
+## Logo and favicons
+
+The artwork is `design/favicon/source.png`. The logo in the page header is a 160 px copy of it at
+`app/assets/images/logo.png`, resized by hand:
+
+```sh
+sips -z 160 160 design/favicon/source.png --out app/assets/images/logo.png
+```
+
+The icon set in `public/` (`favicon.ico` with 16, 32 and 48 px, `favicon-96.png`, `apple-touch-icon.png`)
+is generated from the same source by `bin/favicon`, which only needs libvips. Replace the source and run
+the script again to change it. There is no web manifest and no service worker: this is a local tool, not
+an installable app.
 
 ## Guard rails
 
@@ -264,4 +282,7 @@ differ in letters or digits.
   --squash`). `bin/pr-wait <n>` waits for the checks of a pull request and prints one final line.
 - Keep commits small, and keep `README.md`, `CLAUDE.md` and `docs/` current in the same change.
 - `CLAUDE.md` is the guide for coding agents; `.claude/agents/` defines the implementer and reviewer
-  agents and `.claude/skills/ship/` the delivery pipeline they follow.
+  agents, and `.claude/skills/` holds the delivery pipeline they follow (`ship`), the second-opinion
+  review by the Codex CLI (`codex-review`, `bin/codex-review`) and the rules for extending the UI layer
+  (`design-system`). The reasons are in
+  [`docs/decisions/0003-agent-tooling.md`](docs/decisions/0003-agent-tooling.md).
