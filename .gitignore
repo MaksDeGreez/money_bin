@@ -7,8 +7,9 @@
 # Ignore bundler config.
 /.bundle
 
-# Ignore all environment files.
-/.env*
+# Ignore all environment files, at any depth, except the sample.
+.env*
+!/.env.example
 
 # Ignore all logfiles and tempfiles.
 /log/*
@@ -33,6 +34,33 @@
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
-
 /app/assets/builds/*
 !/app/assets/builds/.keep
+
+# Test coverage reports (SimpleCov for Ruby, coverage.py for Python).
+/coverage/
+.coverage
+htmlcov/
+
+# Personal data never enters the repository: any folder named "data", at any depth.
+data/
+
+# Python caches and virtual environments.
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Model weight files.
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.onnx
+*.mlx
+*.npz
+
+# Claude Code: project config under .claude/ is committed; these parts are per-machine.
+/.claude/worktrees/
+/.claude/settings.local.json
+/.claude/agent-memory-local/
