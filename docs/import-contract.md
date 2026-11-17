@@ -190,7 +190,10 @@ Things that can still stop the import at this stage (and roll everything back):
 - A stored row whose export row changed (another digest) is written again from the export, and counted as
   updated: the export wins for that row, and a local edit of it is lost. A stored row with no digest counts
   as changed.
-- Accounts: name, kind, currency and archived flag are written in place.
+- Accounts: name, kind, currency and archived flag are written in place. Accounts of the export may swap
+  names (or pass them round) between two exports: an account whose name changes first takes a temporary
+  name inside the database transaction, so the unique name rule does not stop the swap. A name held by an
+  account that is not in the export still stops the import.
 - Payees: an existing payee is never renamed. Several old payees whose names normalise to the same key
   fold into one payee (the first one in the file names it); the report counts how many folded.
 - Transactions: the fields are written in place; the lines are replaced only when they differ (amount,

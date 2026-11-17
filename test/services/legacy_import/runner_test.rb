@@ -278,6 +278,24 @@ module LegacyImport
       assert_not account(5).archived?
     end
 
+    test "accounts may swap names, or pass them round, between two exports" do
+      import
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "accounts.jsonl") do |rows|
+          rows[0]["name"], rows[1]["name"] = rows[1]["name"], rows[0]["name"]
+          rows[2]["name"], rows[3]["name"], rows[4]["name"] = "New name", rows[2]["name"], rows[3]["name"]
+        end
+        report = import(dir)
+
+        assert_equal [ 0, 5, 0 ], report.counts(:accounts).values
+      end
+
+      assert_equal [ "Daily debit card", "Home cash", "New name", "Travel credit card", "Dollar savings" ],
+        (1..5).map { |id| account(id).name }
+      assert_not Account.where("name LIKE ?", "%renaming%").exists?
+    end
+
     test "a row that moves to an account in the same currency is updated in place, in another currency recreated" do
       import
       bread, salary = legacy(1001), legacy(1002)

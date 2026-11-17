@@ -5,9 +5,16 @@ module LegacyImport
   # otherwise its name, kind, currency and archived flag are written from the export. Legacy accounts that
   # the export no longer has are left alone and counted in a warning.
   #
+  # Account names are unique, and the rule is checked on every save, so two accounts could not swap names
+  # (or pass them round) one save at a time. Every stored account whose name the export changes therefore
+  # first takes a temporary name (TEMPORARY_NAME), then all of them get their final names. Both steps run in
+  # the import's database transaction, so a temporary name is never seen outside it, and a name that an
+  # account outside the export holds still stops the import.
+  #
   # Returns a Hash of legacy_id => Account.
   class AccountLoader
     EXTERNAL_ID_PREFIX = "legacy:".freeze
+    TEMPORARY_NAME = "legacy import: renaming ".freeze
 
     def self.external_id(legacy_id)
       "#{EXTERNAL_ID_PREFIX}#{legacy_id}"
@@ -28,12 +35,23 @@ module LegacyImport
       missing = (stored.keys - exported).size
       @report.warn("#{missing} legacy accounts in the database are not in this export; they were left alone") if missing.positive?
 
-      @rows.to_h { |row| [ row.legacy_id, load(row, stored[self.class.external_id(row.legacy_id)]) ] }
+      plans = @rows.map { |row| [ row, stored[self.class.external_id(row.legacy_id)], RowDigest.account(row) ] }
+      free_names(plans)
+      plans.to_h { |row, account, digest| [ row.legacy_id, load(row, account, digest) ] }
     end
 
     private
-      def load(row, account)
-        digest = RowDigest.account(row)
+      def free_names(plans)
+        plans.each do |row, account, digest|
+          next if account.nil? || account.import_digest == digest
+          next if account.name == Account.normalize_value_for(:name, row.name)
+
+          account.name = "#{TEMPORARY_NAME}#{SecureRandom.uuid}"
+          RecordErrors.save!(account, Location.of(row))
+        end
+      end
+
+      def load(row, account, digest)
         if account&.import_digest == digest
           @report.count(:accounts, :unchanged)
           @report.count_kept(:accounts) if local_edits?(account, row)
