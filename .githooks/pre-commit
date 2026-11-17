@@ -1,0 +1,18 @@
+#!/bin/sh
+# Blocks a commit whose staged changes contain a secret (an API key, a token, a private key), found by
+# gitleaks with its default rules (plus .gitleaks.toml when the repository has one). Findings are printed
+# with the secret redacted. bin/setup turns these hooks on with `git config core.hooksPath .githooks`.
+#
+# Without gitleaks the commit is blocked too: a guard that is silently skipped protects nothing.
+
+if ! command -v gitleaks > /dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so the secret scan cannot run and the commit is blocked." >&2
+  echo "Install it with: brew install gitleaks   (other systems: https://github.com/gitleaks/gitleaks)" >&2
+  exit 1
+fi
+
+if ! gitleaks git --pre-commit --staged --redact --no-banner --log-level warn --verbose .; then
+  echo "pre-commit: gitleaks found a secret in the staged changes (see above); the commit is blocked." >&2
+  echo "Remove it, keep it in .env (never committed) and commit again." >&2
+  exit 1
+fi

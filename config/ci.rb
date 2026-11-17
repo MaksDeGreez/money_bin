@@ -15,6 +15,8 @@ CI.run do
   step "Security: Gem audit", "bin/bundler-audit"
   step "Security: Importmap vulnerability audit", "bin/importmap audit"
   step "Security: Brakeman code analysis", "bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error"
+  # Forbidden terms from ~/Documents/money_bin_data/leak_terms.txt; warns and passes without that file.
+  step "Security: Leak check (tracked files)", "bin/leak-check --tree"
 
   step "Assets: Tailwind build", "bin/rails tailwindcss:build"
   step "Tests: Rails", "bin/rails test"
