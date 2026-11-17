@@ -59,6 +59,15 @@ class ReceiptItemTest < ActiveSupport::TestCase
     assert_not build_item(unit_price: 10**13).valid?
   end
 
+  test "money has at most two decimal places and quantity at most three" do
+    item = build_item(amount: "1.005", unit_price: "0.335", discount: "0.001", quantity: "1.0005")
+
+    assert_not item.valid?
+    %i[amount unit_price discount].each { |field| assert_includes item.errors[field], "must have at most 2 decimal places (it is never rounded)" }
+    assert_includes item.errors[:quantity], "must have at most 3 decimal places (it is never rounded)"
+    assert build_item(amount: "1.01", unit_price: "0.34", discount: "0.10", quantity: "1.005").valid?
+  end
+
   test "confidence is between 0 and 1 when present" do
     assert build_item(confidence: 0).valid?
     assert build_item(confidence: 1).valid?

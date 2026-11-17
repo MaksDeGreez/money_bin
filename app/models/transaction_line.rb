@@ -28,7 +28,8 @@ class TransactionLine < ApplicationRecord
   normalizes :legacy_category_path, with: ->(value) { value.strip.presence }
 
   validates :amount, presence: true,
-    numericality: { other_than: 0, greater_than: -Transaction::AMOUNT_LIMIT, less_than: Transaction::AMOUNT_LIMIT }
+    numericality: { other_than: 0, greater_than: -Transaction::AMOUNT_LIMIT, less_than: Transaction::AMOUNT_LIMIT },
+    decimal_places: { maximum: Transaction::MONEY_DECIMAL_PLACES }
   validate :parent_is_not_a_transfer_leg
   validate :standalone_change_keeps_sum
   validate :category_is_a_leaf, if: -> { category_id.present? && will_save_change_to_category_id? }

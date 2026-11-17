@@ -28,6 +28,8 @@
 class Transaction < ApplicationRecord
   # decimal(15, 2) holds magnitudes below 10^13.
   AMOUNT_LIMIT = 10**13
+  # Money has at most two decimal places; more is refused, never rounded (DecimalPlacesValidator).
+  MONEY_DECIMAL_PLACES = 2
   MCC_FORMAT = /\A\d{4}\z/
 
   include Transferable
@@ -61,6 +63,7 @@ class Transaction < ApplicationRecord
 
   validates :occurred_on, presence: true
   validates :amount, presence: true, numericality: { other_than: 0, greater_than: -AMOUNT_LIMIT, less_than: AMOUNT_LIMIT }
+  validates :amount, :original_amount, decimal_places: { maximum: MONEY_DECIMAL_PLACES }
   validates :mcc, format: { with: MCC_FORMAT, message: "must be exactly four digits" }, allow_nil: true
   validates :external_id, uniqueness: { scope: :source }, allow_nil: true
   validate :payee_exists, if: -> { payee_id.present? && will_save_change_to_payee_id? }

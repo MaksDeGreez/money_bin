@@ -45,6 +45,7 @@ class Receipt < ApplicationRecord
     uniqueness: { message: "matches a receipt that was already uploaded" }
   validates :currency, format: { with: Account::CURRENCY_FORMAT, message: "must be three letters (ISO 4217)" }, allow_nil: true
   validates :total, numericality: { greater_than: -Transaction::AMOUNT_LIMIT, less_than: Transaction::AMOUNT_LIMIT }, allow_nil: true
+  validates :total, decimal_places: { maximum: Transaction::MONEY_DECIMAL_PLACES }
   validates :transaction_id, uniqueness: { message: "already has a receipt" }, allow_nil: true
   validate :ledger_transaction_exists, if: -> { transaction_id.present? && will_save_change_to_transaction_id? }
   validate :images_are_photos

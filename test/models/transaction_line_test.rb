@@ -47,6 +47,14 @@ class TransactionLineTest < ActiveSupport::TestCase
     assert_includes line.errors[:amount], "must be less than 10000000000000"
   end
 
+  test "amount has at most two decimal places" do
+    line = TransactionLine.find(transaction_lines(:coffee_line).id)
+    line.amount = "-85.001"
+
+    assert_not line.valid?
+    assert_includes line.errors[:amount], "must have at most 2 decimal places (it is never rounded)"
+  end
+
   test "legacy category path is kept and blank becomes nil" do
     assert_equal "Food / Snacks", transaction_lines(:snack_line).legacy_category_path
     assert_nil TransactionLine.new(legacy_category_path: "  ").legacy_category_path

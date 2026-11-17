@@ -176,6 +176,26 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
     assert_equal "Cheese", receipt.ocr_raw.dig("receipt", "items", 4, "name")
   end
 
+  test "money with more than two decimal places counts as unreadable, never rounded" do
+    receipt = receipts(:new_receipt)
+    items = [
+      { name: "Tea", quantity: "1.0005", unit_price: "45.005", amount: "45.00", discount: "0.00" },
+      { name: "Cheese", quantity: "1", unit_price: "80.00", amount: "80.005", discount: "0.00" },
+      { name: "Coffee", quantity: "1", unit_price: "90.00", amount: "89.99", discount: "0.011" },
+      { name: "Bread", quantity: "0.125", unit_price: "30.00", amount: "3.75", discount: "0.00" }
+    ]
+
+    apply(receipt, result = ml_ocr_result(receipt: { total: "117.405", items: }))
+
+    receipt.reload
+    assert_nil receipt.total
+    assert_equal [
+      [ 1, "Tea", nil, nil, BigDecimal("45"), BigDecimal("0") ],
+      [ 4, "Bread", BigDecimal("0.125"), BigDecimal("30"), BigDecimal("3.75"), BigDecimal("0") ]
+    ], item_rows(receipt)
+    assert_equal result.body, receipt.ocr_raw
+  end
+
   test "values of the wrong JSON type are treated as missing" do
     receipt = receipts(:new_receipt)
 

@@ -9,13 +9,15 @@ module Receipts
   #   receipt part. A null in the answer stores nil.
   # - The items are replaced by the returned ones. An item's position is its place in the answer, counting
   #   from 1 like a printed receipt, so position N is always `ocr_raw["receipt"]["items"][N - 1]`.
-  #   Money and quantities are parsed with BigDecimal; text that is not a decimal becomes nil.
+  #   Money and quantities are parsed with BigDecimal; text that is not a decimal becomes nil. Money with more
+  #   than two decimal places, or a quantity with more than three, is refused by the models (never rounded),
+  #   so it counts as unreadable like any other refused value.
   #
   # OCR output is not always tidy, so a value the models refuse does not stop the receipt:
-  # - an optional field the model refuses (an unreadable date, a total out of range, a bad currency on the
-  #   receipt; a zero quantity or an odd unit price on an item) is stored as nil;
-  # - an item that is still refused after that (no name, no readable amount, a negative discount) is
-  #   skipped. Its position stays free, so the gap and `ocr_raw` show what was left out, and the items no
+  # - an optional field the model refuses (an unreadable date, a total out of range or with three decimal
+  #   places, a bad currency on the receipt; a zero quantity or an odd unit price on an item) is stored as nil;
+  # - an item that is still refused after that (no name, no readable amount, an amount with three decimal
+  #   places, a negative discount) is skipped. Its position stays free, so the gap and `ocr_raw` show what was left out, and the items no
   #   longer sum to the total, which the person sees at review.
   #
   # Everything runs in one database transaction with the receipt row locked. Applying the same result twice

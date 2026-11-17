@@ -74,6 +74,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | Rule | Where |
 |---|---|
 | Amounts are `decimal(15, 2)`; transaction, line and original amounts are never zero | Model + DB (`*_amount_non_zero`, `transactions_original_amount_consistent`) |
+| Money has at most 2 decimal places and a receipt item quantity at most 3; more is refused, never rounded | Model only (`DecimalPlacesValidator`) |
 | Currency codes are three upper-case letters (accounts, original currency, receipts) | Model (also upper-cases) + DB (`*_currency_format`) |
 | Enum values (account kind, transaction source and status, receipt status) are from their lists | Model (`enum ..., validate: true`) + DB (`*_allowed` check constraints) |
 | Account names are unique; an account `external_id` is unique when present | Model + DB (unique indexes) |
@@ -161,7 +162,9 @@ A transfer moves money between two own accounts. It is two transactions, one per
   payee: nil, source: :manual, status: :confirmed)` creates both legs in one database transaction and
   returns `[out_leg, in_leg]`. `amount` and `to_amount` are positive numbers in each account's own
   currency. `to_amount` defaults to `amount` for a same-currency transfer and is required when the
-  currencies differ. Text amounts raise `ArgumentError`; the caller parses text first.
+  currencies differ. Each amount is an `Integer`, a `BigDecimal` or a plain decimal `String` (`"1250.50"`)
+  with at most two decimal places. Anything else raises `ArgumentError`: a `Float` or a `Rational` (neither
+  is an exact decimal amount), more than two places, or text such as `"1,5"` or `"1e3"`.
 - `Transaction.transfer_problems(transfer_id)` returns the list of everything wrong with a stored transfer
   (an empty list means it is valid). `leg.transfer_problems` does the same for a leg's transfer. An
   importer that writes the legs itself calls it after the second leg, inside the same database transaction,
@@ -229,7 +232,8 @@ What is stored where:
 - the items are replaced by the returned ones, in the same database transaction. An item's `position` is
   its place in the answer counting from 1, so position N is item N of `ocr_raw`. Amounts and quantities
   are parsed from decimal strings with `BigDecimal`; anything else (a float, unreadable text) counts as
-  missing. New items have no category yet;
+  missing, and so does money with more than two decimal places or a quantity with more than three (the
+  models refuse it rather than round it). New items have no category yet;
 - on failure, `ocr_raw` is `{"error": {"code": ..., "message": ...}}` and nothing else: no stack trace and
   no response body. `code` is the service's own code (`validation_error`, `too_many_images`,
   `unsupported_media_type`, `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
@@ -312,7 +316,15 @@ row, and a migration whenever a value is added (the constraint must change with 
 **Money is `decimal(15, 2)`, signed, in the account currency.** Decimal is exact; floats are not, so all
 sums and comparisons use `BigDecimal`. Two decimals fit every currency this app needs. Fifteen digits hold
 amounts below 10^13, far beyond a personal budget; the models check the range so bad input gets a
-validation error instead of a database error. The sign carries the direction, so a balance is `SUM(amount)`
+validation error instead of a database error.
+
+Money is never rounded on the way in. Rails rounds a decimal to the column's scale when it is assigned, so
+`"12.345"` would quietly be stored as 12.35. `DecimalPlacesValidator` (`app/validators/`) checks the value as
+it was given, before that cast, and refuses more than two decimal places on `Transaction#amount` and
+`#original_amount`, `TransactionLine#amount`, `ReceiptItem#amount`, `#unit_price` and `#discount`, and
+`Receipt#total`; a receipt item `quantity` (`decimal(12, 3)`) gets the same rule with three places. A
+converted amount (a USD price in UAH) is rounded by the writer that converts it, on purpose, before it
+reaches the model. The sign carries the direction, so a balance is `SUM(amount)`
 and a report never needs a "kind" column.
 
 **No currencies table.** A currency is the ISO 4217 code on the account. A transaction has no currency

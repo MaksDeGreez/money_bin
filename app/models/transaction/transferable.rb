@@ -34,8 +34,10 @@ module Transaction::Transferable
     #
     # `amount` is the positive amount that leaves `from`, in its currency; the out leg stores it negative.
     # `to_amount` is the positive amount that arrives on `to`, in its currency. It defaults to `amount` when
-    # both accounts use the same currency and is required when they do not. Amounts must be Numeric (the
-    # caller parses text); a String raises ArgumentError instead of being guessed at.
+    # both accounts use the same currency and is required when they do not. Each amount is an Integer, a
+    # BigDecimal or a plain decimal String ("1250.50") with at most two decimal places. Anything else raises
+    # ArgumentError instead of being rounded or guessed at: a Float (0.105 is not exact), a Rational
+    # (10/3 has no exact decimal), more than two places, text such as "1,5" or "1e3".
     def transfer!(from:, to:, amount:, occurred_on:, to_amount: nil, occurred_at: nil, comment: nil, payee: nil,
                   source: :manual, status: :confirmed)
       raise ArgumentError, "a transfer needs two different accounts" if from == to
@@ -43,17 +45,31 @@ module Transaction::Transferable
       to_amount = amount if to_amount.nil? && from.currency == to.currency
       raise ArgumentError, "to_amount is required when the accounts use different currencies" if to_amount.nil?
 
-      { amount:, to_amount: }.each do |name, value|
-        unless value.is_a?(Numeric) && value.real? && value.finite? && value.positive?
-          raise ArgumentError, "#{name} must be a positive number, got #{value.inspect}"
-        end
-      end
+      amount = transfer_amount(:amount, amount)
+      to_amount = transfer_amount(:to_amount, to_amount)
 
       shared = { transfer_id: SecureRandom.uuid, occurred_on:, occurred_at:, comment:, payee:, source:, status: }
       transaction do
         [ create!(shared.merge(account: from, amount: -amount)), create!(shared.merge(account: to, amount: to_amount)) ]
       end
     end
+
+    TRANSFER_AMOUNT_TEXT = /\A\d+(?:\.\d+)?\z/
+
+    # `value` as a positive BigDecimal with at most two decimal places, or ArgumentError.
+    def transfer_amount(name, value)
+      number =
+        case value
+        when Integer, BigDecimal then BigDecimal(value)
+        when String then BigDecimal(value) if value.match?(TRANSFER_AMOUNT_TEXT)
+        end
+      unless number&.finite? && number.positive? && DecimalPlacesValidator.fits?(number, Transaction::MONEY_DECIMAL_PLACES)
+        raise ArgumentError, "#{name} must be a positive Integer, BigDecimal or decimal String with at most " \
+          "#{Transaction::MONEY_DECIMAL_PLACES} decimal places, got #{value.inspect}"
+      end
+      number
+    end
+    private :transfer_amount
 
     # Everything wrong with the transfer `transfer_id` as it is stored now, as sentences. An empty list
     # means the pair is valid.

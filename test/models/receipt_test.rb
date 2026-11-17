@@ -148,6 +148,16 @@ class ReceiptTest < ActiveSupport::TestCase
     assert_not receipt.valid?
   end
 
+  test "total has at most two decimal places" do
+    receipt = receipts(:new_receipt)
+    receipt.total = "12.345"
+
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:total], "must have at most 2 decimal places (it is never rounded)"
+    receipt.total = "12.30"
+    assert receipt.valid?
+  end
+
   test "a transaction has at most one receipt" do
     receipt = receipts(:corner_receipt)
     receipt.ledger_transaction = transactions(:market_split)

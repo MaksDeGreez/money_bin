@@ -62,6 +62,23 @@ class TransactionTest < ActiveSupport::TestCase
     assert build_expense(amount: largest, lines: [ { amount: largest } ]).valid?
   end
 
+  test "money with more than two decimal places is refused, never rounded" do
+    expense = build_expense(amount: "-12.345", lines: [ { amount: "-12.345" } ])
+    assert_not expense.save
+    assert_includes expense.errors[:amount], "must have at most 2 decimal places (it is never rounded)"
+    assert_includes expense.errors[:"lines.amount"], "must have at most 2 decimal places (it is never rounded)"
+
+    [ -12.345, Rational(-10, 3), BigDecimal("-0.001") ].each do |amount|
+      assert_not build_expense(amount:, lines: [ { amount: } ]).valid?, amount.inspect
+    end
+
+    expense = build_expense(original_amount: "-2.505", original_currency: "USD")
+    assert_not expense.valid?
+    assert_includes expense.errors[:original_amount], "must have at most 2 decimal places (it is never rounded)"
+
+    assert build_expense(amount: "-12.340", lines: [ { amount: -12.34 } ]).valid?
+  end
+
   test "an income is positive" do
     income = build_expense(amount: "250.00", lines: [ { amount: "250.00" } ])
 

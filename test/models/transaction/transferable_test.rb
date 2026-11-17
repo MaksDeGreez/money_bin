@@ -50,11 +50,25 @@ class Transaction::TransferableTest < ActiveSupport::TestCase
     assert_match "to_amount is required", error.message
   end
 
-  test "transfer! accepts any real Numeric" do
-    out_leg, in_leg = transfer!(amount: Rational(5, 2))
+  test "transfer! accepts an Integer, a BigDecimal or a decimal String" do
+    [ 500, BigDecimal("2.5"), "1250.50", "7" ].each do |amount|
+      out_leg, in_leg = transfer!(amount:)
 
-    assert_equal BigDecimal("-2.5"), out_leg.reload.amount
-    assert_equal BigDecimal("2.5"), in_leg.reload.amount
+      assert_equal(-BigDecimal(amount.to_s), out_leg.reload.amount)
+      assert_equal BigDecimal(amount.to_s), in_leg.reload.amount
+    end
+  end
+
+  test "transfer! refuses floats, rationals and more than two decimal places instead of rounding" do
+    [ 0.105, 12.5, Rational(5, 2), BigDecimal("0.105"), "0.105", "1,50", "1e3", " 5" ].each do |amount|
+      assert_no_difference -> { Transaction.count } do
+        error = assert_raises(ArgumentError, amount.inspect) { transfer!(amount:) }
+        assert_match "at most 2 decimal places", error.message
+      end
+    end
+
+    error = assert_raises(ArgumentError) { transfer!(to: accounts(:savings_usd), amount: 10, to_amount: Rational(10, 3)) }
+    assert_match "to_amount must be", error.message
   end
 
   test "transfer! rolls back both legs when same-currency amounts do not net to zero" do
@@ -70,7 +84,7 @@ class Transaction::TransferableTest < ActiveSupport::TestCase
   end
 
   test "transfer! needs positive numeric amounts" do
-    [ 0, -5, "500", nil, Float::NAN, Float::INFINITY, Complex(1, 1) ].each do |amount|
+    [ 0, -5, "-5", "0.00", nil, BigDecimal("NaN"), Float::INFINITY, Complex(1, 1) ].each do |amount|
       assert_no_difference -> { Transaction.count } do
         assert_raises(ArgumentError, amount.inspect) { transfer!(amount:, to_amount: 500) }
       end
