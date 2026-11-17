@@ -1,1 +1,10 @@
 @import "tailwindcss";
+
+/* Tailwind v4 scans the working directory on its own, but say where class names live,
+   so the build never drops utilities without a warning. */
+@source "../../views";
+@source "../../helpers";
+@source "../../form_builders";
+@source "../../javascript";
+
+@import "./design-system.css";

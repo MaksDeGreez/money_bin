@@ -1,0 +1,33 @@
+/ Shared <head> for every layout.
+title = content_for(:title) || "Money Bin"
+meta name="viewport" content="width=device-width,initial-scale=1"
+meta name="application-name" content="Money Bin"
+= csrf_meta_tags
+= csp_meta_tag
+= yield :head
+
+link rel="icon" href="/icon.png" type="image/png"
+link rel="icon" href="/icon.svg" type="image/svg+xml"
+link rel="apple-touch-icon" href="/icon.png"
+
+/ Web fonts (display: Inter, body: DM Sans). Loaded here instead of a CSS
+/ @import, which would be dropped because it lands after Tailwind's rules.
+link rel="preconnect" href="https://fonts.googleapis.com"
+link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""
+link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap"
+/ Theme boot: apply the stored light/dark/system choice before the first paint, so the page
+/ does not flash. Mirrors app/javascript/controllers/theme_controller.js (key: "theme").
+javascript:
+  (function () {
+    try {
+      var stored = localStorage.getItem("theme");
+      var theme = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+      var resolved = theme === "system"
+        ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+        : theme;
+      if (resolved === "dark") document.documentElement.classList.add("dark");
+    } catch (e) {}
+  })();
+
+= stylesheet_link_tag :app, "data-turbo-track": "reload"
+= javascript_importmap_tags

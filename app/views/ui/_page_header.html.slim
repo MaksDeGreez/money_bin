@@ -1,0 +1,16 @@
+/ Title row at the top of a page. The block holds the actions on the right.
+/   = render "ui/page_header", title: "Receipts", description: "Photos waiting to be read." do
+/     = ui_link_button "Upload", new_receipt_path
+- description = local_assigns[:description]
+/ A partial always gets a block from Rails, so block_given? is always true here. Without a caller's
+/ block, yield returns nothing (blank), and the actions row is left out.
+- actions = yield
+header.page-header
+  .page-header-row
+    div
+      h1 = title
+      - if description
+        p.mt-1.text-ink-muted = description
+    - if actions.present?
+      .page-header-actions
+        = actions

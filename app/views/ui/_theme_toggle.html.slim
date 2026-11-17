@@ -1,0 +1,15 @@
+/ Light / dark / system switch backed by theme_controller.js.
+/   = render "ui/theme_toggle"              # compact, inline
+/   = render "ui/theme_toggle", block: true # full width
+ruby:
+  block = local_assigns.fetch(:block, false)
+  extra_class = local_assigns[:class]
+  extra_attrs = local_assigns.except(:block, :class)
+  options = [ [ "light", "sun", "Light" ], [ "dark", "moon", "Dark" ], [ "system", "monitor", "System" ] ]
+
+.inline-flex.items-center.gap-0.5.rounded-md.border.border-hairline.bg-surface.p-0.5 class=ui_classes(("flex w-full" if block), extra_class) role="radiogroup" aria-label="Theme" data-controller="theme" data-action="turbo:morph@document->theme#render" data-theme-active-class="bg-page text-ink-display" data-theme-inactive-class="text-ink-muted" *extra_attrs
+  - options.each do |value, icon, label|
+    button.inline-flex.h-7.items-center.justify-center.gap-1.5.rounded.px-2.text-xs.text-ink-muted.transition-colors class=ui_classes(("flex-1" if block), "hover:text-ink-display") type="button" role="radio" aria-checked="false" aria-label=label title=label data-theme-target="option" data-theme-value-param=value data-action="theme#set"
+      = ui_icon icon
+      - if block
+        span = label
