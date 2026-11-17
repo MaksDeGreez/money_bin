@@ -40,10 +40,13 @@ identity, with as little machinery as possible.
   one out and break its CSRF tokens (and the other way round). The sign-in cookie is
   `money_bin_v2_session_id` (`Session::COOKIE_NAME`, not the generator's `session_id`) and the Rails
   session cookie is `_money_bin_v2_session` (`config/initializers/session_store.rb`).
-- **Sign-in rate limit**: 10 attempts per IP address in 3 minutes (the generator's `rate_limit`). The
-  counter lives in the controller cache store, which is Redis in development and production, so it holds
-  across Puma workers and restarts. Tests use the null store, where nothing is counted, and the rate
-  limit test swaps in a memory counter for itself.
+- **Sign-in rate limit**: 10 attempts per connection address in 3 minutes (the generator's
+  `rate_limit`). It counts by `request.remote_addr`, not by `remote_ip`: Rails trusts `X-Forwarded-For`
+  from local addresses, so with `remote_ip` a client could name a new address on every attempt and never
+  reach the limit. The app is served directly, behind no proxy. The address stored on a `Session` row is
+  `remote_addr` too. The counter lives in the controller cache store, which is Redis in development and
+  production, so it holds across Puma workers and restarts. Tests use the null store, where nothing is
+  counted, and the rate limit tests swap in a memory counter for themselves.
 - **Sidekiq Web** is mounted at `/sidekiq` inside a route constraint that looks up the signed session
   cookie in the `sessions` table (`Session.from_cookies`, the same lookup as for pages and Action Cable).
   For a visitor without a valid session the route does not exist: they get a plain 404 and cannot tell

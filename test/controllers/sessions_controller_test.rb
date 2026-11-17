@@ -99,6 +99,31 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a forwarded-for header does not reset the sign-in rate limit" do
+    store = ActiveSupport::Cache::MemoryStore.new
+    increment = ->(*args, **options) { store.increment(*args, **options) }
+
+    with_singleton_method(SessionsController.cache_store, :increment, increment) do
+      10.times do |attempt|
+        post session_path, params: { email_address: @owner.email_address, password: "wrong-password-here" },
+                           headers: { "X-Forwarded-For" => "203.0.113.#{attempt + 1}" }
+      end
+
+      assert_no_difference -> { Session.count } do
+        post session_path, params: { email_address: @owner.email_address, password: SessionTestHelper::OWNER_PASSWORD },
+                           headers: { "X-Forwarded-For" => "198.51.100.7" }
+      end
+      assert_equal "Too many attempts. Try again in a few minutes.", flash[:alert]
+    end
+  end
+
+  test "a session records the address of the connection, not a forwarded-for header" do
+    post session_path, params: { email_address: @owner.email_address, password: SessionTestHelper::OWNER_PASSWORD },
+                       headers: { "X-Forwarded-For" => "198.51.100.7" }
+
+    assert_equal "127.0.0.1", @owner.sessions.last.ip_address
+  end
+
   test "signing out ends the session, and the old cookie no longer works" do
     post session_path, params: { email_address: @owner.email_address, password: SessionTestHelper::OWNER_PASSWORD }
     old_cookie = cookies[Session::COOKIE_NAME]
