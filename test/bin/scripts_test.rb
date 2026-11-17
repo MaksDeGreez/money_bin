@@ -67,6 +67,27 @@ class BinScriptsTest < ActiveSupport::TestCase
     out, status = run_script("bin/codex-review", "--plan", "no/such/plan.md", "--dry-run")
     assert_equal 2, status.exitstatus
     assert_match(/no such file/, out)
+
+    out, status = run_script("bin/codex-review", "main")
+    assert_equal 2, status.exitstatus
+    assert_match(/unexpected argument: main/, out)
+  end
+
+  test "codex-review reports a mistyped commit or base ref as a usage error, not as a failed review" do
+    out, status = run_script("bin/codex-review", "--commit", "no-such-commit", "--dry-run")
+    assert_equal 2, status.exitstatus
+    assert_match(/no such commit: no-such-commit/, out)
+
+    out, status = run_script("bin/codex-review", "--base", "no-such-ref", "--dry-run")
+    assert_equal 2, status.exitstatus
+    assert_match(/no such base ref: no-such-ref/, out)
+  end
+
+  test "codex-review finds a relative --plan from the caller's directory" do
+    out, status = Open3.capture2e("../bin/codex-review", "--plan", "../README.md", "--dry-run", chdir: Rails.root.join("app").to_s)
+
+    assert status.success?, out
+    assert_match(/Review the plan in `README\.md`/, out)
   end
 
   test "codex-review --dry-run prints the read-only command and the prompt, and calls nothing" do
@@ -74,28 +95,66 @@ class BinScriptsTest < ActiveSupport::TestCase
                              "--focus", "the plan's ordering", "--effort", "medium", "--dry-run")
 
     assert status.success?, out
-    assert_match(%r{\A/no/such/codex exec -s read-only -C \S+ --color never -o tmp/codex/\S+/review\.md -c model_reasoning_effort="medium" -$}, out)
+    assert_match(%r{\A/no/such/codex exec -s read-only -C .+ --color never -o tmp/codex/\S+/review\.md -c model_reasoning_effort="medium" -$}, out)
     assert_match(/Review the plan in `README\.md`/, out)
     assert_match(/Extra focus from the requester: the plan's ordering/, out)
     assert_match(/Work read-only/, out)
     assert_match(/^## Verdict$/, out)
   end
 
-  test "codex-review refuses a --sql file that could leave the read-only session, before it runs anything" do
-    [ "\\! echo hello", "select 1;\n\\copy accounts to 'out.csv'", "SET TRANSACTION READ WRITE; select 1" ].each do |sql|
-      Tempfile.create([ "queries", ".sql" ]) do |file|
-        file.write(sql)
-        file.flush
-        out, status = run_script({ "PSQL_BIN" => "/no/such/psql" }, "bin/codex-review", "--plan", "README.md",
-                                 "--sql", file.path, "--dry-run")
+  # The checks catch mistakes in a query file; they are not a sandbox (the database role is a superuser).
+  test "codex-review refuses a --sql file with a meta-command or a way out of the read-only session" do
+    refused = [
+      "\\! echo hello",
+      "select 1\\! echo hello",
+      "select 1;\n\\copy accounts to 'out.csv'",
+      "SET TRANSACTION READ WRITE; select 1",
+      "set default_transaction_read_only = off; select 1",
+      "RESET ALL; select 1",
+      "discard all; select 1",
+      "copy (select 1) to program 'true'",
+      "set role postgres; select 1",
+      "SET SESSION AUTHORIZATION postgres; select 1"
+    ]
 
-        assert_equal 8, status.exitstatus, out
-        assert_match(/plain read-only SQL only/, out)
-      end
+    refused.each do |sql|
+      out, status = run_codex_review_with_sql(sql)
+
+      assert_equal 8, status.exitstatus, "#{sql.inspect} was accepted: #{out}"
+      assert_match(/plain read-only SQL only/, out)
     end
   end
 
+  test "codex-review --sql refuses a database that is not this app's" do
+    [ "postgres://localhost/money_bin", "postgres://localhost/postgres", "postgres://localhost" ].each do |url|
+      out, status = run_codex_review_with_sql("select count(*) from accounts", "DATABASE_URL" => url)
+
+      assert_equal 8, status.exitstatus, "#{url} was accepted: #{out}"
+      assert_match(/queries only this app's databases \(money_bin_v2_\*\)/, out)
+    end
+  end
+
+  test "codex-review --dry-run checks a --sql file and runs no query" do
+    url = "postgres://someone:hunter2@localhost/money_bin_v2_development"
+    out, status = run_codex_review_with_sql("select count(*) from accounts where name like 'reset_%'", "DATABASE_URL" => url)
+
+    assert status.success?, out
+    assert_match(/dry run: the queries of `queries\S*\.sql` were checked and not run; the database is `money_bin_v2_development`/, out)
+    assert_no_match(/hunter2|someone/, out)
+  end
+
   private
+
+  # A dry run with a --sql file holding `sql`. psql is a path that does not exist: a query that ran would
+  # fail the run with "not installed".
+  def run_codex_review_with_sql(sql, env = {})
+    Tempfile.create([ "queries", ".sql" ]) do |file|
+      file.write(sql)
+      file.flush
+      run_script({ "PSQL_BIN" => "/no/such/psql", "DATABASE_URL" => nil }.merge(env),
+                 "bin/codex-review", "--plan", "README.md", "--sql", file.path, "--dry-run")
+    end
+  end
 
   def run_script(*command)
     Open3.capture2e(*command, chdir: Rails.root.to_s)

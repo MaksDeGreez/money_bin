@@ -1,6 +1,6 @@
 # 0003. Agent tooling: sub-agents, skills and a second-opinion review
 
-Status: accepted, phase 2.
+Status: accepted, phase 1.
 
 ## Context
 
@@ -8,7 +8,7 @@ Most of the code in this repository is written by coding agents that the owner d
 plans, writes and checks its own change is anchored on its own reasoning, and one long session that does
 everything runs out of room to think. The work also has parts that are easy to get quietly wrong: money
 arithmetic, migrations, importers. The tooling has to make an independent check cheap, keep parallel work
-from colliding, and never let a review tool write to the tree, reach the database or see a secret.
+from colliding, and keep a review tool from writing to the tree or reaching the database.
 
 ## Decision
 
@@ -61,8 +61,15 @@ requester reads those queries and runs them.
 The session is made read-only, with a 30 second statement timeout, by a `SET` that psql runs after
 connecting and before the file. `PGOPTIONS` cannot do this, because an `options=` parameter in the URL
 silently overrides it. The client encoding is pinned to UTF-8 for the same reason: an inherited
-`PGCLIENTENCODING` can turn non-ASCII text into replacement characters with exit 0. A file with a psql
-meta-command (`\!`, `\o`, `\copy`, `\set ON_ERROR_STOP off`) or a switch back to read-write is refused.
+`PGCLIENTENCODING` can turn non-ASCII text into replacement characters with exit 0.
+
+Two checks run before psql does. The database must be one of this app's: a name that does not start
+with `money_bin_v2_` is refused, whatever `$DATABASE_URL` says. And the file must be plain queries: a
+backslash anywhere (every psql meta-command starts with one: `\!`, `\o`, `\copy`,
+`\set ON_ERROR_STOP off`), `RESET`, `DISCARD`, `COPY`, a change of role or a switch back to read-write
+is refused. These checks catch mistakes; they are not a sandbox. The role is a superuser, and a query can
+still call a function that reads a file on the server. The requester writes the file and reads it before
+passing it. `--dry-run` runs both checks and no query.
 
 The prompt goes to a hosted model, and so do the query results. The ledger is personal data, so the
 queries return counts, sums, ids and statuses, never names, notes or other personal detail. The same
@@ -97,5 +104,9 @@ rule covers `--focus` text and plan files.
   only guard. Nothing enforces it.
 - Known limits of `--sql`: a file of many 29 second statements runs past `--timeout`, and psql's output
   is read whole before the size check.
-- The wrapper's argument checks, its dry run and the refusal of an unsafe `--sql` file are tested
-  (`test/bin/scripts_test.rb`); a real Codex run is not, because tests never reach the network.
+- The read-only sandbox stops Codex from writing, not from reading: `.env` and `config/master.key` are
+  files in the tree like any other. Only the prompt's rule ("do not open `.env*`, `config/credentials*`,
+  `config/*.key` or anything under `storage/`") keeps it away from them.
+- The wrapper's argument checks, its dry run and the refusal of an unsafe `--sql` file or a foreign
+  database are tested (`test/bin/scripts_test.rb`); a real Codex run is not, because tests never reach
+  the network.

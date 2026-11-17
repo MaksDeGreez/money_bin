@@ -11,16 +11,19 @@ review followed by one status line (`CODEX REVIEW OK … file=tmp/codex/<run>/re
 the wrapper: a bare `codex` call has write access on this machine and can hang on stdin. The reasons are
 in `docs/decisions/0003-agent-tooling.md`.
 
-- Targets: `--base main` (default: this branch's commits against `origin/main`), `--uncommitted`,
-  `--commit SHA`, `--plan FILE`. `--focus "…"` adds what you most want checked. `--effort medium` is enough
-  for small diffs. `--dry-run` prints the command and the prompt without calling Codex.
+- Targets, one at a time: `--base REF` (this branch's commits against REF; with no target at all, against
+  `origin/main`), `--uncommitted`, `--commit SHA`, `--plan FILE`. `--focus "…"` adds what you most want
+  checked. `--effort medium` is enough for small diffs. `--dry-run` prints the command and the prompt
+  without calling Codex or running a query.
 - Codex cannot reach the database. When the review should check data (a data migration after its run, an
   import), write the queries that show the state into a file under `tmp/` and pass `--sql tmp/<name>.sql`:
   the wrapper runs them itself (read-only session, 30 s statement timeout, `$DATABASE_URL` or
   `money_bin_v2_development`) and puts the echoed queries with their results in the prompt. Plain SQL only:
-  psql meta-commands (`\…`) and read-write switches are refused. Aggregate or `LIMIT` the queries (100 KB
-  of output at most). Queries Codex asks for under Questions are yours to read and run, never to paste
-  unread.
+  a backslash (every psql meta-command), `RESET`, `DISCARD`, `COPY`, a change of role and a read-write
+  switch are refused, and so is a database whose name does not start with `money_bin_v2_`. Those checks
+  catch mistakes, they are not a sandbox: the role is a superuser, so read the file you pass. Aggregate or
+  `LIMIT` the queries (100 KB of output at most). Queries Codex asks for under Questions are yours to
+  read and run, never to paste unread.
 - The prompt goes to a hosted model, and the `--sql` results go with it. Query counts, sums, ids and
   statuses, never payee names, notes, account names or any other personal detail. The same holds for
   `--focus` and for a plan file.
