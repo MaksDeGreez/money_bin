@@ -32,14 +32,16 @@ and CI job. It does not talk to the Rails app or to the ML service.
 
 The one link to the app is the `fingerprint` field in `receipts.jsonl`. It follows `Receipt.fingerprint`
 (`docs/domain.md`), and the images fit the app's limits (JPEG, 1 to 3 per receipt, under 15 MB each), so
-the set can be uploaded later without conversion.
+the set can be uploaded later without conversion. The one exception is a receipt flagged `too_many_parts`:
+it has more than three photos and has to be fixed in the override file first.
 
 ### Privacy rules
 
 - Raw photos are opened read-only. The tool never modifies, moves, renames or deletes them and writes
   nothing inside the raw folder.
 - The tool refuses an output folder that is inside the raw folder, contains it, or is inside any git
-  repository. The output lives in a private folder outside the repository, with folder mode 700 and file
+  repository. Folders are compared by what they are on disk, not by their names, so another spelling of
+  the same folder (a symlink, other letter case on a Mac) is refused too. The output lives in a private folder outside the repository, with folder mode 700 and file
   mode 600.
 - Every written JPEG is built from the pixels only. After writing, the tool opens the file again and
   fails if anything but the picture is left (EXIF, GPS, XMP, an ICC profile, a thumbnail, a comment). The
@@ -61,6 +63,13 @@ A receipt set is only useful for comparing models if `rcpt_000123` means the sam
 - A receipt whose photos did not change is not encoded again, so its image hashes stay the same across
   runs. `state.json` in the output folder holds what this needs, together with the versions of the
   libraries that wrote each image. An upgrade of a library does not rewrite existing images.
+- Output is never deleted because a raw photo is absent. A receipt that has lost a raw photo (a folder
+  was moved, a file was deleted) is frozen: it keeps its number and its images and is flagged
+  `raw_missing` until the photo is back. Only the override file, or a real regrouping with every photo
+  present, changes or retires a receipt.
+- A step that fails (a QR decode, a crop) never removes images that were already written. The receipt is
+  flagged and the step is tried again on the next run.
+- `state.json` is written before anything is deleted, so a run that is killed half way can be repeated.
 - Grouping is by the pause between photos (more than 8 seconds starts a new receipt). Mistakes are fixed
   by the owner in `groups_override.yaml` (merge, split, exclude), which is applied on every run. A name
   in that file that matches no photo is an error.
