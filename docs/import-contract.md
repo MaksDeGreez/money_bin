@@ -178,23 +178,46 @@ Things that can still stop the import at this stage (and roll everything back):
 | category | never created; found by group and category name in the taxonomy |
 | transaction | `source` = `legacy` and `external_id` = `legacy_id` as text |
 
-- A row that is missing is created. A row that differs from what is stored is updated in place. A row that
-  is the same is not written at all. Running the same export twice changes nothing the second time.
-- Accounts: name, kind, currency and archived flag are updated in place.
+- Every account and transaction the importer writes keeps `import_digest`: the SHA-256 of a canonical form
+  of the export row it was written from (below). That is how the next run tells "the export changed this
+  row" from "a person changed this row in the app".
+- A row that is missing is created (also one that was deleted in the app).
+- A stored row whose `import_digest` equals the digest of its export row is **unchanged**: it is not written
+  at all, whatever a person changed in the app since (a category given to a line, a `needs_review` row
+  confirmed, a comment fixed, an account renamed). So a second run of the same export writes nothing and
+  keeps every local edit. The report counts how many unchanged rows differ from the export today ("with
+  local edits kept").
+- A stored row whose export row changed (another digest) is written again from the export, and counted as
+  updated: the export wins for that row, and a local edit of it is lost. A stored row with no digest counts
+  as changed.
+- Accounts: name, kind, currency and archived flag are written in place.
 - Payees: an existing payee is never renamed. Several old payees whose names normalise to the same key
   fold into one payee (the first one in the file names it); the report counts how many folded.
-- Transactions: the fields are updated in place; the lines are replaced only when they differ (amount,
+- Transactions: the fields are written in place; the lines are replaced only when they differ (amount,
   category, old path or comment, in order).
-- Transfer pairs: when only details change (dates, comment, payee, ...), each leg is saved in place. When an
-  account, an amount or the status of a leg changes, or the two rows are not yet this pair (a new
-  `transfer_key`, a row that was an ordinary transaction), the stored rows are destroyed and the pair is
-  created again in the same database transaction. A row that stops being a leg is replaced the same way.
+- Transfer pairs: a pair is written only when the digest of at least one of its legs changed (or the rows
+  are not yet this pair). When only details of the changed legs differ (dates, comment, payee, ...), those
+  legs are saved in place and the other leg is left alone. When an account, an amount or the status of a
+  changed leg differs, or the two rows are not yet this pair (a new `transfer_key`, a row that was an
+  ordinary transaction), the stored rows are destroyed and the pair is created again from the export in the
+  same database transaction. A row that stops being a leg is replaced the same way.
   The importer never deletes a stored row that the export does not have: when replacing would destroy one
   (the old counterpart of a leg, or a row that holds the pair's transfer id), the import stops.
 - Rows stored by an earlier import that this export does not have (accounts and transactions) are left
   alone and counted in a warning.
-- Changes made by hand to imported rows are overwritten when the export says otherwise: the export is the
-  source of truth for the rows it has.
+- The `Lines` and `Status` counts of the report describe the export (what each row gets from it), also for
+  rows left unchanged.
+
+**The digest.** `import_digest` is the SHA-256 (64 lower-case hex characters) of the JSON text
+`[1, "account" | "transaction", {...}]`, where the object holds the row's fields with its keys sorted, so the
+order of keys in the file does not matter, and every value written by its type, so its spelling does not
+matter either: ids as text (`12` and `"12"` are the same), amounts as the parsed decimal (`"-120"` and
+`"-120.00"` are the same), dates as `YYYY-MM-DD`, times in UTC with six fraction digits (any offset), an
+account name squished, other text as given. A transaction's digest also covers what its references write:
+the payee's normalised name, and for each line (in order) its amount, its comment and its old category's
+`legacy_path`, `group_en` and `category_en`. So a changed mapping in `categories.jsonl` or a payee that
+the export now names differently also writes the rows that use them. The code is
+`LegacyImport::RowDigest`.
 
 ### Categories and status
 
@@ -239,9 +262,9 @@ A successful run prints, for example:
 
 ```
 Legacy import: export schema 1, dates 2026-01-01 to 2026-03-31, 1 manifest warning
-Accounts: 5 created, 0 updated, 0 unchanged
+Accounts: 5 created, 0 updated, 0 unchanged (0 with local edits kept)
 Payees: 4 created, 0 updated, 0 unchanged, 1 folded into another payee
-Transactions: 11 created, 0 updated, 0 unchanged, 2 transfer pairs (0 recreated)
+Transactions: 11 created, 0 updated, 0 unchanged (0 with local edits kept), 2 transfer pairs (0 recreated)
 Lines: 6 mapped to a taxonomy category, 1 sent to Uncategorised (no mapping), 1 sent to Uncategorised (names not in the taxonomy), 1 without a category
 Status: 8 confirmed, 3 needs_review
 Warnings: 1

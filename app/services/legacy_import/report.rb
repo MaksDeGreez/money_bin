@@ -19,6 +19,7 @@ module LegacyImport
       @counts = ENTITIES.index_with { OUTCOMES.index_with { 0 } }
       @lines = LINE_OUTCOMES.keys.index_with { 0 }
       @statuses = Hash.new(0)
+      @kept = Hash.new(0)
       @warnings = []
       @payees_folded = @transfer_pairs = @pairs_recreated = @manifest_warnings = 0
       @dry_run = false
@@ -30,6 +31,16 @@ module LegacyImport
 
     def counts(entity)
       @counts.fetch(entity)
+    end
+
+    # An unchanged record (its export row is the same as last time) that differs from the export today:
+    # someone changed it in the app, and the import kept that change.
+    def count_kept(entity)
+      @kept[entity] += 1
+    end
+
+    def kept(entity)
+      @kept[entity]
     end
 
     def count_line(outcome)
@@ -48,9 +59,10 @@ module LegacyImport
       [
         "Legacy import#{' (dry run)' if dry_run}: export schema #{ExportReader::SCHEMA_VERSION}, " \
           "dates #{date_from || 'open'} to #{date_to || 'open'}, #{plural(manifest_warnings, 'manifest warning')}",
-        entity_line("Accounts", :accounts),
+        entity_line("Accounts", :accounts) + kept_text(:accounts),
         entity_line("Payees", :payees) + ", #{payees_folded} folded into another payee",
-        entity_line("Transactions", :transactions) + ", #{transfer_pairs} transfer pairs (#{pairs_recreated} recreated)",
+        entity_line("Transactions", :transactions) + kept_text(:transactions) +
+          ", #{transfer_pairs} transfer pairs (#{pairs_recreated} recreated)",
         "Lines: " + LINE_OUTCOMES.map { |key, text| "#{lines[key]} #{text}" }.join(", "),
         "Status: #{statuses['confirmed']} confirmed, #{statuses['needs_review']} needs_review",
         "Warnings: #{warnings.size}",
@@ -62,6 +74,10 @@ module LegacyImport
     private
       def plural(count, noun)
         "#{count} #{noun.pluralize(count)}"
+      end
+
+      def kept_text(entity)
+        " (#{kept(entity)} with local edits kept)"
       end
 
       def entity_line(label, entity)

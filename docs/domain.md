@@ -11,10 +11,10 @@ There is one owner of all data, so ledger tables have no `user_id`.
 
 | Table | One row is | Key columns |
 |---|---|---|
-| `accounts` | A place where money is kept, in one currency | `name` (unique), `kind` (cash, debit, credit, savings, ewallet, business), `currency` (ISO 4217), `archived`, `external_id` (optional, unique) |
+| `accounts` | A place where money is kept, in one currency | `name` (unique), `kind` (cash, debit, credit, savings, ewallet, business), `currency` (ISO 4217), `archived`, `external_id` (optional, unique), `import_digest` |
 | `categories` | A group (root) or a category (child of a group) | `parent_id`, `name`, `slug` (unique), `position`, `description` |
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
-| `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version` |
+| `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
 | `receipts` | A photographed shop receipt and its OCR result | `transaction_id` (nullable), `status`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `qr_payload`, `batch`, `sha256` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
@@ -25,6 +25,7 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
 
 - **Account.** `kind` describes the account; it changes no rule. `archived` hides a closed account from
   everyday lists but keeps its history. `external_id` is the identifier a bank or an importer uses.
+  `import_digest` is set by the history import (see "History import" below).
   The balance is the sum of the account's booked transaction amounts (drafts are left out, see `status`).
 - **Category.** A group has no parent and only collects categories. Lines and receipt items point at
   categories, never at groups. So the level is fixed once something points at a row: a category that lines or
@@ -66,6 +67,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
     transfer rules, the decimal places) apply to a draft exactly as to a booked row: a draft is a complete
     transaction that is not counted yet, not a half-filled form.
   - `transfer_id` joins the two legs of a transfer.
+  - `import_digest` is the SHA-256 of the export row the history import last wrote the row from; nil for
+    rows no importer wrote (see "History import").
   - `lock_version` is Active Record's optimistic lock counter (see "Concurrent writers").
 - **Transaction line.** `category_id` nil means "not categorised yet". `legacy_category_path` keeps the old
   app's category path ("Food / Snacks") when the history importer brings the line in, so the original label
@@ -443,6 +446,15 @@ on a guess. A draft therefore stays out of every sum until a person (or a receip
 it follows every other rule, so booking it is only a status change. `needs_review` is different: the money
 is real and counted; only some detail (a category) still needs a person.
 
+**A re-import compares digests, not values.** After an import a person reviews the rows in the app: gives
+a line a category, confirms a `needs_review` row, fixes a comment. A re-import that compared each stored
+row with the export would see those as differences and write the export back, undoing the review. So each
+imported account and transaction keeps `import_digest`, the SHA-256 of the export row it was written from,
+and the next run compares the digest of the incoming row with it. The same digest means the export has
+nothing new to say about the row, so the row is left as the app has it; another digest means the export
+changed that row, and the export wins for it. The digest is taken over a canonical form (sorted keys,
+parsed values), so an exporter that spells a decimal or a time differently does not rewrite every row.
+
 ## Rails and PostgreSQL notes
 
 - Fixtures skip validations; `test/models/fixtures_test.rb` loads every fixture record and checks that it
@@ -473,9 +485,15 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
 - the whole export is verified first (manifest hashes and counts, every field, references, transfer pairs);
   nothing is written when a check fails;
 - everything is written in one database transaction, through the models; `DRY_RUN=1` rolls it back;
-- rows are found again on the next run, so the same export twice changes nothing: accounts by
-  `external_id` = `legacy:<legacy_id>`, transactions by `source` = `legacy` and `external_id` =
-  `legacy_id`, payees by normalised name; categories are never created;
+- rows are found again on the next run: accounts by `external_id` = `legacy:<legacy_id>`, transactions
+  by `source` = `legacy` and `external_id` = `legacy_id`, payees by normalised name; categories are never
+  created;
+- every account and transaction it writes keeps `import_digest`, the SHA-256 of a canonical form of its
+  export row (`LegacyImport::RowDigest`). On the next run a row whose digest is the same is not touched at
+  all, whatever a person changed in the app since: a second run of the same export writes nothing and
+  keeps every review, category and comment made in the app. Only a row that changed in the export is
+  written again, and then the export wins for that row. A transfer pair is written again only when the
+  digest of one of its legs changed. A row without a digest counts as changed; payees are never renamed;
 - a line's category comes from the taxonomy by group and category name, or is `Category.uncategorised`
   when the old category is unmapped or not in the taxonomy; `legacy_category_path` keeps the old path; a
   transaction with an uncategorised line is `needs_review`;

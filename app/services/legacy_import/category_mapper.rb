@@ -14,6 +14,7 @@ module LegacyImport
     def initialize(rows, report)
       @report = report
       @uncategorised = Category.uncategorised
+      @rows = rows.index_by(&:legacy_id)
       taxonomy = Category.leaves.includes(:parent).index_by { |category| [ category.parent.name, category.name ] }
       @choices = rows.to_h { |row| [ row.legacy_id, choice(row, taxonomy) ] }
       warn_not_in_taxonomy(rows)
@@ -24,6 +25,11 @@ module LegacyImport
     # The Choice for a line's category_legacy_id (nil means the line had no category).
     def for(category_legacy_id)
       category_legacy_id.nil? ? NO_CATEGORY : @choices.fetch(category_legacy_id)
+    end
+
+    # The export row of an old category, or nil (for a line's digest, see RowDigest).
+    def row(category_legacy_id)
+      category_legacy_id && @rows.fetch(category_legacy_id)
     end
 
     def uncategorised?(category)

@@ -116,8 +116,10 @@ bin/rails "import:money_bin[/path/to/export]"             # import
 ```
 
 The importer checks the whole export before it writes anything (hashes, counts, every field, references,
-transfer pairs), writes everything in one database transaction, and can be run again: the same export a
-second time changes nothing. It prints counts and warnings only, never a name or an amount, and exits
+transfer pairs), writes everything in one database transaction, and can be run again. Each imported row
+remembers a digest of the export row it came from: the same export a second time writes nothing and keeps
+every change made in the app since (a category given, a row confirmed, a comment fixed); only a row that
+changed in the export is written again from it. It prints counts and warnings only, never a name or an amount, and exits
 with status 1 when it stops. The taxonomy must be loaded first (`bin/rails db:seed`). The format and every
 rule are in [`docs/import-contract.md`](docs/import-contract.md).
 

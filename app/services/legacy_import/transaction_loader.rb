@@ -1,19 +1,22 @@
 module LegacyImport
   # Writes the transactions of the export through the Transaction model, so the line-sum and transfer rules
-  # are checked on every row. A transaction is found by (source `legacy`, external_id = legacy_id).
+  # are checked on every row. A transaction is found by (source `legacy`, external_id = legacy_id), and
+  # every row it writes gets `import_digest` = the digest of its export row (RowDigest).
   #
   # Ordinary rows:
   # - missing: created with their lines (nested attributes);
-  # - stored and different: updated in place; the lines are replaced only when they differ;
-  # - stored and the same: not written.
+  # - stored with the same digest: not written at all, so changes made in the app since are kept;
+  # - stored with another digest (or none): written from the export in place; the lines are replaced only
+  #   when they differ.
   # The status is `needs_review` when a line has no category or lands in Uncategorised, else `confirmed`.
   #
   # Transfer legs (a `transfer_key` and no lines) are written in pairs, with transfer_id = TransferId.for(key)
-  # and status `confirmed`. A stored pair keeps its rows when only details changed (dates, comment, payee,
-  # ...), saved leg by leg. When an account, an amount or the status of a leg changed, or the rows were
-  # not yet this pair, the stored legs are destroyed and the pair is created again: the legs of a
-  # same-currency pair cannot change their amounts one at a time. A row that switches between ordinary and
-  # transfer leg is replaced the same way. After all writes every pair is checked with
+  # and status `confirmed`. A stored pair whose two legs both have the digest of their export rows is not
+  # written. Otherwise the legs whose digest changed are saved in place when only details changed (dates,
+  # comment, payee, ...). When an account, an amount or the status of such a leg changes, or the rows were
+  # not yet this pair, the stored legs are destroyed and the pair is created again from the export: the legs
+  # of a same-currency pair cannot change their amounts one at a time. A row that switches between ordinary
+  # and transfer leg is replaced the same way. After all writes every pair is checked with
   # Transaction.transfer_problems.
   #
   # The importer never deletes a row the export does not have: if replacing a pair would destroy such a row
@@ -56,12 +59,16 @@ module LegacyImport
       def load_plain(row)
         lines, status = lines_and_status(row)
         stored = @stored[row.legacy_id]
+        attributes = attributes(row, status:, transfer_id: nil)
+        digest = digest(row)
+        return unchanged(stored, attributes, lines) if stored && !stored.transfer_leg? && stored.import_digest == digest
+
+        attributes[:import_digest] = digest
         if stored&.transfer_leg?
           destroy(stored)
           stored = nil
         end
 
-        attributes = attributes(row, status:, transfer_id: nil)
         if stored.nil?
           create(row, attributes.merge(lines_attributes: lines))
         else
@@ -71,21 +78,24 @@ module LegacyImport
 
       def update(stored, attributes, lines)
         stored.assign_attributes(attributes)
-        lines_differ = !same_lines?(stored.lines, lines)
-        stored.lines_attributes = stored.lines.map { |line| { id: line.id, _destroy: true } } + lines if lines_differ
-
-        if lines_differ || stored.has_changes_to_save?
-          stored.save!
-          @report.count(:transactions, :updated)
-        else
-          @report.count(:transactions, :unchanged)
+        unless same_lines?(stored.lines, lines)
+          stored.lines_attributes = stored.lines.map { |line| { id: line.id, _destroy: true } } + lines
         end
+        stored.save!
+        @report.count(:transactions, :updated)
+      end
+
+      # A stored row whose export row has not changed since it was written. It is not written; when it
+      # differs from the export, a person changed it in the app, and that change is kept.
+      def unchanged(stored, attributes, lines)
+        @report.count(:transactions, :unchanged)
+        @report.count_kept(:transactions) if local_edits?(stored, attributes, lines)
       end
 
       def load_pair(rows)
         transfer_id = TransferId.for(rows.first.transfer_key)
         rows = rows.sort_by { |row| row.amount.negative? ? 0 : 1 } # the out leg first
-        wanted = rows.map { |row| attributes(row, status: "confirmed", transfer_id:) }
+        wanted = rows.map { |row| attributes(row, status: "confirmed", transfer_id:).merge(import_digest: digest(row)) }
         stored = rows.map { |row| @stored[row.legacy_id] }
         rows.each { @report.count_status("confirmed") }
 
@@ -96,15 +106,23 @@ module LegacyImport
         end
       end
 
+      # Only the legs whose export row changed are written. A change that cannot be saved one leg at a time
+      # recreates the whole pair from the export.
       def update_pair(rows, legs, wanted)
-        legs.zip(wanted) { |leg, attributes| leg.assign_attributes(attributes) }
-        if legs.any? { |leg| leg.changed.intersect?(PAIR_FIELDS) }
+        changed = legs.zip(wanted).filter_map do |leg, attributes|
+          next if leg.import_digest == attributes[:import_digest]
+
+          leg.assign_attributes(attributes)
+          leg
+        end
+
+        if changed.any? { |leg| leg.changed.intersect?(PAIR_FIELDS) }
           destroy(legs.first) # takes its counterpart with it
           rows.zip(wanted) { |row, attributes| create(row, attributes) }
           @report.pairs_recreated += 1
         else
-          legs.each do |leg|
-            next @report.count(:transactions, :unchanged) unless leg.has_changes_to_save?
+          legs.zip(wanted) do |leg, attributes|
+            next unchanged(leg, attributes.except(:import_digest), nil) unless changed.include?(leg)
 
             leg.save!
             @report.count(:transactions, :updated)
@@ -143,6 +161,21 @@ module LegacyImport
       def create(row, attributes)
         Transaction.create!(attributes.merge(source: :legacy, external_id: row.legacy_id))
         @report.count(:transactions, @known.include?(row.legacy_id) ? :updated : :created)
+      end
+
+      def digest(row)
+        RowDigest.transaction(row, payee_key: row.payee_legacy_id && @payees.fetch(row.payee_legacy_id).normalized_name,
+          category: @categories.method(:row))
+      end
+
+      # True when the stored row differs from what the export would write (`lines` nil for a transfer leg).
+      def local_edits?(stored, attributes, lines)
+        attributes.any? do |name, value|
+          case name
+          when :account, :payee then stored.public_send(:"#{name}_id") != value&.id
+          else stored.public_send(name) != value
+          end
+        end || (!lines.nil? && !same_lines?(stored.lines, lines))
       end
 
       def attributes(row, status:, transfer_id:)

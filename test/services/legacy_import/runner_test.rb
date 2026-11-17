@@ -140,6 +140,118 @@ module LegacyImport
       assert_equal before, snapshot
     end
 
+    # What a person does in the app after an import: reviews a row, fixes a comment, renames an account.
+    def edit_in_the_app
+      unsorted = legacy(1005)
+      unsorted.lines.sole.update!(category: category("Groceries", "Groceries"))
+      unsorted.reload.update!(status: :confirmed)
+      legacy(1002).update!(comment: "Edited in the app")
+      legacy(1008).update!(comment: "Edited leg")
+      account(1).update!(name: "Wallet at home")
+    end
+
+    test "every written row keeps the digest of its export row" do
+      import
+
+      assert_match(/\A\h{64}\z/, legacy(1001).import_digest)
+      assert_match(/\A\h{64}\z/, legacy(1007).import_digest)
+      assert_match(/\A\h{64}\z/, account(1).import_digest)
+      assert_equal 11, Transaction.from_legacy.where.not(import_digest: nil).count
+    end
+
+    test "a second run of the same export keeps the changes made in the app" do
+      import
+      edit_in_the_app
+      before = snapshot
+      report = import
+
+      assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 11 ] }, counts(report))
+      assert_equal [ 1, 3 ], [ report.kept(:accounts), report.kept(:transactions) ]
+      assert_includes @output.string, "Accounts: 0 created, 0 updated, 5 unchanged (1 with local edits kept)"
+      assert_includes @output.string, "Transactions: 0 created, 0 updated, 11 unchanged (3 with local edits kept)"
+      assert_equal before, snapshot
+      assert legacy(1005).confirmed?
+      assert_equal category("Groceries", "Groceries"), legacy(1005).lines.sole.category
+      assert_equal "Wallet at home", account(1).name
+    end
+
+    test "a changed export row overwrites that row only; the export wins for it" do
+      import
+      edit_in_the_app
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[4]["comment"] = "Changed in the export" }
+        LegacyExportFiles.edit(dir, "accounts.jsonl") { |rows| rows[0]["archived"] = true }
+        report = import(dir)
+
+        assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 1, 10 ] }, counts(report))
+        assert_equal [ 0, 2 ], [ report.kept(:accounts), report.kept(:transactions) ]
+      end
+
+      unsorted = legacy(1005)
+      assert_equal "Changed in the export", unsorted.comment
+      assert unsorted.needs_review?, "the export's status comes back with the export's row"
+      assert_equal Category.uncategorised, unsorted.lines.sole.category
+      assert_equal [ "Home cash", true ], [ account(1).name, account(1).archived? ]
+      assert_equal "Edited in the app", legacy(1002).comment
+      assert_equal "Edited leg", legacy(1008).comment
+    end
+
+    test "a stored row without a digest is written from the export" do
+      import
+      legacy(1001).update_columns(import_digest: nil, comment: "Edited")
+      account(2).update_columns(import_digest: nil)
+      report = import
+
+      assert_equal({ accounts: [ 0, 1, 4 ], payees: [ 0, 0, 4 ], transactions: [ 0, 1, 10 ] }, counts(report))
+      assert_nil legacy(1001).comment
+      assert_match(/\A\h{64}\z/, legacy(1001).import_digest)
+      assert_match(/\A\h{64}\z/, account(2).import_digest)
+    end
+
+    test "a pair whose one leg changed in the export writes that leg only" do
+      import
+      legacy(1008).update!(comment: "Edited leg")
+      other_leg_version = legacy(1008).lock_version
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[6]["comment"] = "Changed in the export" }
+        report = import(dir)
+
+        assert_equal [ 0, 1, 10 ], report.counts(:transactions).values
+        assert_equal [ 0, 1 ], [ report.pairs_recreated, report.kept(:transactions) ]
+      end
+
+      assert_equal "Changed in the export", legacy(1007).comment
+      assert_equal [ "Edited leg", other_leg_version ], [ legacy(1008).comment, legacy(1008).lock_version ]
+    end
+
+    test "the same export spelled differently is the same export" do
+      import
+      before = snapshot
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "accounts.jsonl") do |rows|
+          rows.map! { |row| row.merge("legacy_id" => row["legacy_id"].to_s).to_a.reverse.to_h }
+          rows[0]["name"] = "  Home   cash "
+        end
+        LegacyExportFiles.edit(dir, "transactions.jsonl") do |rows|
+          rows[0].merge!("legacy_id" => "1001", "account_legacy_id" => "1", "amount" => "-120",
+            "lines" => [ { "category_legacy_id" => "10", "amount" => "-120.0", "comment" => nil } ])
+          rows[1]["occurred_at"] = "2026-01-10T07:00:00.000Z"
+          rows[3].merge!("original_amount" => "-10", "occurred_at" => "2026-01-15T09:45:00+02:00")
+          rows[6]["transfer_key"] = "T-0001"
+          rows.map! { |row| row.to_a.reverse.to_h }
+        end
+        LegacyExportFiles.edit(dir, "payees.jsonl") { |rows| rows[2]["name"] = "CORNER  bakery" }
+        LegacyExportFiles.edit(dir, "categories.jsonl") { |rows| rows[0]["group_en"] = " Groceries " }
+        report = import(dir)
+
+        assert_equal({ accounts: [ 0, 0, 5 ], payees: [ 0, 0, 4 ], transactions: [ 0, 0, 11 ] }, counts(report))
+      end
+      assert_equal before, snapshot
+    end
+
     test "a changed row is updated in place, and its lines replaced only when they differ" do
       import
       bread, salary = legacy(1001), legacy(1002)
