@@ -48,7 +48,8 @@ data/
 
 # A second line of defence for receipt photos and for the output of tools/receipt_ingest/, which both
 # live outside the repository: iPhone photos (.heic and .heif in any letter case), the numbered receipt
-# images, and the files that hold QR payloads or the names of raw photos.
+# images, and its files with QR payloads or the names of raw photos. Its state.json is not listed: the
+# name is too general. The tool itself refuses to write inside a git repository.
 *.[hH][eE][iI][cC]
 *.[hH][eE][iI][fF]
 rcpt_*.jpg

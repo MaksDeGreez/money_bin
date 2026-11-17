@@ -41,11 +41,12 @@ it has more than three photos and has to be fixed in the override file first.
   nothing inside the raw folder.
 - The tool refuses an output folder that is inside the raw folder, contains it, or is inside any git
   repository. Folders are compared by what they are on disk, not by their names, so another spelling of
-  the same folder (a symlink, other letter case on a Mac) is refused too. The output lives in a private folder outside the repository, with folder mode 700 and file
-  mode 600.
-- Every written JPEG is built from the pixels only. After writing, the tool opens the file again and
-  fails if anything but the picture is left (EXIF, GPS, XMP, an ICC profile, a thumbnail, a comment). The
-  capture time is read before the metadata is dropped.
+  the same folder (a symlink, other letter case on a Mac) is refused too. The output lives in a private
+  folder outside the repository, with folder mode 700 and file mode 600.
+- Every written JPEG is built from the pixels only. The tool writes it under a temporary name, reads it
+  back from disk and refuses it if anything but the picture is left (EXIF, GPS, XMP, an ICC profile, a
+  thumbnail, a comment). Only a file that passed takes its place, so a bad file never replaces a good
+  one. The capture time is read before the metadata is dropped.
 - The console shows counts only. An error line may name a raw file by its relative name and the class of
   the exception, never the exception's message, an EXIF value or a QR payload.
 - The tests generate every image they need. No image file is committed, and `.gitignore` refuses
@@ -66,7 +67,8 @@ A receipt set is only useful for comparing models if `rcpt_000123` means the sam
 - Output is never deleted because a raw photo is absent. A receipt that has lost a raw photo (a folder
   was moved, a file was deleted) is frozen: it keeps its number and its images and is flagged
   `raw_missing` until the photo is back. Only the override file, or a real regrouping with every photo
-  present, changes or retires a receipt.
+  present, changes or retires a receipt. A photo that is gone for good is released by naming it under
+  `exclude`.
 - A step that fails (a QR decode, a crop) never removes images that were already written. The receipt is
   flagged and the step is tried again on the next run.
 - `state.json` is written before anything is deleted, so a run that is killed half way can be repeated.
