@@ -6,15 +6,15 @@
   "date_to": "2026-03-31",
   "counts": {
     "accounts.jsonl": 5,
-    "categories.jsonl": 8,
+    "categories.jsonl": 9,
     "payees.jsonl": 5,
-    "transactions.jsonl": 14
+    "transactions.jsonl": 15
   },
   "sha256": {
     "accounts.jsonl": "f99a3c5bbf852cb4410b2a160f9d4fbe02603d8de37995e27786729db46a1e6f",
-    "categories.jsonl": "aa80d2e114a3c103ee64a34aaf59f5d8257908e443ec34a695480ab8a94d731a",
+    "categories.jsonl": "63c6821c00875dd1f46e86beec8fdebe626010568b7d6924840aca295169966e",
     "payees.jsonl": "97b60f8894765ba1f4447d607282076b2008c6a38217ba4d1ce73b72c510b068",
-    "transactions.jsonl": "04ce61ac71fa523ba5e567e344a70194de7107e697c8204c7c489e5bcee65b07"
+    "transactions.jsonl": "ff9de682cc4b9753467b881affede1ff70b84da9e8ef5fc64e4d9820367ce1be"
   },
   "warnings": [
     "An invented warning from the exporter."

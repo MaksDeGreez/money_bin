@@ -10,7 +10,7 @@ module LegacyImport
       export = ExportReader.call(LegacyExportFiles::FIXTURE)
 
       assert_equal 1, export.manifest["schema_version"]
-      assert_equal [ 5, 8, 5, 14 ], ExportReader::FILES.map { |file| export.rows.fetch(file).size }
+      assert_equal [ 5, 9, 5, 15 ], ExportReader::FILES.map { |file| export.rows.fetch(file).size }
       first = export.rows.fetch("transactions.jsonl").first
       assert_equal [ "transactions.jsonl", 1, 1001 ], [ first.file, first.line, first.data["legacy_id"] ]
     end

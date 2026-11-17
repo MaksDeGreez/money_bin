@@ -21,7 +21,7 @@ module LegacyImport
     test "turns the fixture into typed rows" do
       dataset = verify
 
-      assert_equal [ 5, 8, 5, 14 ], [ dataset.accounts, dataset.categories, dataset.payees, dataset.transactions ].map(&:size)
+      assert_equal [ 5, 9, 5, 15 ], [ dataset.accounts, dataset.categories, dataset.payees, dataset.transactions ].map(&:size)
       split = dataset.transactions.find { |row| row.legacy_id == "1003" }
       assert_equal BigDecimal("-900"), split.amount
       assert_equal [ "11", "12", nil ], split.lines.map(&:category_legacy_id)
@@ -239,7 +239,7 @@ module LegacyImport
       LegacyExportFiles.temp_copy do |dir|
         LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows.find { |row| row["legacy_id"] == 1010 }["amount"] = "99.13" }
 
-        assert_equal 14, verify(dir).transactions.size
+        assert_equal 15, verify(dir).transactions.size
       end
     end
 

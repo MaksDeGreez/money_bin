@@ -233,7 +233,11 @@ A line's category:
 | `category_legacy_id` is null | none | none | no category |
 | `group_en` or `category_en` is null | Uncategorised | the old `legacy_path` | unmapped |
 | the pair is not in the taxonomy | Uncategorised | the old `legacy_path` | not in taxonomy (a **warning** listing the old ids) |
-| the pair is in the taxonomy | that category | the old `legacy_path` | mapped |
+| the pair is in the taxonomy and is `Uncategorised` / `Uncategorised` | Uncategorised | the old `legacy_path` | mapped to Uncategorised by the export |
+| the pair is in the taxonomy (any other category) | that category | the old `legacy_path` | mapped |
+
+Each line is counted once, so the five figures of the report's `Lines` row add up to the number of lines,
+and every line not counted as mapped makes its transaction `needs_review`.
 
 Names are compared exactly (case-sensitive) after squishing whitespace, against the group name and the
 category name of `db/seeds/taxonomy.yml`. The old path is kept on mapped lines too, since several old
@@ -270,16 +274,16 @@ A successful first run of the fixture export prints:
 Legacy import: export schema 1, dates 2026-01-01 to 2026-03-31, 1 manifest warning
 Accounts: 5 created, 0 updated, 0 unchanged (0 with local edits kept)
 Payees: 4 created, 0 updated, 0 unchanged, 1 folded into another payee
-Transactions: 14 created, 0 updated, 0 unchanged (0 with local edits kept), 3 transfer pairs (0 recreated)
-Lines: 7 mapped to a taxonomy category, 1 sent to Uncategorised (no mapping), 1 sent to Uncategorised (names not in the taxonomy), 1 without a category
-Status: 11 confirmed, 3 needs_review
+Transactions: 15 created, 0 updated, 0 unchanged (0 with local edits kept), 3 transfer pairs (0 recreated)
+Lines: 7 mapped to a category, 1 mapped to Uncategorised by the export, 1 sent to Uncategorised (no mapping), 1 sent to Uncategorised (names not in the taxonomy), 1 without a category
+Status: 11 confirmed, 4 needs_review
 Warnings: 1
   - 1 old category name a group and category that are not in the taxonomy; their lines went to Uncategorised (legacy_ids 15)
 Done: the import was committed.
 ```
 
 A second run of the same export prints `0 created, 0 updated, 5 unchanged` for the accounts and
-`0 created, 0 updated, 14 unchanged` for the transactions, with the same `Lines` and `Status` counts.
+`0 created, 0 updated, 15 unchanged` for the transactions, with the same `Lines` and `Status` counts.
 
 A failed run prints the problems to standard error and exits with status 1:
 

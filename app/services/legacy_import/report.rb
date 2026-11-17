@@ -4,9 +4,11 @@ module LegacyImport
   class Report
     ENTITIES = %i[accounts payees transactions].freeze
     OUTCOMES = %i[created updated unchanged].freeze
-    # How the lines of the export found their categories.
+    # How the lines of the export found their categories. Each line is counted once, so the figures add up
+    # to the number of lines; every outcome but the first makes its transaction needs_review.
     LINE_OUTCOMES = {
-      mapped: "mapped to a taxonomy category",
+      mapped: "mapped to a category",
+      mapped_to_uncategorised: "mapped to Uncategorised by the export",
       unmapped: "sent to Uncategorised (no mapping)",
       not_in_taxonomy: "sent to Uncategorised (names not in the taxonomy)",
       no_category: "without a category"

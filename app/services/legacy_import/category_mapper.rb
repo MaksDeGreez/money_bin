@@ -4,8 +4,10 @@ module LegacyImport
   # An old category maps to the category whose group name is `group_en` and whose own name is `category_en`
   # (names compared exactly, after the same whitespace squish the Category model applies). When either value
   # is null the old category is unmapped; when the pair is not in the taxonomy, it is "not in taxonomy" and
-  # a warning lists the old ids. Both go to Category.uncategorised. A line always keeps the old category's
-  # `legacy_path`, mapped or not, so the detail of several old categories folded into one is never lost.
+  # a warning lists the old ids. Both go to Category.uncategorised. An old category whose mapping names
+  # Uncategorised itself is mapped, but counted apart (mapped_to_uncategorised), since its lines need review
+  # like the other two. A line always keeps the old category's `legacy_path`, mapped or not, so the detail
+  # of several old categories folded into one is never lost.
   class CategoryMapper
     # What a line gets: the category (nil for no category), the old path, and how it was found.
     Choice = Data.define(:category, :legacy_path, :outcome)
@@ -41,7 +43,8 @@ module LegacyImport
         if row.group_en.nil? || row.category_en.nil?
           Choice.new(category: @uncategorised, legacy_path: row.legacy_path, outcome: :unmapped)
         elsif (category = taxonomy[[ row.group_en.squish, row.category_en.squish ]])
-          Choice.new(category:, legacy_path: row.legacy_path, outcome: :mapped)
+          outcome = category == @uncategorised ? :mapped_to_uncategorised : :mapped
+          Choice.new(category:, legacy_path: row.legacy_path, outcome:)
         else
           Choice.new(category: @uncategorised, legacy_path: row.legacy_path, outcome: :not_in_taxonomy)
         end
