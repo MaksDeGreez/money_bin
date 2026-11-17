@@ -44,7 +44,14 @@ module Authentication
     end
 
     # The connection's address, not remote_ip, which a client can set with X-Forwarded-For.
+    #
+    # The Rails session (CSRF token, flash) starts afresh on sign-in and on sign-out, so nothing set
+    # before the change of identity is carried across it. The page to return to is the one thing kept.
     def start_new_session_for(user)
+      return_to = session[:return_to_after_authenticating]
+      reset_session
+      session[:return_to_after_authenticating] = return_to if return_to
+
       user.sessions.create!(user_agent: request.user_agent, ip_address: request.remote_addr).tap do |session|
         Current.session = session
         cookies.signed.permanent[Session::COOKIE_NAME] = { value: session.id, httponly: true, same_site: :lax }
@@ -54,5 +61,6 @@ module Authentication
     def terminate_session
       Current.session.destroy
       cookies.delete(Session::COOKIE_NAME)
+      reset_session
     end
 end

@@ -59,6 +59,30 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_url(tab: "recent")
   end
 
+  # Session fixation hygiene: a Rails session that existed before signing in (or out) is not carried on.
+  test "signing in starts a new Rails session and still returns to the page asked for" do
+    get root_path(tab: "recent")
+    session_before = session.id.to_s
+    assert_predicate session_before, :present?
+
+    post session_path, params: { email_address: @owner.email_address, password: SessionTestHelper::OWNER_PASSWORD }
+
+    assert_redirected_to root_url(tab: "recent")
+    assert_not_equal session_before, session.id.to_s
+  end
+
+  test "signing out starts a new Rails session" do
+    post session_path, params: { email_address: @owner.email_address, password: SessionTestHelper::OWNER_PASSWORD }
+    get root_path(tab: "recent")
+    session_before = session.id.to_s
+
+    delete session_path
+
+    assert_not_equal session_before, session.id.to_s
+    follow_redirect!
+    assert_equal "Signed out.", flash[:notice]
+  end
+
   test "a refused form post is not repeated after signing in" do
     post settings_api_tokens_path, params: { api_token: { name: "Agent", scope: "read" } }
     assert_redirected_to new_session_path
