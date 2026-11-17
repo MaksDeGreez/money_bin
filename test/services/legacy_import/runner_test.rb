@@ -342,6 +342,84 @@ module LegacyImport
       assert_equal "January pay", moved.comment
     end
 
+    test "a line whose comment or old category path changed in the export is written again" do
+      import
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[2]["lines"][0]["comment"] = "Food for two weeks" }
+        # Category 10 is used by one line only: 1001's.
+        LegacyExportFiles.edit(dir, "categories.jsonl") { |rows| rows[0]["legacy_path"] = "Food / Fresh groceries" }
+        report = import(dir)
+
+        assert_equal [ 0, 2, 12 ], report.counts(:transactions).values
+      end
+
+      assert_equal [ "Food for two weeks", nil, nil ], legacy(1003).lines.map(&:comment)
+      assert_equal "Food / Fresh groceries", legacy(1001).lines.sole.legacy_category_path
+    end
+
+    test "times with a fraction of a second are stored exactly and settle; a seventh digit is refused" do
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[1]["occurred_at"] = "2026-01-10T09:00:00.123456+02:00" }
+        import(dir)
+        version = legacy(1002).lock_version
+        report = import(dir)
+
+        assert_equal Time.utc(2026, 1, 10, 7, 0, 0.123456r), legacy(1002).occurred_at
+        assert_equal [ 0, 0, 14 ], report.counts(:transactions).values
+        assert_equal version, legacy(1002).lock_version
+
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[1]["occurred_at"] = "2026-01-10T09:00:00.1234567+02:00" }
+        error = assert_raises(Error) { import(dir) }
+        assert_equal [ "transactions.jsonl line 2 (legacy_id 1002): occurred_at must be an ISO 8601 time with an offset" ],
+          error.problems
+      end
+    end
+
+    test "a leg that moves to another account recreates its pair" do
+      import
+      old_ids = [ legacy(1007).id, legacy(1008).id ]
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[7]["account_legacy_id"] = 3 }
+        report = import(dir)
+
+        assert_equal [ 0, 2, 12 ], report.counts(:transactions).values
+        assert_equal 1, report.pairs_recreated
+      end
+
+      assert_empty old_ids & [ legacy(1007).id, legacy(1008).id ]
+      assert_equal account(3), legacy(1008).account
+      assert_empty legacy(1008).transfer_problems
+    end
+
+    test "a pair whose status was changed in the app is recreated when one of its legs changes in the export" do
+      import
+      legacy(1007).update_status!(:needs_review)
+
+      LegacyExportFiles.temp_copy do |dir|
+        LegacyExportFiles.edit(dir, "transactions.jsonl") { |rows| rows[6]["comment"] = "Changed in the export" }
+        report = import(dir)
+
+        assert_equal 1, report.pairs_recreated
+      end
+
+      assert_equal [ "confirmed", "confirmed" ], [ legacy(1007).status, legacy(1008).status ]
+      assert_equal "Changed in the export", legacy(1007).comment
+    end
+
+    test "a pair never takes a transfer id from a stored transfer that is not in the export" do
+      manual = Transaction.transfer!(from: accounts(:cash_uah), to: accounts(:card_uah), amount: "50.00",
+        occurred_on: Date.new(2026, 1, 3))
+      Transaction.where(id: manual.map(&:id)).update_all(transfer_id: TransferId.for("T-0001"))
+
+      error = assert_raises(Error) { import }
+
+      assert_match(/transactions.jsonl line 7 \(legacy_id 1007\): replacing this row would delete a stored transaction that is not in this export/,
+        error.message)
+      assert_equal 2, Transaction.where(id: manual.map(&:id)).count
+    end
+
     test "a same-currency pair whose amounts changed is destroyed and created again" do
       import
       old_ids = [ legacy(1007).id, legacy(1008).id ]
@@ -497,7 +575,8 @@ module LegacyImport
       Account.create!(name: secrets[1], kind: :cash, currency: "UAH")
       log = StringIO.new
       logger = ActiveRecord::Base.logger
-      ActiveRecord::Base.logger = ActiveSupport::Logger.new(log)
+      # The kind of logger the app really has (Rails.logger is a broadcast logger), at the debug level.
+      ActiveRecord::Base.logger = ActiveSupport::BroadcastLogger.new(ActiveSupport::Logger.new(log).tap { it.level = :debug })
 
       LegacyExportFiles.temp_copy do |dir|
         LegacyExportFiles.edit(dir, "accounts.jsonl") { |rows| rows[0]["name"] = secrets[0] }
