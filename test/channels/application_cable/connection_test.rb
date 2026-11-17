@@ -4,7 +4,7 @@ module ApplicationCable
   class ConnectionTest < ActionCable::Connection::TestCase
     test "a signed-in browser connects as the owner" do
       session_record = users(:owner).sessions.create!
-      cookies.signed[:session_id] = session_record.id
+      cookies.signed[Session::COOKIE_NAME] = session_record.id
 
       connect
 
@@ -17,7 +17,7 @@ module ApplicationCable
 
     test "a cookie for a session that has ended is refused" do
       session_record = users(:owner).sessions.create!
-      cookies.signed[:session_id] = session_record.id
+      cookies.signed[Session::COOKIE_NAME] = session_record.id
       session_record.destroy!
 
       assert_reject_connection { connect }

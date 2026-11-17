@@ -35,6 +35,11 @@ identity, with as little machinery as possible.
 - **The session cookie** is the generator's: signed, `HttpOnly`, `SameSite=Lax`, permanent. It is not
   marked `Secure` by the code, so it works over plain HTTP on localhost; in production `force_ssl` marks
   every cookie `Secure`.
+- **Cookie names of their own.** Browsers scope cookies by host, not by port, so every app on
+  `localhost` shares one cookie jar, and another local Rails app with the default names would sign this
+  one out and break its CSRF tokens (and the other way round). The sign-in cookie is
+  `money_bin_v2_session_id` (`Session::COOKIE_NAME`, not the generator's `session_id`) and the Rails
+  session cookie is `_money_bin_v2_session` (`config/initializers/session_store.rb`).
 - **Sign-in rate limit**: 10 attempts per IP address in 3 minutes (the generator's `rate_limit`). The
   counter lives in the controller cache store, which is Redis in development and production, so it holds
   across Puma workers and restarts. Tests use the null store, where nothing is counted, and the rate

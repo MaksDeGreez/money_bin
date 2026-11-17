@@ -1,7 +1,9 @@
-# One signed-in browser. The browser holds a signed, HTTP-only cookie `session_id` with the row's id
-# (see the Authentication concern). Signing out deletes the row, so an old cookie stops working.
+# One signed-in browser. The browser holds a signed, HTTP-only cookie `money_bin_v2_session_id` with the
+# row's id (see the Authentication concern). Signing out deletes the row, so an old cookie stops working.
 class Session < ApplicationRecord
-  COOKIE_NAME = :session_id
+  # Not the generator's `session_id`: localhost cookies are shared by every app on the machine, whatever
+  # the port, so another local app with the default name would overwrite this one.
+  COOKIE_NAME = :money_bin_v2_session_id
 
   belongs_to :user
 
