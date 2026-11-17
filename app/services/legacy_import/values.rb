@@ -7,8 +7,9 @@ module LegacyImport
 
     DECIMAL = /\A-?\d+(?:\.\d+)?\z/
     DATE = /\A\d{4}-\d{2}-\d{2}\z/
-    # Date, "T", hours, minutes and seconds, an optional fraction, and an offset ("Z" or "+02:00").
-    TIME_WITH_OFFSET = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})\z/
+    # Date, "T", hours, minutes and seconds, an optional fraction of at most six digits, and an offset ("Z"
+    # or "+02:00"). The column keeps microseconds, so a seventh digit could never be stored as given.
+    TIME_WITH_OFFSET = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\z/
     # A legacy id that can be printed in a message: a number or a short code without spaces.
     PRINTABLE_ID = /\A[A-Za-z0-9_.:-]{1,64}\z/
 

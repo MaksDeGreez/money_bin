@@ -34,6 +34,9 @@ module LegacyImport
       assert_nil Values.time_or_nil(nil)
       assert_equal Time.utc(2026, 1, 10, 7), Values.time_or_nil("2026-01-10T09:00:00+02:00")
       assert_equal Time.utc(2026, 1, 10, 7, 0, 1.5r), Values.time_or_nil("2026-01-10T07:00:01.5Z")
+      assert_equal Time.utc(2026, 1, 10, 7, 0, 0.123456r), Values.time_or_nil("2026-01-10T09:00:00.123456+02:00")
+      # The column keeps microseconds: a seventh digit would be lost, and the row would never settle.
+      assert_equal "must be an ISO 8601 time with an offset", refusal(:time_or_nil, "2026-01-10T09:00:00.1234567+02:00")
       assert_equal "must be an ISO 8601 time with an offset", refusal(:time_or_nil, "2026-01-10T07:00Z")
       assert_equal "must be an ISO 8601 time with an offset", refusal(:time_or_nil, "2026-01-10T09:00:00")
       assert_equal "is not a real time", refusal(:time_or_nil, "2026-01-10T25:00:00Z")

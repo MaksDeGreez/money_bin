@@ -44,7 +44,8 @@ optional (and recommended). Empty lines are not allowed. A file with no rows is 
   two decimal places (`"-1250.50"`, `"7"`, `"0.05"`). Not a JSON number, no `+`, no exponent, no thousands
   separator, no comma. Zero is refused. The magnitude must be below 10^13.
 - Dates are `"YYYY-MM-DD"`. Times are ISO 8601 with seconds and an offset: `"2026-01-10T09:00:00+02:00"`,
-  `"2026-01-15T07:45:00Z"`, an optional fraction (`"...:00.250+02:00"`) is allowed.
+  `"2026-01-15T07:45:00Z"`. An optional fraction of a second with at most six digits (`"...:00.250+02:00"`)
+  is allowed; the database keeps microseconds, so a seventh digit is refused rather than rounded.
 - Currencies are ISO 4217 codes, three upper-case letters (`"UAH"`).
 - "string" below means a JSON string; "or null" means the value may be `null`.
 
