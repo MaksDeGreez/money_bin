@@ -42,9 +42,10 @@ uv run ruff format --check .  # format check (use `ruff format .` to fix)
 
 ## Settings
 
-| Variable      | Default | Values                      | Meaning                     |
-| ------------- | ------- | --------------------------- | --------------------------- |
-| `OCR_BACKEND` | `stub`  | `stub`, `mlx`, `openrouter` | The model backend to use.   |
+| Variable             | Default    | Values                      | Meaning                                |
+| -------------------- | ---------- | --------------------------- | -------------------------------------- |
+| `OCR_BACKEND`        | `stub`     | `stub`, `mlx`, `openrouter` | The model backend to use.              |
+| `ML_MAX_IMAGE_BYTES` | `15728640` | a whole number above 0      | The largest image file, in bytes (15 MB). |
 
 An unknown `OCR_BACKEND` value stops the service at startup. The error
 message lists the valid names. `mlx` and `openrouter` are placeholders: `/health`
@@ -66,6 +67,16 @@ curl http://127.0.0.1:8100/health
 
 Send `multipart/form-data` with the field `images`, 1 to 3 times. Allowed
 types: `image/jpeg`, `image/png`, `image/webp`, `image/heic`.
+
+Each file is checked before the backend sees it:
+
+- its size must be at most `ML_MAX_IMAGE_BYTES` (15 MB by default). The
+  multipart parser keeps uploads in temporary files, so an oversized file is
+  refused from its size and never read into memory;
+- its first bytes (the file signature) must match the declared type: JPEG
+  `FF D8 FF`, PNG `89 50 4E 47 0D 0A 1A 0A`, WebP `RIFF....WEBP`, HEIC/HEIF an
+  `ftyp` box with a HEIF brand (`heic`, `heix`, `mif1`, ...). The declared
+  content type alone is not trusted.
 
 ```sh
 curl -F "images=@receipt.jpg;type=image/jpeg" http://127.0.0.1:8100/ocr
@@ -146,7 +157,8 @@ Every error has the same shape:
 | ------ | ------------------------- | ---------------------------------------------- |
 | 404    | `not_found`               | Unknown path.                                  |
 | 405    | `method_not_allowed`      | Wrong HTTP method.                             |
-| 415    | `unsupported_media_type`  | An image has a type that is not allowed.       |
+| 413    | `image_too_large`         | An image is larger than `ML_MAX_IMAGE_BYTES`.  |
+| 415    | `unsupported_media_type`  | An image has a type that is not allowed, or its content does not match its type. |
 | 422    | `validation_error`        | Bad request body, e.g. no `images` field, bad `texts`. |
 | 422    | `too_many_images`         | More than 3 images.                            |
 | 422    | `empty_image`             | An image file is empty.                        |

@@ -1,15 +1,26 @@
+import asyncio
+import io
 from collections.abc import Sequence
 from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers, UploadFile
 
 from app.backends import ImageInput
 from app.backends.stub import stub_receipt
-from app.config import Settings
-from app.main import create_app
+from app.config import DEFAULT_MAX_IMAGE_BYTES, Settings
+from app.errors import ApiError
+from app.main import _read_images, create_app, detect_image_type
 from app.schemas import Receipt
-from tests.conftest import PNG_BYTES, image_part
+from tests.conftest import (
+    HEIC_BYTES,
+    JPEG_BYTES,
+    PNG_BYTES,
+    WEBP_BYTES,
+    ClientFactory,
+    image_part,
+)
 
 
 def test_ocr_returns_the_stub_receipt(client: TestClient) -> None:
@@ -52,21 +63,112 @@ def test_stub_item_amounts_add_up_to_the_total(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
-    ("filename", "content_type"),
+    ("filename", "content", "content_type"),
     [
-        ("receipt.jpg", "image/jpeg"),
-        ("receipt.png", "image/png"),
-        ("receipt.webp", "image/webp"),
-        ("receipt.heic", "image/heic"),
-        ("receipt.jpg", "IMAGE/JPEG; charset=binary"),
+        ("receipt.jpg", JPEG_BYTES, "image/jpeg"),
+        ("receipt.png", PNG_BYTES, "image/png"),
+        ("receipt.webp", WEBP_BYTES, "image/webp"),
+        ("receipt.heic", HEIC_BYTES, "image/heic"),
+        ("receipt.jpg", JPEG_BYTES, "IMAGE/JPEG; charset=binary"),
     ],
 )
 def test_ocr_accepts_every_allowed_image_type(
-    client: TestClient, filename: str, content_type: str
+    client: TestClient, filename: str, content: bytes, content_type: str
 ) -> None:
-    response = client.post("/ocr", files=[image_part(filename, PNG_BYTES, content_type)])
+    response = client.post("/ocr", files=[image_part(filename, content, content_type)])
 
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (JPEG_BYTES, "image/jpeg"),
+        (PNG_BYTES, "image/png"),
+        (WEBP_BYTES, "image/webp"),
+        (HEIC_BYTES, "image/heic"),
+        (b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00", "image/heic"),
+        (b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00", None),
+        (b"RIFF\x10\x00\x00\x00WAVEfmt ", None),
+        (b"GIF89a", None),
+        (b"%PDF-1.7", None),
+        (b"\xff\xd8", None),
+    ],
+)
+def test_detect_image_type_reads_the_file_signature(content: bytes, expected: str | None) -> None:
+    assert detect_image_type(content) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [
+        (PNG_BYTES, "image/jpeg"),
+        (JPEG_BYTES, "image/png"),
+        (b"%PDF-1.7 not an image", "image/png"),
+        (b"<svg xmlns='http://www.w3.org/2000/svg'/>", "image/webp"),
+        (b"plain text", "image/heic"),
+    ],
+)
+def test_ocr_refuses_content_that_does_not_match_its_type(
+    client: TestClient, content: bytes, content_type: str
+) -> None:
+    response = client.post("/ocr", files=[image_part("receipt.img", content, content_type)])
+
+    assert response.status_code == 415
+    error = response.json()["error"]
+    assert error["code"] == "unsupported_media_type"
+    assert "its content is not an image of that type" in error["message"]
+
+
+def test_ocr_refuses_a_file_over_the_size_limit(make_client: ClientFactory) -> None:
+    client = make_client("stub", ml_max_image_bytes=len(PNG_BYTES))
+    too_big = PNG_BYTES + b"\x00"
+
+    response = client.post("/ocr", files=[image_part(), image_part("big.png", too_big)])
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": {
+            "code": "image_too_large",
+            "message": f"File 'big.png' is larger than the limit of {len(PNG_BYTES)} bytes.",
+        }
+    }
+
+
+def test_ocr_accepts_a_file_exactly_at_the_size_limit(make_client: ClientFactory) -> None:
+    client = make_client("stub", ml_max_image_bytes=len(PNG_BYTES))
+
+    assert client.post("/ocr", files=[image_part()]).status_code == 200
+
+
+def test_the_size_limit_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings().ml_max_image_bytes == DEFAULT_MAX_IMAGE_BYTES == 15 * 1024 * 1024
+
+    monkeypatch.setenv("ML_MAX_IMAGE_BYTES", "1024")
+    assert Settings().ml_max_image_bytes == 1024
+
+    monkeypatch.setenv("ML_MAX_IMAGE_BYTES", "0")
+    with pytest.raises(ValueError, match="greater than 0"):
+        Settings()
+
+
+def test_an_oversized_file_is_refused_without_being_read(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads: list[int] = []
+    original = UploadFile.read
+
+    async def counting_read(self: UploadFile, size: int = -1) -> bytes:
+        reads.append(size)
+        return await original(self, size)
+
+    monkeypatch.setattr(UploadFile, "read", counting_read)
+    client = make_client("stub", ml_max_image_bytes=8)
+
+    response = client.post("/ocr", files=[image_part("big.png", PNG_BYTES * 100)])
+
+    assert response.status_code == 413
+    assert reads == []
 
 
 def test_ocr_accepts_three_images(client: TestClient) -> None:
@@ -133,3 +235,19 @@ def test_ocr_passes_the_images_to_the_backend() -> None:
         ("a.png", "image/png", PNG_BYTES),
         ("b.jpg", "image/jpeg", b"\xff\xd8\xff"),
     ]
+
+
+def test_a_file_of_unknown_size_is_read_only_up_to_the_limit() -> None:
+    upload = UploadFile(
+        io.BytesIO(PNG_BYTES * 100),
+        filename="big.png",
+        headers=Headers({"content-type": "image/png"}),
+    )
+    assert upload.size is None
+
+    with pytest.raises(ApiError) as raised:
+        asyncio.run(_read_images([upload], max_bytes=len(PNG_BYTES)))
+
+    assert raised.value.status_code == 413
+    assert raised.value.code == "image_too_large"
+    assert upload.file.tell() == len(PNG_BYTES) + 1

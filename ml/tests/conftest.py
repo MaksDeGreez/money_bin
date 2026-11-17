@@ -1,6 +1,11 @@
-"""Shared test helpers. Image bytes are built in memory; the stub never decodes them."""
+"""Shared test helpers. Image bytes are built in memory; the stub never decodes them.
+
+The service checks each file's signature (its first bytes) against the declared
+type, so every test image starts with the real signature of its type.
+"""
 
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,10 +13,13 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 
-# The first bytes of a PNG file. Enough for an upload; nothing reads the pixels.
+# The first bytes of each allowed type. Enough for an upload; nothing reads the pixels.
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 12
+WEBP_BYTES = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"\x00" * 4
+HEIC_BYTES = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic"
 
-ClientFactory = Callable[[str], TestClient]
+ClientFactory = Callable[..., TestClient]
 
 
 def image_part(
@@ -25,8 +33,8 @@ def image_part(
 def make_client() -> ClientFactory:
     """Build a test client for the backend with the given name."""
 
-    def factory(backend: str) -> TestClient:
-        return TestClient(create_app(Settings(ocr_backend=backend)))
+    def factory(backend: str, **settings: Any) -> TestClient:
+        return TestClient(create_app(Settings(ocr_backend=backend, **settings)))
 
     return factory
 
