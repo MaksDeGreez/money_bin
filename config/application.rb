@@ -45,5 +45,12 @@ module MoneyBin
 
     # Sidekiq runs every Active Job. The test environment uses the :test adapter instead.
     config.active_job.queue_adapter = :sidekiq
+
+    # Rails' own Active Storage routes (direct uploads, the disk service, blob and representation links) do
+    # not go through ApplicationController, so they would serve and accept receipt photos without a
+    # signed-in session, and signed blob links never expire. They are not drawn. Ruby code still attaches
+    # and reads files; a page that uploads or shows a photo must be an app controller behind the
+    # Authentication concern (docs/decisions/0002-authentication-and-api-tokens.md).
+    config.active_storage.draw_routes = false
   end
 end

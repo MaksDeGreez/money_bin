@@ -43,6 +43,13 @@ identity, with as little machinery as possible.
   cookie in the `sessions` table (`Session.from_cookies`, the same lookup as for pages and Action Cable).
   For a visitor without a valid session the route does not exist: they get a plain 404 and cannot tell
   that the dashboard is there. An API token does not open it.
+- **Active Storage's own routes are not drawn** (`config.active_storage.draw_routes = false`). Rails
+  serves direct uploads, the disk service and blob and representation links from its own controllers,
+  which do not inherit from `ApplicationController`: they would accept and serve receipt photos without a
+  signed-in session, and a signed blob link never expires. No page uses them yet. Ruby code still attaches
+  and reads files. When the upload and download flow is built, it must go through app controllers behind
+  the `Authentication` concern (for example a controller that streams `blob.download` after the sign-in
+  check), not through `url_for(blob)` or `rails_blob_path`.
 
 ### Personal API tokens
 
