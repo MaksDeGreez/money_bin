@@ -83,6 +83,16 @@ module LegacyImport
       value && no_nul(value)
     end
 
+    # A string that is not blank, or nil. Used where null has a meaning of its own (an unmapped category), so
+    # an empty string is refused instead of being taken for a name.
+    def present_text_or_nil(value)
+      return nil if value.nil?
+      raise Invalid, "must be a string or null" unless value.is_a?(String)
+      raise Invalid, "is blank (use null when there is no value)" if value.strip.empty?
+
+      no_nul(value)
+    end
+
     # PostgreSQL cannot store a NUL character in text, so such a value would stop the import at write time
     # with no location. It is refused here, where the file, line and field are known.
     def no_nul(value)

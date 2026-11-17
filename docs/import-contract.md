@@ -85,8 +85,8 @@ changes during the import is never read unchecked.
 |---|---|---|
 | `legacy_id` | integer or string | the old category id |
 | `legacy_path` | string, not blank | the old category path as people saw it (`"Food / Snacks"`) |
-| `group_en` | string or null | the group name in the new taxonomy (`db/seeds/taxonomy.yml`), null when unmapped |
-| `category_en` | string or null | the category name inside that group, null when unmapped |
+| `group_en` | string or null | the group name in the new taxonomy (`db/seeds/taxonomy.yml`), null when unmapped; a blank string is refused |
+| `category_en` | string or null | the category name inside that group, null when unmapped; a blank string is refused |
 
 ### `payees.jsonl`
 

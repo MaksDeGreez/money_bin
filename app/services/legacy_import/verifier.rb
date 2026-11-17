@@ -100,8 +100,8 @@ module LegacyImport
       def category(raw)
         Dataset::CategoryRow.new(
           file: raw.file, line: raw.line, legacy_id: Values.legacy_id(raw.data["legacy_id"]),
-          legacy_path: value("legacy_path", :text), group_en: value("group_en", :text_or_nil),
-          category_en: value("category_en", :text_or_nil)
+          legacy_path: value("legacy_path", :text), group_en: value("group_en", :present_text_or_nil),
+          category_en: value("category_en", :present_text_or_nil)
         )
       end
 

@@ -109,6 +109,18 @@ module LegacyImport
       ], found
     end
 
+    test "a blank group or category name stops it; null is the way to say unmapped" do
+      found = problems("categories.jsonl" => lambda do |rows|
+        rows[0]["group_en"] = ""
+        rows[1]["category_en"] = "  "
+      end)
+
+      assert_equal [
+        "categories.jsonl line 1 (legacy_id 10): group_en is blank (use null when there is no value)",
+        "categories.jsonl line 2 (legacy_id 11): category_en is blank (use null when there is no value)"
+      ], found
+    end
+
     test "two accounts with one name stop it" do
       found = problems("accounts.jsonl" => ->(rows) { rows[3]["name"] = " #{rows[0]['name']} " })
 
