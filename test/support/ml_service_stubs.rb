@@ -36,6 +36,12 @@ module MlServiceStubs
       .merge(overrides)
   end
 
+  # An MlClient::OcrResult as the client returns it for ml_ocr_body(...), without any HTTP.
+  def ml_ocr_result(receipt: {}, **overrides)
+    body = JSON.parse(JSON.generate(ml_ocr_body(receipt:, **overrides)), freeze: true)
+    MlClient::OcrResult.new(body:, receipt: body["receipt"], **body.slice("backend", "model_name", "model_version").symbolize_keys)
+  end
+
   # Three candidates per text, best first, like the service.
   def ml_categorise_body(texts, slugs: %w[groceries/groceries household-shopping/household-supplies eating-out/takeaway-fast-food])
     results = texts.map do |text|
