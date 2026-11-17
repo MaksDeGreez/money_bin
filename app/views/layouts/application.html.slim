@@ -5,7 +5,9 @@ html lang="en"
   body.min-h-screen.bg-page.text-ink-body
     header.border-b.border-hairline
       .mx-auto.flex.h-14.max-w-6xl.items-center.justify-between.gap-4.px-6 class="sm:px-10"
-        = link_to "Money Bin", root_path, class: "font-display text-sm font-semibold text-ink-display no-underline"
+        = link_to root_path, class: "flex items-center gap-2 no-underline", "aria-label": "Money Bin"
+          = image_tag "logo.png", alt: "", class: "h-8 w-8 shrink-0"
+          span.font-display.text-sm.font-semibold.text-ink-display Money Bin
         .flex.items-center.gap-3
           - if authenticated?
             nav.flex.items-center.gap-1 aria-label="Main"
