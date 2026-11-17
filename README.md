@@ -182,9 +182,10 @@ test/             Minitest tests and invented fixtures; test/support/coverage.rb
 
 This repository will be public. No secrets and no personal data may enter it.
 
-- **Ignored paths** (`.gitignore`): `.env*` (except `.env.example`), `config/*.key`, any folder named
-  `data/` at any depth, `storage/` (uploaded photos), model weight files (`*.safetensors`, `*.gguf`,
-  `*.pt`, `*.onnx` and others), coverage reports and Python caches.
+- **Ignored paths** (`.gitignore`): `.env*` (except `.env.example`), `config/*.key` and
+  `config/credentials/*.key`, any folder named `data/` at any depth, `storage/` (uploaded photos), model
+  weight files (`*.safetensors`, `*.gguf`, `*.pt`, `*.pth`, `*.h5`, `*.ckpt`, `*.onnx` and others),
+  coverage reports and Python caches. `test/config/gitignore_test.rb` checks these rules.
 - **Git hooks** in `.githooks/`. `bin/setup` turns them on; by hand: `git config core.hooksPath .githooks`.
   - `pre-commit` runs gitleaks on the staged changes and blocks a commit with a secret. Without gitleaks
     installed it blocks every commit and says how to install it.

@@ -31,8 +31,9 @@
 
 /public/assets
 
-# Ignore key files for decrypting credentials and more.
+# Ignore key files for decrypting credentials and more, per-environment credential keys included.
 /config/*.key
+/config/credentials/*.key
 
 /app/assets/builds/*
 !/app/assets/builds/.keep
@@ -56,6 +57,9 @@ __pycache__/
 *.gguf
 *.bin
 *.pt
+*.pth
+*.h5
+*.ckpt
 *.onnx
 *.mlx
 *.npz
