@@ -23,6 +23,9 @@ module LegacyImport
       assert_equal "12", Values.legacy_id(12)
       assert_equal "a-12", Values.legacy_id("a-12")
       assert_equal "is empty", refusal(:legacy_id, "")
+      assert_equal "is empty", refusal(:legacy_id, "  ")
+      assert_equal "has spaces at the start or the end", refusal(:legacy_id, " 12")
+      assert_equal "has spaces at the start or the end", refusal(:legacy_id, "12\t")
       assert_equal "must be an integer or a string", refusal(:legacy_id, 1.5)
     end
 

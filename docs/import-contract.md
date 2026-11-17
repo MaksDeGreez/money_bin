@@ -38,7 +38,8 @@ optional (and recommended). Empty lines are not allowed. A file with no rows is 
   a line's `comment`, which may be left out.
 - Keys that are not listed are ignored; the importer prints a warning that names them.
 - `legacy_id` is a JSON integer or a non-empty string. It is compared as text, so `12` and `"12"` are the
-  same id. It must be unique inside its file. References (`account_legacy_id`, `payee_legacy_id`,
+  same id. A string id must not be blank and must not start or end with a space (or any other whitespace):
+  the app strips stored ids, so such an id could not be found again. It must be unique inside its file. References (`account_legacy_id`, `payee_legacy_id`,
   `category_legacy_id`) follow the same rule and must name a row of the referenced file.
 - Every amount is a **decimal string**: an optional `-`, digits, and optionally `.` and digits, with at most
   two decimal places (`"-1250.50"`, `"7"`, `"0.05"`). Not a JSON number, no `+`, no exponent, no thousands
@@ -135,7 +136,8 @@ written:
   missing, its SHA-256 or its line count does not match, or it is not valid UTF-8;
 - a line is empty, is not valid JSON, or is not a JSON object;
 - a required key is missing, or a value has the wrong type or form (see the tables);
-- a duplicate `legacy_id` inside a file; two accounts with the same name;
+- a duplicate `legacy_id` inside a file, a blank one, or one with whitespace at the start or the end; two
+  accounts with the same name;
 - an account `kind` outside the list;
 - an amount that is not a decimal string, has more than two decimal places, is zero or is out of range;
 - a transaction currency that is not its account's; `original_amount` without `original_currency` (or the

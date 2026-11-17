@@ -16,11 +16,16 @@ module LegacyImport
     module_function
 
     # A legacy id is a JSON integer or a non-empty string. Both are compared as text, so 12 and "12" are the
-    # same id.
+    # same id. A string with spaces at either end is refused: the models strip `external_id`, so such an id
+    # would be stored without them and not found again on the next run.
     def legacy_id(value)
       case value
       when Integer then value.to_s
-      when String then value.empty? ? raise(Invalid, "is empty") : value
+      when String
+        raise Invalid, "is empty" if value.strip.empty?
+        raise Invalid, "has spaces at the start or the end" if value.strip != value
+
+        value
       else raise Invalid, "must be an integer or a string"
       end
     end

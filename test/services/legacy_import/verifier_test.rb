@@ -59,6 +59,29 @@ module LegacyImport
       ], found
     end
 
+    test "a legacy id with spaces around it, or a blank one, stops it with its file and line" do
+      found = problems(
+        "accounts.jsonl" => ->(rows) { rows[1]["legacy_id"] = "2 " },
+        "payees.jsonl" => ->(rows) { rows[0]["legacy_id"] = " " },
+        "transactions.jsonl" => ->(rows) { rows[0]["legacy_id"] = " 1001" }
+      )
+
+      assert_equal [
+        "accounts.jsonl line 2 (legacy_id not printable): legacy_id has spaces at the start or the end",
+        "payees.jsonl line 1 (legacy_id not printable): legacy_id is empty",
+        "transactions.jsonl line 1 (legacy_id not printable): legacy_id has spaces at the start or the end",
+        # The account and the payee whose ids were refused are now unknown.
+        "transactions.jsonl line 2 (legacy_id 1002): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 3 (legacy_id 1003): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 3 (legacy_id 1003): payee_legacy_id names a payee that is not in payees.jsonl",
+        "transactions.jsonl line 6 (legacy_id 1006): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 7 (legacy_id 1007): account_legacy_id names an account that is not in accounts.jsonl",
+        "transactions.jsonl line 9 (legacy_id 1009): account_legacy_id names an account that is not in accounts.jsonl"
+      ], found
+      assert_equal [ "transactions.jsonl line 1 (legacy_id 1001): account_legacy_id has spaces at the start or the end" ],
+        problems(transaction_edit(1001) { |row| row["account_legacy_id"] = "1 " })
+    end
+
     test "two accounts with one name stop it" do
       found = problems("accounts.jsonl" => ->(rows) { rows[3]["name"] = " #{rows[0]['name']} " })
 
