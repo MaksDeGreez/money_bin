@@ -20,7 +20,11 @@ laptop, and leave room for machine learning code, which lives in Python.
 - **Redis and Sidekiq for background jobs.** Redis also backs the cache and Action Cable. The Solid trio
   (Solid Queue, Solid Cache, Solid Cable) was not chosen: Sidekiq has a mature UI, retries and a long
   record, Redis is already installed for other local work, and one Redis serves all three uses. Each
-  environment keeps to its own Redis database numbers (`config/redis_url.rb`).
+  environment keeps to its own Redis database numbers (`config/redis_url.rb`): 4 production, 5
+  development, 6 tests in the main checkout, 7..15 tests in linked worktrees. Another local app on the
+  same Redis uses 0, 1 and 2, and its worktrees take test databases from 3 upward, lowest free first, so
+  the two only meet when that app runs tests in several worktrees at once. That limit is accepted, as
+  that app is no longer developed; `REDIS_URL` pointing at another Redis instance is the way out.
 - **A separate FastAPI service for ML** (`ml/`, Python 3.12, managed with `uv`). Rails calls it over HTTP
   on `127.0.0.1:8100`. It has two endpoints, receipt OCR and item categorisation, and a swappable backend
   chosen by `OCR_BACKEND`: `stub` today (fixed, invented data in the final response shapes), a local

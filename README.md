@@ -159,8 +159,14 @@ clash with the usual 3000 and 8000.
 | test, linked git worktree   | `money_bin_v2_test_<worktree>`  | one of 7..15 |
 | production                  | `money_bin_v2_production`       | 4 |
 
-Redis databases 0..3 are left to other apps. `config/redis_url.rb` and `config/database.yml` are the
-places that decide this.
+How the Redis numbers fit with another local app on the same Redis: that app uses databases 0, 1 and 2,
+and each of its git worktrees takes a test database from 3 upward, the lowest free one first. This app
+uses 4 (production, when `REDIS_URL` is not set), 5 (development), 6 (tests in the main checkout) and
+7..15 (tests in linked worktrees). So the two apps can only meet when the other app has several
+worktrees running tests at once: its second one would take 4, its third 5. This is a known and accepted
+limit, because the other app is no longer developed. If it ever matters, give this app a Redis instance
+of its own with `REDIS_URL`. `config/redis_url.rb` and `config/database.yml` are the places that decide
+the numbers and names.
 
 ## Project layout
 

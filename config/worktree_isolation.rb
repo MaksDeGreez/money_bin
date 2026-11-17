@@ -15,9 +15,11 @@ module MoneyBin
   #   worktrees share one. Cleaned to [a-z0-9_] and cut to MAX_SUFFIX_LENGTH, it becomes the database
   #   suffix.
   # - Redis has 16 databases (0..15). This app uses 4 (production), 5 (development) and 6 (tests in the
-  #   main checkout); databases 0..3 are left free for other apps on the same Redis. Linked worktrees get one of
-  #   7..15. A worktree claims the lowest free one once and records it in its git admin directory
-  #   (<common .git>/worktrees/<name>/money-bin-v2-test-redis-db). That file is outside the working tree,
+  #   main checkout). Another local app on the same Redis uses 0, 1 and 2, and its own worktrees take test
+  #   databases from 3 upward, so the two only meet when it runs tests in several worktrees at once (a
+  #   known, accepted limit; REDIS_URL is the way out).
+  # - Linked worktrees get one of 7..15. A worktree claims the lowest free one once and records it in its
+  #   git admin directory (<common .git>/worktrees/<name>/money-bin-v2-test-redis-db). That file is outside the working tree,
   #   and git deletes it together with the worktree (`git worktree remove` or `prune`), which frees the
   #   slot. A claim whose worktree directory is gone also counts as free. With more than nine live
   #   worktrees, or when the claim cannot be written, the slot falls back to a hash of the name, with a
