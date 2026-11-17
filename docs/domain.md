@@ -137,8 +137,8 @@ PostgreSQL trigger could (a deferred constraint trigger that re-sums at commit),
 The cost: anything that skips the models skips these rules. Bulk writes (`insert_all`, `upsert_all`,
 `update_all`, `delete_all`), `update_column(s)` and raw SQL do not check the line sum, the transfer rules,
 the decimal places or the lock version. So **every writer goes through the models**: the browser UI, the
-API, and the future history importer too (`Transaction.create!` with `lines_attributes`,
-`Transaction.transfer!`), even though one-by-one saves are slower than a bulk insert. Code that must skip
+API, and the history importer too (`Transaction.create!` with `lines_attributes`, and one `create!` per
+transfer leg), even though one-by-one saves are slower than a bulk insert. Code that must skip
 the models (a data migration, a test that builds bad data on purpose) checks its result itself, for example
 with `Transaction.transfer_problems` and a SQL query that compares each transaction with the sum of its
 lines. If a writer past the models ever becomes necessary, the trigger should come back on the table.
@@ -205,7 +205,8 @@ A transfer moves money between two own accounts. It is two transactions, one per
 - The amounts of a same-currency pair cannot be changed one leg at a time (each save would break the
   zero sum). Destroy the pair and create it again. This also applies to an import that runs again and
   finds that the source changed the amount of a same-currency transfer: it destroys the stored pair (found
-  by `source` and `external_id`) and creates a new one with `transfer!`, in one database transaction.
+  by `source` and `external_id`) and creates the two legs again, with the same deterministic
+  `transfer_id`, in one database transaction (see "History import").
 
 A bank fee is never hidden inside a leg. When moving 1000 costs 10, the out leg is -1000, the in leg is
 +1000, and the fee is a separate expense of -10 with its own category ("Interest & bank fees"). So a
@@ -463,13 +464,30 @@ is real and counted; only some detail (a category) still needs a person.
   the folder but not their blobs, so no test wipes the whole folder. Fixture photos have blob rows but no
   bytes.
 
+## History import
+
+`bin/rails "import:money_bin[DIR]"` loads an export of the previous version of the app. The export format,
+the checks and the rules are in [`import-contract.md`](import-contract.md); the code is in
+`app/services/legacy_import/` (`Runner` is the entry point). In short:
+
+- the whole export is verified first (manifest hashes and counts, every field, references, transfer pairs);
+  nothing is written when a check fails;
+- everything is written in one database transaction, through the models; `DRY_RUN=1` rolls it back;
+- rows are found again on the next run, so the same export twice changes nothing: accounts by
+  `external_id` = `legacy:<legacy_id>`, transactions by `source` = `legacy` and `external_id` =
+  `legacy_id`, payees by normalised name; categories are never created;
+- a line's category comes from the taxonomy by group and category name, or is `Category.uncategorised`
+  when the old category is unmapped or not in the taxonomy; `legacy_category_path` keeps the old path; a
+  transaction with an uncategorised line is `needs_review`;
+- a transfer's `transfer_id` is a UUID v5 of the export's `transfer_key`, and every imported pair is checked
+  with `Transaction.transfer_problems` before the commit;
+- the output holds counts and warnings only, never a name, a comment or an amount.
+
 ## Deferred
 
 - Authentication, API tokens, and who (person or agent) wrote a row.
 - The upload flow that enqueues `ReceiptOcrJob`, and a call to `/categorise` that fills
   `suggested_category` and `confidence` on the items.
-- The history importer (it will use `source: legacy`, `external_id`, `legacy_category_path`,
-  `Category.uncategorised` and `Transaction.transfer_problems`).
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view.

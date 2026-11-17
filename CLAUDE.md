@@ -1,6 +1,6 @@
 # Money Bin
 
-Master's capstone project (MSc Data Science, engineering project): a personal finance tracker for one person and an AI agent, local-first, running on the owner's machine. Receipt photo → OCR by the Python ML service → categorised items → ledger. A REST API and an MCP server for agents come later, and so does an import of the history kept by the previous version of the app. Current phase: 1, the skeleton and the data model. The repository will be made public: nothing private may enter it.
+Master's capstone project (MSc Data Science, engineering project): a personal finance tracker for one person and an AI agent, local-first, running on the owner's machine. Receipt photo → OCR by the Python ML service → categorised items → ledger. A REST API and an MCP server for agents come later. The history kept by the previous version of the app comes in through an importer (`docs/import-contract.md`). Current phase: 1, the skeleton and the data model. The repository will be made public: nothing private may enter it.
 
 ## Domain
 
@@ -26,6 +26,7 @@ Master's capstone project (MSc Data Science, engineering project): a personal fi
 ## Running it
 
 - `bin/setup` — gems, `uv sync` in `ml/`, `.env` from `.env.example`, `git config core.hooksPath .githooks`, services, `db:prepare`, then `bin/dev` (`--skip-server` to stop before it). `bin/worktree-setup` does the same in a linked git worktree and links `.env`, `.env.local` and `config/master.key` from the main checkout. `bin/worktree-remove PATH` retires a clean worktree: drops its test databases, removes it, prunes (freeing its test Redis database) and deletes the local branch when GitHub shows its pull request merged.
+- `bin/rails "import:money_bin[DIR]"` — imports an export of the previous app from the folder DIR (kept outside the repository); `DRY_RUN=1` does everything, prints the counts and rolls back. All or nothing, safe to run again, prints counts and warnings only. Contract and rules: `docs/import-contract.md`; code: `app/services/legacy_import/`; fixture: `test/fixtures/files/legacy_export/` (re-hash it with `test/support/legacy_export_files.rb` after a change).
 - `bin/rails user:create` — creates the one user (asks, or reads `MONEY_BIN_EMAIL` / `MONEY_BIN_PASSWORD`); `bin/rails user:password` sets a new password and ends every browser session. Logic in `Users::CommandLine`. Never print or log a password or a plain token.
 - `bin/dev` — Puma on port 3100, Sidekiq, the Tailwind watcher and the ML service on 127.0.0.1:8100 (`Procfile.dev`, foreman). Wipes compiled assets first. Skips the ML service when `uv` is missing.
 - `bin/services` — checks PostgreSQL and Redis and starts a stopped one with `brew services` (`--check` only reports).
