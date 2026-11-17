@@ -8,6 +8,9 @@ html lang="en"
         = link_to "Money Bin", root_path, class: "font-display text-sm font-semibold text-ink-display no-underline"
         .flex.items-center.gap-3
           - if authenticated?
+            nav.flex.items-center.gap-1 aria-label="Main"
+              = ui_link_button "API tokens", settings_api_tokens_path, variant: :ghost, size: :sm
+              = ui_link_button "Sidekiq", "/sidekiq", variant: :ghost, size: :sm, data: { turbo: false }
             span.hidden.text-xs.text-ink-muted class="sm:inline" = Current.user.email_address
             = ui_button_to "Sign out", session_path, method: :delete, variant: :ghost, size: :sm
           = render "ui/theme_toggle"

@@ -47,6 +47,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_url(tab: "recent")
   end
 
+  test "a refused form post is not repeated after signing in" do
+    post settings_api_tokens_path, params: { api_token: { name: "Agent", scope: "read" } }
+    assert_redirected_to new_session_path
+
+    post session_path, params: { email_address: @owner.email_address, password: SessionTestHelper::OWNER_PASSWORD }
+
+    assert_redirected_to root_url
+  end
+
   test "a wrong password or an unknown address starts no session" do
     [ [ @owner.email_address, "wrong-password-here" ], [ "nobody@example.com", SessionTestHelper::OWNER_PASSWORD ] ].each do |email, password|
       assert_no_difference -> { Session.count } do

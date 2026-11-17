@@ -9,6 +9,11 @@ Rails.application.routes.draw do
   # given a new password on the command line (lib/tasks/user.rake).
   resource :session, only: %i[ new create destroy ]
 
+  # Personal API tokens for AI agents and scripts. "Destroy" revokes a token; the row is kept.
+  namespace :settings do
+    resources :api_tokens, only: %i[ index create destroy ]
+  end
+
   # Sidekiq's dashboard, for a signed-in browser only (the same session cookie as every page). For anyone
   # else the route does not match, so they get a plain 404 and cannot tell that it exists.
   constraints ->(request) { Session.from_cookies(request.cookie_jar).present? } do

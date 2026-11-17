@@ -33,8 +33,9 @@ module Authentication
       Current.session ||= Session.from_cookies(cookies)
     end
 
+    # Only a page can be returned to after signing in; a form post or a delete cannot be repeated as a GET.
     def request_authentication
-      session[:return_to_after_authenticating] = request.url if request.get?
+      session[:return_to_after_authenticating] = request.url if request.get? || request.head?
       redirect_to new_session_path
     end
 
