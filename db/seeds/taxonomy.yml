@@ -1,0 +1,88 @@
+# The category taxonomy: groups in display order, each with its categories and a one-line description.
+#
+# db/seeds.rb loads it with Categories::TaxonomyLoader. Groups and categories are matched by name, so a
+# name here must not change once data points at it (the history importer matches on these names too).
+# Positions follow the order in this file; descriptions are updated in place on every run.
+# Slugs are built from the names (see Category); nothing here sets them.
+taxonomy:
+  - group: "Groceries"
+    categories:
+      - { name: "Groceries", description: "Food and everyday groceries, including drinking-water delivery." }
+  - group: "Eating out"
+    categories:
+      - { name: "Cafes, bars & restaurants", description: "Meals and drinks at cafes, bars and restaurants." }
+      - { name: "Takeaway & fast food", description: "Takeaway, food delivery and fast food." }
+  - group: "Housing"
+    categories:
+      - { name: "Rent", description: "Rent for the flat lived in." }
+      - { name: "Utilities", description: "Utility bills: energy, water, heating, building services." }
+      - { name: "Home purchase instalments", description: "Instalments towards buying a home (a liability, paid monthly)." }
+  - group: "Household & shopping"
+    categories:
+      - { name: "Household supplies", description: "Household goods, cleaning and personal-care supplies, small items." }
+      - { name: "Clothing & accessories", description: "Clothes, shoes and accessories." }
+      - { name: "Pets", description: "Pet food and pet care." }
+      - { name: "Electronics & appliances", description: "Electronics, gadgets and home appliances." }
+  - group: "Transport"
+    categories:
+      - { name: "Trips & intercity travel", description: "Intercity and long-distance travel, tickets and other trip costs." }
+      - { name: "Local transport", description: "Taxis and public transport in town." }
+  - group: "Car"
+    categories:
+      - { name: "Car other", description: "Other car costs: car park fees, washing, fines, general car spending." }
+      - { name: "Fuel", description: "Fuel." }
+      - { name: "Service, parts & tyres", description: "Car service and repairs, parts, consumables and tyres." }
+  - group: "Health"
+    categories:
+      - { name: "Health & pharmacy", description: "Pharmacy, medicine and medical treatment." }
+  - group: "Personal"
+    categories:
+      - { name: "Partner", description: "Spending for the partner: personal purchases and money given." }
+      - { name: "Self", description: "Personal spending of the main earner not covered by another category." }
+  - group: "Alcohol & tobacco"
+    categories:
+      - { name: "Alcohol & tobacco", description: "Alcohol, tobacco and similar." }
+  - group: "Leisure & entertainment"
+    categories:
+      - { name: "Entertainment & outings", description: "Cinema, events, games and other outings." }
+  - group: "Sports & fitness"
+    categories:
+      - { name: "Sports & fitness", description: "Gym memberships, coaching, sports nutrition and sports gear." }
+  - group: "Education"
+    categories:
+      - { name: "Courses & lessons", description: "Courses, lessons and driving school." }
+  - group: "Digital & communications"
+    categories:
+      - { name: "Mobile & internet", description: "Mobile phone and internet access." }
+      - { name: "Apps & subscriptions", description: "App purchases and digital subscriptions." }
+      - { name: "Hosting & servers", description: "Servers, hosting and similar online services for work." }
+  - group: "Gifts & charity"
+    categories:
+      - { name: "Gifts", description: "Gifts to family and friends." }
+      - { name: "Charity", description: "Donations." }
+  - group: "Taxes & admin"
+    categories:
+      - { name: "Fees, documents & accounting", description: "Documents, official fees and accounting services." }
+      - { name: "Taxes", description: "Taxes, including the taxes of the business accounts." }
+  - group: "Debt & credit"
+    categories:
+      - { name: "Personal loans", description: "Money lent to or borrowed from people, and its repayments." }
+      - { name: "Interest & bank fees", description: "Credit-card interest, bank commissions and transfer fees." }
+  - group: "Investments & side ventures"
+    categories:
+      - { name: "Investments & side ventures", description: "Money put into or taken out of investments and side projects." }
+  - group: "Income"
+    categories:
+      - { name: "Salary & main contracts", description: "Salary and the main contract work." }
+      - { name: "Side & other income", description: "Side jobs, one-off and other income." }
+      - { name: "Cashback", description: "Card cashback." }
+  - group: "Adjustments"
+    categories:
+      - { name: "Adjustments & pass-through", description: "Balance corrections, money held for others, moves to and from savings kept off the books; neither spending nor income." }
+  - group: "Other"
+    categories:
+      - { name: "Other spending", description: "Small or rare spending that fits no other category." }
+      - { name: "Large purchase", description: "One-off large expenses." }
+  - group: "Uncategorised"
+    categories:
+      - { name: "Uncategorised", description: "Transactions that have no category yet." }
