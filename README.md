@@ -125,6 +125,28 @@ changed in the export is written again from it. It prints counts and warnings on
 with status 1 when it stops. The taxonomy must be loaded first (`bin/rails db:seed`). The format and every
 rule are in [`docs/import-contract.md`](docs/import-contract.md).
 
+## Receipt photos for OCR evaluation
+
+`tools/receipt_ingest/` is a separate command-line tool (Python, uv). It does not talk to the app. It
+turns a folder of phone photos of paper receipts (`RAW_DIR/<batch>/…`) into a numbered receipt set for
+testing OCR: it groups the photos into receipts by the pause between them, gives every receipt a number
+that stays the same on later runs, writes JPEG copies with all metadata removed, reads the QR code (on a
+Ukrainian fiscal receipt it holds the total, the date and time and the fiscal numbers, so it is free
+ground truth), crops the receipt and builds a contact sheet for checking the grouping.
+
+```sh
+uv run --project tools/receipt_ingest receipt-ingest \
+  ~/Documents/money_bin_receipts/raw ~/Documents/money_bin_data/receipts
+```
+
+Both folders are outside this repository: receipt photos are personal data. The tool opens the raw
+photos read-only, refuses an output folder inside a git repository, and prints counts only. The output
+is `images/rcpt_000123_1.jpg` and so on, `receipts.jsonl` (one line per receipt), `groups_review.html`
+(the contact sheet) and `state.json`; grouping mistakes are fixed in `groups_override.yaml` in the same
+folder. Options, the output format and the rules are in
+[`tools/receipt_ingest/README.md`](tools/receipt_ingest/README.md); the reasons are in
+[`docs/decisions/0004-receipt-ingest.md`](docs/decisions/0004-receipt-ingest.md).
+
 ## Tests and checks
 
 ```sh
@@ -133,8 +155,8 @@ bin/ci --summary         # one line per step, the output of failed steps only (f
 ```
 
 `bin/ci` (steps in `config/ci.rb`) runs: setup, RuboCop, slim-lint, bundler-audit, the importmap audit,
-Brakeman, the leak check of the tracked files, the Tailwind build, the Rails tests, the seeds, and in
-`ml/` ruff and pytest. Run it before every push.
+Brakeman, the leak check of the tracked files, the Tailwind build, the Rails tests, the seeds, and ruff
+and pytest in `ml/` and in `tools/receipt_ingest/`. Run it before every push.
 
 Parts of it alone:
 
@@ -148,10 +170,16 @@ cd ml
 uv run pytest                          # Python tests; fails below 70% coverage
 uv run ruff check .
 uv run ruff format --check .
+
+cd tools/receipt_ingest
+uv run pytest                          # the receipt tool's tests; fails below 80% coverage
+uv run ruff check .
+uv run ruff format --check .
 ```
 
 No test reaches the network (WebMock on the Rails side, the stub backend on the Python side), and no
-test needs model weights, real receipts or personal data. Fixtures are invented.
+test needs model weights, real receipts or personal data. Fixtures are invented, and the receipt tool's
+tests generate every image they use.
 
 ## Configuration
 
@@ -203,6 +231,8 @@ docs/             domain.md (the data model), import-contract.md (the history ex
                   (architecture decision records)
 ml/               the Python ML service (FastAPI, uv); see ml/README.md
 test/             Minitest tests and invented fixtures; test/support/coverage.rb is the coverage gate
+tools/            receipt_ingest/: the command-line tool that prepares receipt photos for OCR evaluation
+                  (Python, uv); see tools/receipt_ingest/README.md
 .githooks/        the git hooks (pre-commit, pre-push)
 .github/          CI workflow and Dependabot
 .claude/          settings, agents and skills for coding agents; CLAUDE.md is their guide
@@ -229,7 +259,9 @@ This repository will be public. No secrets and no personal data may enter it.
 - **Ignored paths** (`.gitignore`): `.env*` (except `.env.example`), `config/*.key` and
   `config/credentials/*.key`, any folder named `data/` at any depth, `storage/` (uploaded photos), model
   weight files (`*.safetensors`, `*.gguf`, `*.pt`, `*.pth`, `*.h5`, `*.ckpt`, `*.onnx` and others),
-  coverage reports and Python caches. `test/config/gitignore_test.rb` checks these rules.
+  iPhone photos (`.heic` and `.heif` in any letter case) and the receipt tool's output (`rcpt_*.jpg`,
+  `receipts.jsonl`, `groups_override.yaml`, `groups_review.html`), coverage reports and
+  Python caches. `test/config/gitignore_test.rb` checks these rules.
 - **Git hooks** in `.githooks/`. `bin/setup` turns them on; by hand: `git config core.hooksPath .githooks`.
   - `pre-commit` runs gitleaks on the staged changes and blocks a commit with a secret. Without gitleaks
     installed it blocks every commit and says how to install it.
@@ -249,12 +281,14 @@ This repository will be public. No secrets and no personal data may enter it.
   repository public. It does **not** look at the names and e-mail addresses of authors, committers and
   taggers, nor at text that is not stored as UTF-8 (inside a compressed file or a PDF, for example);
   check `git log --format='%an %ae %cn %ce' | sort -u` by hand.
-- **CI** (`.github/workflows/ci.yml`) runs on every pull request and on pushes to `main`, in three jobs:
+- **CI** (`.github/workflows/ci.yml`) runs on every pull request and on pushes to `main`, in four jobs:
   `rails` (RuboCop, slim-lint, Brakeman, bundler-audit, importmap audit, Tailwind build, tests with the
-  coverage minimum, seeds), `python` (ruff, pytest) and `gitleaks` (a secret scan of the whole history).
-  The `CI` job passes only when all three passed; it is the check that decides a merge. The leak check
+  coverage minimum, seeds), `python` (ruff, pytest in `ml/`), `receipt_ingest` (ruff, pytest in
+  `tools/receipt_ingest/`) and `gitleaks` (a secret scan of the whole history).
+  The `CI` job passes only when all four passed; it is the check that decides a merge. The leak check
   does not run on GitHub, because the terms file only exists on the owner's machine.
-- **Dependabot** opens weekly, grouped updates for gems, GitHub Actions and the Python packages.
+- **Dependabot** opens weekly, grouped updates for gems, GitHub Actions and the Python packages of `ml/`
+  and `tools/receipt_ingest/`.
 
 ## Git worktrees
 

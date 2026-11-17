@@ -1,10 +1,9 @@
 # Run using bin/ci (or bin/ci --summary for one line per step).
 
-# The Python steps need the ML service project (ml/pyproject.toml) and uv.
-python_missing = [
-  ("ml/pyproject.toml" unless File.exist?(File.expand_path("../ml/pyproject.toml", __dir__))),
-  ("uv" unless system("command -v uv > /dev/null 2>&1"))
-].compact
+# The Python steps need uv and each project's pyproject.toml: the ML service in ml/ and the receipt ingest
+# tool in tools/receipt_ingest/. The label is what the step names show.
+uv_missing = !system("command -v uv > /dev/null 2>&1")
+python_projects = { "Python" => "ml", "Receipt ingest" => "tools/receipt_ingest" }
 
 CI.run do
   step "Setup", "bin/setup --skip-server"
@@ -22,11 +21,18 @@ CI.run do
   step "Tests: Rails", "bin/rails test"
   step "Tests: Seeds", "env RAILS_ENV=test bin/rails db:seed:replant"
 
-  if python_missing.empty?
-    step "Style: Python (ruff check)", "cd ml && uv run ruff check"
-    step "Style: Python (ruff format)", "cd ml && uv run ruff format --check"
-    step "Tests: Python (pytest)", "cd ml && uv run pytest"
-  else
-    step "Python: skipped, missing #{python_missing.join(' and ')}", "true"
+  python_projects.each do |label, dir|
+    missing = [
+      ("#{dir}/pyproject.toml" unless File.exist?(File.expand_path("../#{dir}/pyproject.toml", __dir__))),
+      ("uv" if uv_missing)
+    ].compact
+
+    if missing.empty?
+      step "Style: #{label} (ruff check)", "cd #{dir} && uv run ruff check"
+      step "Style: #{label} (ruff format)", "cd #{dir} && uv run ruff format --check"
+      step "Tests: #{label} (pytest)", "cd #{dir} && uv run pytest"
+    else
+      step "#{label}: skipped, missing #{missing.join(' and ')}", "true"
+    end
   end
 end

@@ -75,3 +75,25 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # The receipt ingest tool (tools/receipt_ingest/pyproject.toml and its uv.lock).
+  - package-ecosystem: uv
+    directory: "/tools/receipt_ingest"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-tooling:
+        dependency-type: development
+        patterns:
+          - "ruff"
+          - "pytest*"
+        update-types:
+          - "minor"
+          - "patch"
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

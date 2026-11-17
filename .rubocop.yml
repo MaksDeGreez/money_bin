@@ -29,3 +29,5 @@ AllCops:
     - "data/**/*"
     # The Python ML service has its own linter (ruff).
     - "ml/**/*"
+    # So has the receipt ingest tool, which is Python too.
+    - "tools/receipt_ingest/**/*"
