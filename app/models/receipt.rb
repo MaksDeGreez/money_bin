@@ -4,7 +4,8 @@
 # `extracted` means the items are filled in and wait for a person; `reviewed` means the receipt was accepted
 # into the ledger (Receipts::Accept), which links it to its transaction (`ledger_transaction`).
 #
-# `ocr_raw` keeps the OCR service's full answer. `ocr_model_name` and `ocr_model_version` say which model
+# ReceiptOcrJob and Receipts::ApplyOcr fill the OCR part (docs/domain.md, "OCR"). `ocr_raw` keeps the OCR
+# service's full answer, or { "error" => { "code", "message" } } after a failure. `ocr_model_name` and `ocr_model_version` say which model
 # produced it. They are not called `model_name`: every Active Record class and record already has a
 # `model_name` method (ActiveModel::Naming), which would hide the column's value.
 #

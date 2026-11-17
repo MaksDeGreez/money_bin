@@ -49,10 +49,11 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
 - **Transaction line.** `category_id` nil means "not categorised yet". `legacy_category_path` keeps the old
   app's category path ("Food / Snacks") when the history importer brings the line in, so the original label
   is never lost.
-- **Receipt.** `status` moves `uploaded` -> `processing` -> `extracted` -> `reviewed`, or ends in `failed`.
-  `extracted` means the items are filled in and wait for a person; `reviewed` means the receipt was
-  accepted into the ledger. `ocr_raw` keeps the OCR service's full answer, and `ocr_model_name` and
-  `ocr_model_version` say which model produced it. `currency` is what OCR read (nil when unknown).
+- **Receipt.** `status` moves `uploaded` -> `processing` -> `extracted` -> `reviewed`, or ends in `failed`
+  (see "OCR" below). `extracted` means the items are filled in and wait for a person; `reviewed` means the
+  receipt was accepted into the ledger. `ocr_raw` keeps the OCR service's full answer, or the reason of a
+  failure, and `ocr_model_name` and `ocr_model_version` say which model produced it. `currency` is what OCR
+  read (nil when unknown).
   `batch` is a free label for a bulk upload. `sha256` is the photo fingerprint.
 - **Receipt item.** `amount` is what was paid for the item after its `discount`. It is normally positive,
   but it can be negative (a bottle deposit returned) or zero (a free item). `suggested_category` and
@@ -150,6 +151,82 @@ have any two amounts: the exchange rate is implied by them.
 (`{ io:, filename: }`) or blobs. A new receipt gets it automatically when photos are attached and the field
 is blank. It is never recomputed: it identifies the original upload. The same scene photographed twice gives
 different bytes and is not caught; that is accepted.
+
+### OCR
+
+A receipt's photos are read by the ML service in `ml/` (its contract is `ml/README.md`). Three pieces do
+the work:
+
+- `MlClient` (`app/services/ml_client.rb`) is the HTTP client: `health`, `ocr(images)` and
+  `categorise(texts)`. It sends photos as `MlClient::Image` (`io`, `filename`, `content_type`), so it does
+  not depend on Active Storage, and returns value objects that keep the parsed body. It never retries.
+  Every failure is a subclass of `MlClient::Error` with a short `code` and `transient?`.
+- `Receipts::ApplyOcr.call(receipt, result)` stores one OCR result (details below).
+- `ReceiptOcrJob` (Sidekiq) runs the two for one receipt. Nothing enqueues it on its own: no model
+  callback does it. The upload flow calls `ReceiptOcrJob.perform_later(receipt)` after it saved the
+  receipt.
+
+Who moves the status:
+
+| From | To | By |
+|---|---|---|
+| (new) | `uploaded` | the upload (the column default) |
+| `uploaded`, `failed` | `processing` | `ReceiptOcrJob`, when it starts |
+| `processing` | `extracted` | `Receipts::ApplyOcr`, with the result |
+| `processing` | `failed` | `ReceiptOcrJob`, on a permanent failure or when the retries run out |
+| `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
+
+The job starts only on `uploaded`, `processing` (its own retry, or a run that died) and `failed` (try
+again by enqueuing it once more). It leaves `extracted` and `reviewed` receipts alone, so running it twice
+does the work once and never overwrites what a person is reviewing. A receipt deleted before the job runs
+is discarded quietly.
+
+What is stored where:
+
+- on success, `ocr_raw` is the service's full response body as returned (the `receipt` part plus
+  `backend`, `model_name` and `model_version`). `ocr_model_name` and `ocr_model_version` are copied from
+  it; `merchant_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total` and `currency` come from
+  the `receipt` part (a null stores nil);
+- the items are replaced by the returned ones, in the same database transaction. An item's `position` is
+  its place in the answer counting from 1, so position N is item N of `ocr_raw`. Amounts and quantities
+  are parsed from decimal strings with `BigDecimal`; anything else (a float, unreadable text) counts as
+  missing. New items have no category yet;
+- on failure, `ocr_raw` is `{"error": {"code": ..., "message": ...}}` and nothing else: no stack trace and
+  no response body. `code` is the service's own code (`validation_error`, `too_many_images`,
+  `unsupported_media_type`, `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
+  `ml_timeout`, `invalid_response`, `no_images` or `image_missing`. `message` is one line of at most 300
+  characters. There is no separate column for the reason: `ocr_raw` already means "what the OCR step
+  left".
+
+OCR output is not always tidy, and the item rules (a name, an amount, `quantity > 0`, `discount >= 0`)
+are strict. `Receipts::ApplyOcr` keeps what it can instead of failing the receipt:
+
+- a value the model refuses in an optional field is stored as nil: an unreadable `issued_at`, a `total`
+  out of range or a malformed `currency` on the receipt; a zero `quantity` or an out-of-range
+  `unit_price` on an item;
+- an item still refused after that (no name, no readable amount, a negative discount) is skipped. Its
+  position stays free, `ocr_raw` keeps it, and the items no longer sum to `total`, which the person sees
+  at review. Failing the whole receipt for one smudged line would throw away the other lines.
+
+`Receipts::ApplyOcr` never changes a `reviewed` receipt (it raises `AlreadyReviewed`; the job then stops
+quietly, since the person's result wins). Applying the same result twice gives the same rows.
+
+Retries and timeouts:
+
+- transient failures are retried by the job with a growing wait (Active Job's `polynomially_longer`:
+  about 3 s, 18 s, 83 s, 258 s), 5 runs in all; then the receipt becomes `failed`. Transient means the
+  service cannot be reached, a timeout, or a 5xx answer other than 501;
+- permanent failures make the receipt `failed` at once: a 4xx answer, 501 (the backend is only a
+  placeholder), an answer that is not JSON or misses a required key, no photos attached, a photo file
+  missing from storage;
+- any other exception (a bug, the database gone) is raised: Sidekiq's own retries apply and the receipt
+  stays `processing` until a run succeeds;
+- the client opens the connection within `ML_SERVICE_OPEN_TIMEOUT` seconds (default 2), waits up to
+  `ML_SERVICE_OCR_TIMEOUT` (default 120; a real model can be slow) for an OCR answer and
+  `ML_SERVICE_CATEGORISE_TIMEOUT` (default 30) for a categorisation answer. `/health` waits 5 seconds.
+  `ML_SERVICE_URL` is the base URL (default `http://127.0.0.1:8100`);
+- `image/heif` photos are sent as `image/heic`: the receipt accepts both names, the service only the
+  second.
 
 ### Acceptance
 
@@ -256,6 +333,9 @@ row into a review queue.
   "parent is in charge" flag (`managing_lines?`) is therefore set in `valid?` as well as around save and
   destroy, and that callback is declared before `has_many :lines, dependent: :destroy`.
 - `occurred_at` and `issued_at` are `timestamptz`; the Rails timestamps stay `timestamp` (UTC).
+- Tests never call the ML service: `test/support/ml_service_stubs.rb` stubs it with WebMock in the
+  service's response shapes and keeps the requests it answered (`ml_requests`), so a test can check the
+  multipart parts.
 - Tests store photos in `tmp/storage`. A transaction rollback does not remove files, so
   `test/support/receipt_images.rb` deletes the files of the blobs a test created. Parallel workers share
   the folder but not their blobs, so no test wipes the whole folder. Fixture photos have blob rows but no
@@ -264,8 +344,8 @@ row into a review queue.
 ## Deferred
 
 - Authentication, API tokens, and who (person or agent) wrote a row.
-- The OCR client and the job that fills `ocr_raw`, `ocr_model_name` and `ocr_model_version` and moves the
-  receipt status on.
+- The upload flow that enqueues `ReceiptOcrJob`, and a call to `/categorise` that fills
+  `suggested_category` and `confidence` on the items.
 - The history importer (it will use `source: legacy`, `external_id`, `legacy_category_path`,
   `Category.uncategorised` and `Transaction.transfer_problems`).
 - A database trigger for the line sum, if anything starts writing lines past the models.
