@@ -97,7 +97,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A transfer has exactly two legs, on different accounts, with opposite signs and no lines | DB for "at most one leg per sign" (unique index `index_transactions_one_leg_per_side`); model for the rest |
 | A same-currency transfer nets to exactly zero | Model only |
 | A leg cannot leave its transfer; destroying one leg destroys the other | Model only |
-| A receipt has 1 to 3 photos, of photo formats only (JPEG, PNG, WebP, HEIC/HEIF) | Model only |
+| A receipt has 1 to 3 photos, of photo formats only (JPEG, PNG, WebP, HEIC/HEIF), all different | Model only |
 | A receipt's `sha256` is present, 64 lower-case hex characters, and unique | Model + DB |
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
@@ -186,13 +186,24 @@ have any two amounts: the exchange rate is implied by them.
 `receipts.sha256` refuses the same photo twice. It is defined on the bytes exactly as uploaded:
 
 - one photo: the SHA-256 of its bytes, written as 64 lower-case hex characters;
-- several photos: the SHA-256 of the per-photo hex digests joined together without a separator, in upload
-  order. Each digest has exactly 64 characters, so the joined text is unambiguous.
+- several photos: the SHA-256 of the per-photo hex digests, sorted, then joined together without a
+  separator. Each digest has exactly 64 characters, so the joined text is unambiguous. Sorting makes the
+  value independent of the upload order: the same two photos sent in the other order are the same receipt.
 
 `Receipt.fingerprint(sources)` computes it from uploaded files, IO objects, Active Storage attachable hashes
 (`{ io:, filename: }`) or blobs. A new receipt gets it automatically when photos are attached and the field
-is blank. It is never recomputed: it identifies the original upload. The same scene photographed twice gives
-different bytes and is not caught; that is accepted.
+is blank. It is never recomputed: it identifies the original upload. Limits that are accepted:
+
+- the same scene photographed twice gives different bytes and is not caught;
+- a receipt with only some of the photos of an earlier one (one page of two) has a different fingerprint,
+  so it counts as a different receipt.
+
+The same photo cannot be attached twice to one receipt (the blobs' checksums must differ).
+
+Photos can be attached as files, IO hashes, blobs or signed blob ids. Rails sends signed ids (Strings) when
+the files were uploaded ahead of the form (direct upload); `Receipt#images=` resolves them to their blobs with
+`ActiveStorage::Blob.find_signed`, so the fingerprint can read the bytes. An invalid or expired id is a
+validation error on `images`, not an exception.
 
 ### OCR
 
@@ -354,8 +365,8 @@ always known. The exact time is known only for some sources and is useful for or
 bank item to a receipt. Deriving one from the other would invent data or move rows across midnight.
 
 **Receipt fingerprint.** It is defined on the bytes, so it is cheap, exact and does not depend on OCR.
-Several photos are combined through their digests in upload order, so a client can compute the same value
-before uploading.
+Several photos are combined through their sorted digests, so a client can compute the same value before
+uploading, in any order.
 
 **Acceptance builds lines from categories, not from items.** A ledger line is a category share; an item is
 a product. Keeping items on the receipt and summing them per category into lines gives reports one code path

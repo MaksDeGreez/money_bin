@@ -31,12 +31,67 @@ class ReceiptTest < ActiveSupport::TestCase
     assert_not blob.service.exist?(blob.key)
   end
 
-  test "several photos are fingerprinted over their digests in upload order" do
-    first, second, third = png_bytes(red: 1), png_bytes(red: 2), png_bytes(red: 3)
-    receipt = Receipt.create!(images: [ image_upload(first), image_upload(second), image_upload(third) ])
+  test "several photos are fingerprinted over their sorted digests, so the order does not matter" do
+    photos = [ png_bytes(red: 1), png_bytes(red: 2), png_bytes(red: 3) ]
+    receipt = Receipt.create!(images: photos.map { |bytes| image_upload(bytes) })
 
-    assert_equal sha256(sha256(first) + sha256(second) + sha256(third)), receipt.sha256
-    assert_not_equal receipt.sha256, Receipt.fingerprint([ image_upload(third), image_upload(second), image_upload(first) ])
+    assert_equal sha256(photos.map { |bytes| sha256(bytes) }.sort.join), receipt.sha256
+    assert_equal receipt.sha256, Receipt.fingerprint(photos.reverse.map { |bytes| image_upload(bytes) })
+
+    again = Receipt.new(images: photos.reverse.map { |bytes| image_upload(bytes) })
+    assert_not again.valid?
+    assert_includes again.errors[:sha256], "matches a receipt that was already uploaded"
+  end
+
+  test "a subset of the photos counts as a different receipt" do
+    photos = [ png_bytes(red: 4), png_bytes(red: 5) ]
+    Receipt.create!(images: photos.map { |bytes| image_upload(bytes) })
+
+    assert Receipt.new(images: [ image_upload(photos.first) ]).valid?
+  end
+
+  test "the same photo cannot be attached twice to one receipt" do
+    bytes = png_bytes(red: 6)
+    receipt = Receipt.new(images: [ image_upload(bytes, filename: "a.png"), image_upload(bytes, filename: "b.png") ])
+
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:images], "must be different photos: the same photo is attached twice"
+
+    blob = ActiveStorage::Blob.create_and_upload!(io: StringIO.new(png_bytes(red: 8)), filename: "r.png")
+    twice = Receipt.new(images: [ blob, blob.signed_id ])
+    assert_not twice.valid?
+    assert_includes twice.errors[:images], "must be different photos: the same photo is attached twice"
+  end
+
+  test "photos uploaded ahead of the form are attached by their signed blob ids" do
+    bytes = png_bytes(green: 40)
+    blob = ActiveStorage::Blob.create_and_upload!(io: StringIO.new(bytes), filename: "r.png", content_type: "image/png")
+
+    receipt = Receipt.new(images: [ blob.signed_id, "" ])
+
+    assert receipt.valid?, receipt.errors.full_messages.to_sentence
+    assert_equal sha256(bytes), receipt.sha256
+    receipt.save!
+    assert_equal [ blob ], receipt.reload.images.blobs
+  end
+
+  test "an invalid signed blob id is a validation error, not an exception" do
+    receipt = Receipt.new(images: [ "not-a-signed-id" ])
+
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:images], "include 1 upload id(s) that are not valid or have expired; upload the photo again"
+
+    receipt.images = [ image_upload(png_bytes(green: 41)) ]
+    assert receipt.valid?
+  end
+
+  test "attach accepts a signed blob id on a saved receipt" do
+    receipt = Receipt.create!(images: [ image_upload(png_bytes(green: 42)) ])
+    blob = ActiveStorage::Blob.create_and_upload!(io: StringIO.new(png_bytes(green: 43)), filename: "back.png")
+
+    receipt.images.attach(blob.signed_id)
+
+    assert_equal 2, receipt.reload.images.count
   end
 
   test "attach on a new receipt sets the fingerprint too" do

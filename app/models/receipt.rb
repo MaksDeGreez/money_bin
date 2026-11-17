@@ -14,10 +14,15 @@
 #
 # `sha256` is the fingerprint of the uploaded image bytes; it refuses the same photo twice.
 # - one image: the SHA-256 of its bytes, as 64 lower-case hex characters;
-# - several images: the SHA-256 of the per-image hex digests joined together (no separator), in upload
-#   order. A digest always has 64 characters, so the joined text is unambiguous.
-# Receipt.fingerprint computes it from uploaded files or IO objects. It is set automatically when images are
-# attached and it is blank, and it is never recomputed: it identifies the original upload.
+# - several images: the SHA-256 of the per-image hex digests, sorted and joined together (no separator).
+#   Sorting makes it independent of the upload order. A digest always has 64 characters, so the joined
+#   text is unambiguous.
+# Receipt.fingerprint computes it from uploaded files, IO objects or blobs. It is set automatically when
+# images are attached and it is blank, and it is never recomputed: it identifies the original upload.
+#
+# Photos can be attached as files, IO hashes, blobs, or signed blob ids (Strings), which Rails sends when
+# the files were uploaded ahead of the form (direct upload). A signed id that is invalid or expired is a
+# validation error on `images`, not an exception. The same photo cannot be attached twice to one receipt.
 #
 # The link to a transaction is named `ledger_transaction` because an association cannot be called
 # `transaction` (see Transaction).
@@ -50,7 +55,7 @@ class Receipt < ApplicationRecord
   validate :ledger_transaction_exists, if: -> { transaction_id.present? && will_save_change_to_transaction_id? }
   validate :images_are_photos
 
-  # The fingerprint of `sources`, in upload order. Each source is an uploaded file
+  # The fingerprint of `sources`, in any order. Each source is an uploaded file
   # (ActionDispatch::Http::UploadedFile, Rack::Test::UploadedFile), an IO-like object (File, StringIO), an
   # Active Storage attachable hash ({ io:, filename: }) or an ActiveStorage::Blob. IO objects are rewound
   # after reading, so they can still be attached.
@@ -58,7 +63,7 @@ class Receipt < ApplicationRecord
     digests = Array.wrap(sources).map { |source| image_digest(source) }
     raise ArgumentError, "a fingerprint needs at least one image" if digests.empty?
 
-    digests.one? ? digests.first : Digest::SHA256.hexdigest(digests.join)
+    digests.one? ? digests.first : Digest::SHA256.hexdigest(digests.sort.join)
   end
 
   # The SHA-256 hex digest of one image's bytes.
@@ -86,6 +91,18 @@ class Receipt < ApplicationRecord
   end
   private_class_method :read_io
 
+  # Resolves signed blob ids before Active Storage sees them: Rails would raise on an invalid one, and the
+  # fingerprint needs the blob, not the id. Blank strings (an empty file field) are dropped, as Rails does.
+  def images=(attachables)
+    @invalid_image_ids = 0
+    resolved = Array.wrap(attachables).flatten.compact_blank.filter_map do |attachable|
+      next attachable unless attachable.is_a?(String)
+
+      ActiveStorage::Blob.find_signed(attachable).tap { |blob| @invalid_image_ids += 1 if blob.nil? }
+    end
+    super(resolved)
+  end
+
   # The sum of the item amounts, as a BigDecimal.
   def items_total
     items.sum(BigDecimal("0")) { |item| item.amount || 0 }
@@ -95,7 +112,7 @@ class Receipt < ApplicationRecord
     # Only new attachments are fingerprinted: they are still in memory as the caller's files or IO objects.
     def set_fingerprint
       change = attachment_changes["images"]
-      self.sha256 = self.class.fingerprint(change.attachables) if change
+      self.sha256 = self.class.fingerprint(change.attachables) if change && Array.wrap(change.attachables).any?
     end
 
     def ledger_transaction_exists
@@ -107,6 +124,13 @@ class Receipt < ApplicationRecord
       unless attachments.size.between?(1, MAX_IMAGES)
         errors.add(:images, "must be between 1 and #{MAX_IMAGES} photos (got #{attachments.size})")
       end
+
+      if @invalid_image_ids.to_i.positive?
+        errors.add(:images, "include #{@invalid_image_ids} upload id(s) that are not valid or have expired; upload the photo again")
+      end
+
+      checksums = attachments.filter_map { |attachment| attachment.blob.checksum }
+      errors.add(:images, "must be different photos: the same photo is attached twice") if checksums.uniq.size < checksums.size
 
       attachments.each do |attachment|
         content_type = attachment.blob.content_type
