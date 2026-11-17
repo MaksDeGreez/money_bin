@@ -110,7 +110,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A same-currency transfer nets to exactly zero | Model only |
 | The two legs of a transfer have the same status | Model only |
 | A leg cannot leave its transfer; destroying one leg destroys the other | Model only |
-| A receipt has 1 to 3 photos, of photo formats only (JPEG, PNG, WebP, HEIC/HEIF), all different | Model only |
+| A receipt has 1 to 3 photos, of photo formats only (JPEG, PNG, WebP, HEIC/HEIF), all different, each at most 15 MB | Model only |
 | A receipt's `sha256` is present, 64 lower-case hex characters, and unique | Model + DB |
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
 | A `reviewed` receipt has a transaction: destroying the transaction moves its receipt back to `extracted` | Model (in the destroy's database transaction); the foreign key only nullifies the link |
@@ -313,6 +313,12 @@ Retries and timeouts:
   `ML_SERVICE_URL` is the base URL (default `http://127.0.0.1:8100`);
 - `image/heif` photos are sent as `image/heic`: the receipt accepts both names, the service only the
   second.
+
+Photo size has two limits with the same value. The `Receipt` model refuses a photo over
+`Receipt::MAX_IMAGE_BYTES` (15 MB, 15,728,640 bytes), so an oversized photo is never stored. The ML service
+refuses a file over `ML_MAX_IMAGE_BYTES` (the same 15 MB by default) with 413 `image_too_large`. The model's
+limit is a constant: it does not read `ML_MAX_IMAGE_BYTES`. Raising that setting alone changes nothing for
+uploads, and lowering it below 15 MB lets the app store photos that the OCR job then fails.
 
 ### Acceptance
 

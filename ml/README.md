@@ -72,7 +72,9 @@ Each file is checked before the backend sees it:
 
 - its size must be at most `ML_MAX_IMAGE_BYTES` (15 MB by default). The
   multipart parser keeps uploads in temporary files, so an oversized file is
-  refused from its size and never read into memory;
+  refused from its size and never read into memory. The Rails app refuses a
+  receipt photo over the same 15 MB before it stores it
+  (`Receipt::MAX_IMAGE_BYTES`, a constant that does not read this setting);
 - its first bytes (the file signature) must match the declared type: JPEG
   `FF D8 FF`, PNG `89 50 4E 47 0D 0A 1A 0A`, WebP `RIFF....WEBP`, HEIC/HEIF an
   `ftyp` box with a HEIF brand (`heic`, `heix`, `mif1`, ...). The declared

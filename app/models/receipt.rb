@@ -28,6 +28,9 @@
 # `transaction` (see Transaction).
 class Receipt < ApplicationRecord
   MAX_IMAGES = 3
+  # The largest photo, in bytes: the ML service's default ML_MAX_IMAGE_BYTES (15 MB). Refusing it here
+  # keeps an oversized photo from being stored only to fail later in the OCR job.
+  MAX_IMAGE_BYTES = 15 * 1024 * 1024
   # Photo formats a phone or a scanner produces. SVG is left out on purpose: it is not a photo and can
   # carry scripts.
   IMAGE_CONTENT_TYPES = %w[image/jpeg image/png image/webp image/heic image/heif].freeze
@@ -144,10 +147,14 @@ class Receipt < ApplicationRecord
       errors.add(:images, "must be different photos: the same photo is attached twice") if checksums.uniq.size < checksums.size
 
       attachments.each do |attachment|
-        content_type = attachment.blob.content_type
-        next if IMAGE_CONTENT_TYPES.include?(content_type)
+        blob = attachment.blob
+        if blob.byte_size.to_i > MAX_IMAGE_BYTES
+          errors.add(:images, "must be at most #{MAX_IMAGE_BYTES / 1.megabyte} MB (#{MAX_IMAGE_BYTES} bytes) each; " \
+            "#{blob.filename} has #{blob.byte_size} bytes")
+        end
+        next if IMAGE_CONTENT_TYPES.include?(blob.content_type)
 
-        errors.add(:images, "must be photos (JPEG, PNG, WebP or HEIC); #{attachment.blob.filename} is #{content_type.presence || 'unknown'}")
+        errors.add(:images, "must be photos (JPEG, PNG, WebP or HEIC); #{blob.filename} is #{blob.content_type.presence || 'unknown'}")
       end
     end
 end

@@ -145,6 +145,21 @@ class ReceiptTest < ActiveSupport::TestCase
     assert_match "r.svg is image/svg+xml", svg.errors[:images].to_sentence
   end
 
+  # The byte size is set on the blob, so the test needs no 15 MB of real data.
+  test "a photo larger than the ML service accepts is refused" do
+    assert_equal 15 * 1024 * 1024, Receipt::MAX_IMAGE_BYTES
+
+    blob = ActiveStorage::Blob.create_and_upload!(io: StringIO.new(png_bytes(red: 90)), filename: "big.png", content_type: "image/png")
+    blob.update_column(:byte_size, Receipt::MAX_IMAGE_BYTES + 1)
+    receipt = Receipt.new(images: [ blob ])
+
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:images], "must be at most 15 MB (15728640 bytes) each; big.png has 15728641 bytes"
+
+    blob.update_column(:byte_size, Receipt::MAX_IMAGE_BYTES)
+    assert Receipt.new(images: [ blob ]).valid?
+  end
+
   test "the content type comes from the bytes, not from the declared type" do
     receipt = Receipt.new(images: [ image_upload(png_bytes, filename: "photo", content_type: "text/plain") ])
 
