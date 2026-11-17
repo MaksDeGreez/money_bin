@@ -43,6 +43,9 @@ gem "bootsnap", require: false
 
 # Use Active Storage variants [https://guides.rubyonrails.org/active_storage_overview.html#transforming-images]
 gem "image_processing", "~> 2.2"
+# libvips bindings for image analysis and variants; image_processing 2.x no longer depends on it.
+# Needs the libvips library (Homebrew `vips`; the CI workflow installs `libvips`).
+gem "ruby-vips", "~> 2.3"
 
 group :development, :test do
   # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem
