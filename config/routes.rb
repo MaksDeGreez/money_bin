@@ -3,5 +3,9 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
+  # Sign in and sign out. There is no sign-up and no password reset page: the one user is created and
+  # given a new password on the command line (lib/tasks/user.rake).
+  resource :session, only: %i[ new create destroy ]
+
   root "home#show"
 end

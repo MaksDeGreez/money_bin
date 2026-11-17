@@ -1,0 +1,14 @@
+- content_for :title, "Sign in · Money Bin"
+
+.mx-auto.max-w-sm
+  = render "ui/page_header", title: "Sign in"
+
+  = form_with url: session_path, class: "mt-6 space-y-4" do |f|
+    .field
+      = f.label :email_address, "E-mail address"
+      = f.email_field :email_address, required: true, autofocus: true, autocomplete: "username", value: params[:email_address]
+    .field
+      = f.label :password
+      = f.password_field :password, required: true, autocomplete: "current-password", maxlength: 72
+      = f.hint "Forgot it? Run bin/rails user:password on the machine that runs the app."
+    = f.submit "Sign in", class: "w-full"
