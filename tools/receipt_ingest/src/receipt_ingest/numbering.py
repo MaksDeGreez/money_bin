@@ -230,6 +230,20 @@ def recorded_names(state: dict) -> dict[str, str]:
     return names
 
 
+def missing_names(state: dict, names: set[str], scanned: set[str]) -> dict[str, set[str]]:
+    """Recorded photo names that are missing from this run, with the SHA-256 recorded for them.
+
+    `names` are the names found in this run, `scanned` the SHA-256 of every photo found. A name
+    whose photo is still there under another name (a rename) is not missing: it is stale.
+    """
+    missing: dict[str, set[str]] = {}
+    for record in state["receipts"]:
+        for sha, name in zip(record["parts"], record["raw_files"], strict=True):
+            if name not in names and sha not in scanned:
+                missing.setdefault(name, set()).add(sha)
+    return missing
+
+
 def frozen_records(state: dict, scanned: set[str]) -> list[dict]:
     """Recorded receipts that have images and lost at least one raw photo.
 
@@ -255,7 +269,8 @@ def plan(
     """Match this run's groups to the receipts recorded in `state`.
 
     `scanned` holds the SHA-256 of every image found in this run (duplicates and excluded files
-    included); `excluded` the SHA-256 of the excluded ones; `merged` the keys of groups that a
+    included, and missing photos that an exclude released); `excluded` the SHA-256 of the
+    excluded ones (released ones included); `merged` the keys of groups that a
     merge override joined into an earlier group; `frozen` the records from `frozen_records`, whose
     photos must not be in `groups`.
     """

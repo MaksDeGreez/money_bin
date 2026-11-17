@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 DIR_MODE = 0o700
@@ -41,8 +43,47 @@ def _fsync_folder(folder: Path) -> None:
         os.close(fd)
 
 
-def write_atomic(path: Path, data: bytes) -> None:
-    """Write `data` to `path` so that readers see either the old file or the whole new one."""
+# Called with the bytes read back from disk; raises when they must not be used.
+Check = Callable[[bytes], None]
+
+
+@dataclass
+class Staged:
+    """A file ready to take its place: written to a temporary file, synced and checked."""
+
+    path: Path
+    temp: str | None  # None when the file already holds these bytes
+    data: bytes  # the bytes read back from disk
+
+
+def stage(path: Path, data: bytes, check: Check | None = None) -> Staged:
+    """Write `data` next to `path` under a temporary name; `path` itself is not touched yet.
+
+    The temporary file is read back after the sync and those bytes go to `check`, so that bytes
+    which fail the check never replace a good file. On any failure the temporary file is removed.
+    A file that already holds `data` is not written again, so that its mtime stays.
+    """
+    try:
+        existing = path.read_bytes()
+    except FileNotFoundError:
+        existing = None
+    if existing == data:
+        if check is not None:
+            check(existing)
+        return Staged(path, None, existing)
+    tmp_name = _write_temp(path, data)
+    try:
+        with open(tmp_name, "rb") as handle:
+            on_disk = handle.read()
+        if check is not None:
+            check(on_disk)
+    except BaseException:
+        discard(Staged(path, tmp_name, b""))
+        raise
+    return Staged(path, tmp_name, on_disk)
+
+
+def _write_temp(path: Path, data: bytes) -> str:
     fd, tmp_name = tempfile.mkstemp(prefix=TMP_PREFIX, dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -50,23 +91,43 @@ def write_atomic(path: Path, data: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
             os.fchmod(handle.fileno(), FILE_MODE)
-        os.replace(tmp_name, path)
     except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
+        discard(Staged(path, tmp_name, b""))
         raise
-    _fsync_folder(path.parent)
+    return tmp_name
 
 
-def write_if_changed(path: Path, data: bytes) -> bool:
-    """Write `data` only when the file is missing or differs, so that its mtime stays otherwise."""
+def commit(staged: Staged) -> bool:
+    """Rename a staged file into place; True when a file was written."""
+    if staged.temp is None:
+        return False
     try:
-        if path.read_bytes() == data:
-            return False
-    except FileNotFoundError:
-        pass
-    write_atomic(path, data)
+        os.replace(staged.temp, staged.path)
+    except BaseException:
+        discard(staged)
+        raise
+    _fsync_folder(staged.path.parent)
     return True
+
+
+def discard(staged: Staged) -> None:
+    if staged.temp is not None:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(staged.temp)
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write `data` to `path` so that readers see either the old file or the whole new one."""
+    commit(Staged(path, _write_temp(path, data), data))
+
+
+def write_if_changed(path: Path, data: bytes, check: Check | None = None) -> bool:
+    """Write `data` only when the file is missing or differs, so that its mtime stays otherwise.
+
+    With `check`, the new bytes are checked as read back from the temporary file, before they
+    replace anything: a failed check leaves the existing file as it was.
+    """
+    return commit(stage(path, data, check))
 
 
 def remove_leftover_temps(folders: list[Path]) -> int:

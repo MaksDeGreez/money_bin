@@ -37,7 +37,8 @@ uv run receipt-ingest RAW_DIR OUT_DIR [--gap SECONDS] [--no-crop] [--redo-qr] [-
 - `--gap SECONDS` (default 8): a pause between two photos that is longer than this starts a new
   receipt. Exactly 8 seconds keeps two photos together. It must be a finite number, 0 or more:
   `nan`, `inf` and negative values are usage errors.
-- `--no-crop`: make no new crops. Crops from earlier runs are kept while their receipt is unchanged.
+- `--no-crop`: make no new crops. Crops from earlier runs are kept while their receipt is unchanged,
+  and a crop stage that failed in an earlier run stays owed until a run that crops.
 - `--redo-qr`: decode the QR codes of every receipt again, not only of new or changed ones.
 - `--redo-crop`: crop every receipt again.
 - `--jobs N`: worker processes. The default is the CPU count minus two, between 1 and 8. `--jobs 1`
@@ -90,6 +91,9 @@ another size, and rewrites the derived files.
 
 All paths in the JSON files are relative to `OUT_DIR`. Folders get mode 700, files mode 600. Every
 file is written to a temporary file, synced, renamed into place, and then its folder is synced too.
+A JPEG is read back from its temporary file and checked before the rename, so bytes that fail the
+check never replace a file. The images of one receipt take their place together: every photo is
+converted and every image written and checked under a temporary name before the first rename.
 
 ### images/
 
@@ -100,13 +104,15 @@ profile (iPhone photos carry Display P3) is converted to sRGB; pixels without a 
 sRGB.
 
 Then all metadata is removed: the JPEG is built from pixel data only, and it is checked twice:
-the encoded bytes in memory before the write, and the file read back from disk after the write.
+the encoded bytes in memory before the write, and the temporary file read back from disk before
+it is renamed into place.
 Only the markers a bare JPEG needs are allowed (SOI, APP0/JFIF without a thumbnail, DQT, SOF0-2,
 DHT, DRI, SOS, RST, EOI); there is no EXIF, GPS, XMP, ICC profile, MPF, Photoshop block or
 comment, and nothing after the end of the image. A file must be smaller than 15 MB (the app's
-`Receipt::MAX_IMAGE_BYTES`). Bytes that fail the first check are never written; a file on disk
-that fails the second check is deleted. Either way the stage fails (see "Failures"). The hashes
-and sizes recorded for a file are those of the bytes read back from disk.
+`Receipt::MAX_IMAGE_BYTES`). Bytes that fail the first check are never written; a temporary file
+that fails the second check is deleted, and the file it was meant to replace stays as it was.
+Either way the stage fails (see "Failures"). The hashes and sizes recorded for a file are those of
+the bytes read back from disk.
 
 `rcpt_000123_N_crop.jpg` is the crop of part N, and `thumbs/rcpt_000123_N.jpg` its thumbnail; both
 are written and checked the same way.
@@ -120,7 +126,7 @@ keys in this order:
 | --- | --- |
 | `receipt_id` | `rcpt_000123` |
 | `batch` | the batch folder name |
-| `seq_in_batch` | 1-based position of the receipt in its batch, in capture order |
+| `seq_in_batch` | 1-based position of the receipt in its batch, in capture order, counted over every receipt of the batch (raw-missing ones placed by their recorded capture time) |
 | `raw_files` | relative raw file names (`batch_02/IMG_0001.HEIC`), in capture order |
 | `captured_at` | capture time of the first photo, ISO 8601 with offset and the recorded sub-seconds; `null` without a capture time |
 | `images` | `[{file, sha256, width, height, bytes}]`, in part order; all the parts or none |
@@ -165,6 +171,16 @@ field `null`. A field that cannot be read is `null`, and the receipt gets `qr_fi
 | `qr_fields_partial` | some field of the tax-service URL could not be read |
 | `crop_failed` | at least one photo of the receipt has no crop |
 
+A line names files that are on disk, with two documented exceptions: an unchanged receipt whose
+image was removed from the output folder and whose conversion then failed (the line keeps the
+recorded entry and has `processing_failed`; the next run writes the image again), and a
+raw-missing receipt whose output files were removed by hand (it is frozen, so nothing is written
+for it until its photos are back).
+
+A raw-missing receipt that has a failed stage keeps `processing_failed` while the run exits with
+0: the stage is not tried while the receipt is frozen, so it did not fail again in this run; the
+retry waits until all its photos are back.
+
 ### groups_review.html and thumbs/
 
 A static contact sheet: one section per batch, one card per receipt with its number, flags, a QR
@@ -180,7 +196,8 @@ thumbnails, the cached QR result with the strategy that found each code, the cro
 stages that failed in the last run) and the retired numbers with the reason. Each image, thumbnail
 and crop entry carries `written_by`, the tool and library versions (receipt_ingest, Pillow,
 pillow-heif, libheif, OpenCV, zxing-cpp, NumPy) of the run that wrote that file; a file that is
-reused keeps the versions it was written with. `receipts.jsonl` does not show them. It holds no
+reused, or made again with the same bytes and so not written, keeps the versions it was written
+with. `receipts.jsonl` does not show them. It holds no
 run timestamps, so an identical run leaves it byte for byte the same. Do not edit it by hand.
 
 The whole file is checked when it is read, entry by entry: the types of every field; ids in the
@@ -222,14 +239,27 @@ The names are the relative raw names shown in `groups_review.html`. Order of app
 
 Errors stop the run with exit code 2 and a message that names the key and the entry: an unknown
 top-level key, a key written twice (YAML would otherwise keep only the last one), a wrong shape (a
-merge entry needs two or more names), a name that is not a scanned raw file (a duplicate's name
-counts as unknown: use the kept one), a name repeated inside one `merge` entry, in two `merge`
-entries or twice in `split` or `exclude`, a file that is both excluded and used in `merge` or
-`split`, and a merge across batches.
+merge entry needs two or more names), a name that is neither a scanned raw file nor a missing
+photo of a recorded receipt (see below; a duplicate's name counts as unknown: use the kept one,
+and so does the old name of a renamed photo), a name repeated inside one `merge` entry, in two
+`merge` entries or twice in `split` or `exclude`, a file that is both excluded and used in `merge`
+or `split`, and a merge across batches.
 
 Overrides never change a frozen receipt (see "Missing raw photos"). The names of its photos that
 are still in `RAW_DIR` stay valid in the file, but an `exclude` or `split` of such a photo and every
 `merge` entry that names one wait: the receipt changes again only once all its photos are back.
+
+A name that is not in this run's scan but is recorded in `state.json` as a photo of a receipt
+(its file was moved away or deleted) is valid too:
+
+- in `merge` and `split` it waits: the entry is skipped while the photo is missing, so moving a
+  batch away for a while does not stop the run;
+- in `exclude` it says that the photo is gone for good, or is not part of the set. The photo no
+  longer counts as missing, so its receipt is no longer frozen because of it, and the normal rules
+  apply to what is left, with the photo treated as excluded: when it was the earliest photo, the
+  number is retired (`excluded`) and the remaining photos get a new number; when every photo of
+  the receipt is excluded, the receipt is retired and its images, crops and thumbnails are
+  deleted. This is the way out of a receipt that is frozen for good.
 
 ## Stable numbers
 
@@ -246,7 +276,7 @@ A receipt's key is the SHA-256 of its earliest photo. Numbers are `rcpt_000001`,
   `regrouped` when its earliest photo now falls in an earlier group, for example after a longer
   `--gap`, or `failed` for a receipt that never got images and whose raw file is gone), and its
   images, crops and thumbnails are deleted. So only an override or a real regrouping, with all raw
-  files present, retires or rewrites a receipt.
+  files present (or released by an `exclude`), retires or rewrites a receipt.
 
 What follows from this:
 
@@ -255,7 +285,9 @@ What follows from this:
 - excluding the earliest photo of a receipt retires its number (`excluded`), and the remaining photos
   get a new number;
 - removing an override, or going back to the earlier `--gap`, brings the old numbers back;
-- `seq_in_batch` of a raw-missing receipt is the one from the run that last saw it.
+- `seq_in_batch` is counted again on every run over all the receipts of the batch, raw-missing
+  ones included (by their recorded capture time), so no two receipts of a batch share a position;
+  a new receipt earlier in the batch moves the later ones down by one.
 
 When the list of photo hashes of a receipt is unchanged, nothing of it is encoded again: its image
 bytes and hashes stay the same across runs, and library upgrades do not change them. When the list
@@ -267,13 +299,15 @@ Temporary files left by a killed run are removed at the start.
 
 ### Missing raw photos
 
-Output is never deleted, rewritten or renumbered because raw files are absent. A recorded receipt
+Output is never deleted, rewritten or renumbered because raw files are absent; only the owner's
+`exclude` of a missing photo changes that (below). A recorded receipt
 that has images and has at least one photo whose SHA-256 is not in this run's scan (moved away,
 deleted, changed, or no longer readable) is frozen: it keeps its number, its recorded photos and
 names, its images, thumbnails, QR result and crop exactly as recorded, and gets `raw_missing`. Its
 photos that are still in `RAW_DIR` belong to it: they do not form new receipts, and overrides do not
 change it. When the missing photos come back, the normal rules apply again, and an unchanged receipt
-comes out unchanged: same number, nothing encoded again.
+comes out unchanged: same number, nothing encoded again. A photo that will not come back can be
+released with an `exclude` entry (see "The override file").
 
 A photo whose bytes changed is a different photo to the tool: the receipt that had the old bytes is
 frozen, and the new file starts a receipt of its own. A receipt that never got images has nothing
@@ -288,8 +322,17 @@ failed stage prints `error: <raw file>: <ExceptionClass> (<stage>)`, the receipt
 - A failure never deletes a file that `state.json` records for a receipt whose photos are
   unchanged: the stage keeps the images, thumbnails, QR result or crop recorded by the last run.
 - A failure in thumbnails, QR decoding or cropping never discards the images converted in this run.
-- A conversion failure on a new or changed receipt leaves it with no images (a receipt has all its
-  images or none); what was converted for it in this run is deleted as orphans.
+- A conversion failure puts no image of the receipt in place (see "Output"). Should a rename fail
+  half way and leave an image with other bytes than recorded, the thumbnails, QR decoding and
+  cropping of that receipt are owed too and run on the next run.
+- A conversion failure on a receipt whose photos changed (for example a new photo that cannot be
+  decoded joins it) keeps the receipt exactly as recorded: number, photos, images, thumbnails, QR
+  result and crop. It gets `processing_failed`, nothing of it is deleted or written, and every run
+  tries the new grouping again until the conversion succeeds. The exception is a receipt one of
+  whose recorded photos went to another receipt in this run (after a split, say): it cannot keep
+  that photo, so it is left with no images until the conversion succeeds.
+- A conversion failure on a new receipt leaves it with no images (a receipt has all its images or
+  none).
 
 ## QR codes
 
@@ -368,7 +411,8 @@ full image and warped to an upright rectangle.
 
 No good shape means no crop file and `crop_failed`; the full image is always kept. The result is
 cached in `state.json` and not retried unless `--redo-crop` is given, the receipt's photos change or
-the crop stage failed with an error (`processing_failed`, not `crop_failed`).
+the crop stage failed with an error (`processing_failed`, not `crop_failed`; a `--no-crop` run
+keeps that retry owed).
 On the owner's photos 332 of 341 photos got a crop; the failures are crumpled or curled receipts.
 A crop can still be wrong (for example only part of a receipt that a strip of tape cuts across), so
 check them before trusting them.

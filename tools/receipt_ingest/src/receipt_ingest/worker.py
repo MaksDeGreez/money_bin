@@ -5,12 +5,12 @@ the previous run's result is still valid, which keeps a second identical run fro
 
 The four stages fail separately. A failed stage falls back to what the previous run recorded when
 the receipt's photos are the same, so a failure never costs images that were already good; the
-receipt gets `processing_failed` and the failed stage runs again on the next run.
+receipt gets `processing_failed` and the failed stage runs again on the next run. A receipt whose
+photos changed and whose conversion fails is kept as recorded (see `Outcome.kept`).
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import io
 from dataclasses import dataclass, field
@@ -25,11 +25,13 @@ from PIL import Image
 
 import receipt_ingest
 from receipt_ingest import crop, imaging, qr
-from receipt_ingest.fsutil import write_if_changed
+from receipt_ingest.fsutil import Staged, commit, discard, stage
 from receipt_ingest.numbering import STAGES
 
 IMAGES_DIR = "images"
 THUMBS_DIR = "thumbs"
+# Made from the full-size images, so they are stale once an image has other bytes.
+DERIVED_STAGES = ("thumbs", "qr", "crop")
 
 
 @dataclass
@@ -42,6 +44,8 @@ class Task:
     crop_enabled: bool
     redo_qr: bool
     redo_crop: bool
+    # The previous run's record of this receipt's key, also when its parts changed.
+    recorded: dict | None = None
 
 
 @dataclass
@@ -67,6 +71,9 @@ class Outcome:
     failures: list[Failure] = field(default_factory=list)
     # Stages that failed in an earlier run and did not get to run in this one.
     pending: list[str] = field(default_factory=list)
+    # The parts changed and their conversion failed: the recorded receipt stands as it was, with
+    # its old parts, so that one unreadable new photo does not cost the images it already had.
+    kept: bool = False
 
     @property
     def failed_stages(self) -> list[str]:
@@ -119,6 +126,19 @@ def _entry(entries: list[dict], part: int) -> dict | None:
     return entries[part - 1] if part <= len(entries) else None
 
 
+def _files(record: dict) -> list[dict]:
+    crops = [part for part in (record.get("crop") or {}).get("parts", []) if "file" in part]
+    return [*(record.get("images") or []), *(record.get("thumbs") or []), *crops]
+
+
+def _overwrote(converted: dict[int, dict], recorded: list[dict]) -> bool:
+    """True when an image put in place this run holds other bytes than the recorded one."""
+    return any(
+        part <= len(recorded) and entry["sha256"] != recorded[part - 1]["sha256"]
+        for part, entry in converted.items()
+    )
+
+
 class _Receipt:
     """Holds the state of one task while it runs."""
 
@@ -130,51 +150,80 @@ class _Receipt:
         self.outcome = Outcome(task.receipt_id)
         self.current: str | None = None
         self._jpegs: dict[int, bytes] = {}
+        # The image entries put in place by this run's conversion, by part.
+        self.converted: dict[int, dict] = {}
+        # The last run's files by name, so that a file this run leaves as it was keeps the
+        # versions that wrote it.
+        recorded = task.recorded or task.previous or {}
+        self.earlier = {entry["file"]: entry for entry in _files(recorded)}
 
     def jpeg(self, part: int) -> bytes:
         if part not in self._jpegs:
             self._jpegs[part] = (self.out / self.outcome.images[part - 1]["file"]).read_bytes()
         return self._jpegs[part]
 
-    def write(self, relative: str, data: bytes) -> tuple[bool, bytes]:
-        """Write a JPEG, then read it back from disk and check those bytes.
+    def info(self, relative: str, data: bytes, size: tuple[int, int], written: bool) -> dict:
+        entry = file_info(relative, data, size)
+        earlier = self.earlier.get(relative)
+        if not written and earlier is not None and earlier["sha256"] == entry["sha256"]:
+            # Nothing was written: the file on disk is still the one those versions made.
+            entry["written_by"] = dict(earlier["written_by"])
+        return entry
 
-        Returns (written, the bytes on disk). A file that fails the check is removed.
+    def write(self, relative: str, data: bytes) -> tuple[bool, bytes]:
+        """Write a JPEG; the bytes read back from disk are checked before they replace the file.
+
+        Returns (written, the bytes on disk). Bytes that fail the check never replace a file.
         """
-        path = self.out / relative
-        # Comparing first keeps a file and its mtime when a redo produces the same bytes.
-        written = write_if_changed(path, data)
-        on_disk = path.read_bytes()
-        try:
-            imaging.verify_bare_jpeg(on_disk)
-        except imaging.MetadataLeftError:
-            with contextlib.suppress(FileNotFoundError):
-                path.unlink()
-            raise
-        return written, on_disk
+        staged = stage(self.out / relative, data, imaging.verify_bare_jpeg)
+        return commit(staged), staged.data
 
     def convert(self) -> bool:
-        """Write the full-size images that are new or missing; True when any image changed."""
+        """Write the full-size images that are new or missing; True when any image changed.
+
+        Every photo is decoded, and every new file written and checked under a temporary name,
+        before the first one takes its place: a photo that cannot be read, or a file that fails
+        the check, leaves all the receipt's images as they were.
+        """
         task, outcome = self.task, self.outcome
         previous_images = self.previous.get("images") or []
         changed = task.previous is None or len(previous_images) != len(task.parts)
+        images: dict[int, dict] = {}
+        fresh: list[tuple[int, str, str, bytes, tuple[int, int]]] = []
         for part, (raw_path, raw_name) in enumerate(task.parts, start=1):
             self.current = raw_name
             relative = f"{IMAGES_DIR}/{task.receipt_id}_{part}.jpg"
             recorded = _entry(previous_images, part)
             if _reusable(self.out, recorded, relative):
-                outcome.images.append(recorded)
+                images[part] = recorded
                 continue
             with open(raw_path, "rb") as handle:
                 raw = handle.read()
             picture = imaging.decode_to_srgb(raw)
-            written, data = self.write(relative, imaging.encode_jpeg(picture))
-            outcome.images_written += written
-            self._jpegs[part] = data
-            info = file_info(relative, data, picture.size)
-            outcome.images.append(info)
-            if recorded is None or recorded["sha256"] != info["sha256"]:
-                changed = True
+            fresh.append((part, raw_name, relative, imaging.encode_jpeg(picture), picture.size))
+
+        staged: list[Staged] = []
+        placed = 0
+        try:
+            for _, raw_name, relative, data, _ in fresh:
+                self.current = raw_name
+                staged.append(stage(self.out / relative, data, imaging.verify_bare_jpeg))
+            for item, (part, raw_name, relative, _, size) in zip(staged, fresh, strict=True):
+                self.current = raw_name
+                placed += 1
+                written = commit(item)
+                outcome.images_written += written
+                self._jpegs[part] = item.data
+                entry = self.info(relative, item.data, size, written)
+                images[part] = self.converted[part] = entry
+                recorded = _entry(previous_images, part)
+                if recorded is None or recorded["sha256"] != entry["sha256"]:
+                    changed = True
+        except BaseException:
+            for item in staged[placed:]:
+                discard(item)
+            raise
+        outcome.images = [images[part] for part in range(1, len(task.parts) + 1)]
         return changed
 
     def thumbnails(self, changed: bool) -> None:
@@ -190,7 +239,7 @@ class _Receipt:
             data = imaging.thumbnail(imaging.open_jpeg(self.jpeg(part)))
             written, data = self.write(relative, data)
             self.outcome.thumbs_written += written
-            self.outcome.thumbs.append(file_info(relative, data, _jpeg_size(data)))
+            self.outcome.thumbs.append(self.info(relative, data, _jpeg_size(data), written))
 
     def decode_qr(self, changed: bool) -> None:
         previous = self.previous.get("qr")
@@ -220,8 +269,11 @@ class _Receipt:
         task = self.task
         previous = self.previous.get("crop")
         if not task.crop_enabled:
-            # --no-crop keeps crops that still match the images and makes no new ones.
+            # --no-crop keeps crops that still match the images and makes no new ones. A crop
+            # that failed with an error stays owed until a run that crops.
             self.outcome.crop = None if changed else previous
+            if "crop" in self.retry:
+                self.outcome.pending.append("crop")
             return
         stale = previous is None or changed or task.redo_crop or "crop" in self.retry
         if not stale:
@@ -242,7 +294,7 @@ class _Receipt:
             relative = f"{IMAGES_DIR}/{task.receipt_id}_{part}_crop.jpg"
             written, encoded = self.write(relative, imaging.encode_jpeg(Image.fromarray(flat)))
             self.outcome.crops_written += written
-            info = file_info(relative, encoded, (flat.shape[1], flat.shape[0]))
+            info = self.info(relative, encoded, (flat.shape[1], flat.shape[0]), written)
             done.append({**info, "part": part, "quad": found.quad})
         self.outcome.crop = {"parts": done}
 
@@ -254,6 +306,45 @@ class _Receipt:
 def _fill(done: list[dict], recorded: list[dict], count: int) -> list[dict]:
     """The entries made this run, then the recorded ones for the parts that were not reached."""
     return done + recorded[len(done) : count]
+
+
+def _keepable(task: Task, converted: dict[int, dict]) -> bool:
+    """A receipt whose parts changed can stand as recorded while its files are still its own."""
+    recorded = task.recorded
+    if task.previous is not None or recorded is None or not recorded["images"]:
+        return False
+    return not _overwrote(converted, recorded["images"])
+
+
+def _conversion_failed(receipt: _Receipt) -> None:
+    """Decide what a receipt whose conversion failed keeps; the next run converts again."""
+    task, outcome = receipt.task, receipt.outcome
+    count = len(task.parts)
+    pending = receipt.retry - {"convert"}
+    recorded = receipt.previous.get("images") or []
+    source = receipt.previous
+    if task.previous is not None and len(recorded) == count:
+        # The same photos: what was put in place this run is on disk, the rest is as recorded.
+        outcome.images = [
+            receipt.converted.get(part, recorded[part - 1]) for part in range(1, count + 1)
+        ]
+        if _overwrote(receipt.converted, recorded):
+            # Thumbnails, QR result and crop were made from the old bytes.
+            pending.update(DERIVED_STAGES)
+    elif _keepable(task, receipt.converted):
+        assert task.recorded is not None
+        outcome.kept = True
+        source = task.recorded
+        outcome.images = list(source["images"])
+        pending = set(source.get("failed_stages") or []) - {"convert"}
+    else:
+        # A receipt has all its images or none. Files converted this run belong to no
+        # recorded receipt yet and are removed as orphans.
+        outcome.images = []
+    outcome.thumbs = source.get("thumbs") or []
+    outcome.qr = source.get("qr")
+    outcome.crop = source.get("crop")
+    outcome.pending = sorted(pending)
 
 
 def process(task: Task) -> Outcome:
@@ -268,17 +359,7 @@ def process(task: Task) -> Outcome:
         changed = receipt.convert()
     except Exception as error:
         receipt.fail("convert", error)
-        recorded = keep.get("images") or []
-        if len(recorded) == count:
-            outcome.images = _fill(outcome.images, recorded, count)
-        else:
-            # A receipt has all its images or none. Files converted this run belong to no
-            # recorded receipt yet and are removed as orphans.
-            outcome.images = []
-        outcome.thumbs = keep.get("thumbs") or []
-        outcome.qr = keep.get("qr")
-        outcome.crop = keep.get("crop")
-        outcome.pending = sorted(receipt.retry - {"convert"})
+        _conversion_failed(receipt)
         return outcome
 
     try:

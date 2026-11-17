@@ -11,6 +11,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
@@ -124,6 +125,37 @@ def receipt_flags(record: dict) -> list[str]:
     return [flag for flag in FLAG_ORDER if flag in flags]
 
 
+_CAPTURED = re.compile(r"([0-9-]+T[0-9:]+)(?:\.([0-9]+))?([+-][0-9]{2}:[0-9]{2})")
+
+
+def _capture_order(record: dict) -> tuple:
+    """The scan order of a receipt's first photo, rebuilt from the record (see scan.order_files).
+
+    It works from the recorded capture time, so that a frozen receipt, whose first photo may be
+    gone, takes its place among the others.
+    """
+    match = _CAPTURED.fullmatch(record["captured_at"] or "")
+    first = record["raw_files"][0]
+    if match is None:
+        return (record["batch"], 1, 0.0, first)
+    stamp, subsec, offset = match.groups()
+    try:
+        moment = datetime.fromisoformat(stamp + offset)
+    except ValueError:
+        return (record["batch"], 1, 0.0, first)
+    # The same rounding as the scan: the first six digits of the sub-seconds.
+    micro = int(((subsec or "") + "000000")[:6])
+    return (record["batch"], 0, moment.replace(microsecond=micro).timestamp(), first)
+
+
+def number_in_batches(records: list[dict]) -> None:
+    """Set `seq_in_batch`: the 1-based position of each receipt in its batch, frozen ones too."""
+    per_batch: Counter = Counter()
+    for record in sorted(records, key=_capture_order):
+        per_batch[record["batch"]] += 1
+        record["seq_in_batch"] = per_batch[record["batch"]]
+
+
 def jsonl_line(record: dict) -> str:
     payload = (record.get("qr") or {}).get("payload")
     qr_values, qr_fields, _ = taxurl.parse(payload)
@@ -192,18 +224,27 @@ class Run:
 
         scanned = self.scan(raw_dir)
         canonical, duplicates = self.deduplicate(scanned.files, state)
+        known = {item.name: item for item in canonical}
         all_shas = {item.sha256 for item in scanned.files}
+        missing = numbering.missing_names(state, set(known), all_shas)
+        try:
+            overrides = grouping.load_overrides(out_dir / grouping.OVERRIDE_FILE)
+        except grouping.OverrideError as error:
+            self.complain(f"error: {grouping.OVERRIDE_FILE}: {error}")
+            return EXIT_USAGE
+        # Excluding a missing photo is the owner saying it will not come back: it counts as
+        # present and excluded, so its receipt is no longer frozen because of it.
+        released = {sha for name in overrides.exclude for sha in missing.get(name, ())}
+        present = all_shas | released
         # A receipt that lost some of its photos is kept as recorded; the photos it still has
         # stay with it and are not grouped again.
-        frozen = numbering.frozen_records(state, all_shas)
+        frozen = numbering.frozen_records(state, present)
         frozen_shas = {sha for record in frozen for sha in record["parts"]}
         frozen_names = {item.name for item in canonical if item.sha256 in frozen_shas}
-        known = {item.name: item for item in canonical}
         free = [item for item in canonical if item.sha256 not in frozen_shas]
         groups = grouping.group_by_gap(free, options.gap)
         try:
-            overrides = grouping.load_overrides(out_dir / grouping.OVERRIDE_FILE)
-            grouped = grouping.apply_overrides(groups, overrides, known, frozen_names)
+            grouped = grouping.apply_overrides(groups, overrides, known, frozen_names, set(missing))
         except grouping.OverrideError as error:
             self.complain(f"error: {grouping.OVERRIDE_FILE}: {error}")
             return EXIT_USAGE
@@ -213,13 +254,12 @@ class Run:
         ensure_dir(out_dir / worker.THUMBS_DIR)
         remove_leftover_temps([out_dir, out_dir / worker.IMAGES_DIR, out_dir / worker.THUMBS_DIR])
 
-        excluded_shas = {item.sha256 for item in grouped.excluded}
-        plan = numbering.plan(
-            grouped.groups, state, all_shas, excluded_shas, grouped.merged, frozen
-        )
+        excluded_shas = {item.sha256 for item in grouped.excluded} | released
+        plan = numbering.plan(grouped.groups, state, present, excluded_shas, grouped.merged, frozen)
         records = self.process(plan, out_dir)
         records += [{**record, "raw_missing": True} for record in plan.raw_missing]
         self.counts.status["raw_missing"] = len(plan.raw_missing)
+        number_in_batches(records)
         records.sort(key=lambda record: numbering.id_number(record["receipt_id"]))
 
         restored = {planned.group[0].sha256 for planned in plan.planned}
@@ -307,11 +347,6 @@ class Run:
 
     def process(self, plan: numbering.Plan, out_dir: Path) -> list[dict]:
         options = self.options
-        seq: dict[str, int] = {}
-        per_batch: Counter = Counter()
-        for planned in sorted(plan.planned, key=lambda planned: planned.group[0].order):
-            per_batch[planned.group[0].batch] += 1
-            seq[planned.receipt_id] = per_batch[planned.group[0].batch]
         tasks = []
         for planned in plan.planned:
             previous = planned.previous if planned.status == "unchanged" else None
@@ -324,16 +359,32 @@ class Run:
                     crop_enabled=options.crop,
                     redo_qr=options.redo_qr,
                     redo_crop=options.redo_crop,
+                    recorded=planned.previous,
                 )
             )
+        outcomes = list(_map(worker.process, tasks, options.jobs))
+        # A receipt kept as recorded holds its old photos. One of them may have gone to another
+        # receipt in this run (a split, for example); a photo in two receipts would make
+        # state.json unusable, so such a receipt cannot be kept and loses its images instead.
+        claimed = {
+            item.sha256
+            for planned, outcome in zip(plan.planned, outcomes, strict=True)
+            if not outcome.kept
+            for item in planned.group
+        }
         records = []
-        for planned, outcome in zip(
-            plan.planned, _map(worker.process, tasks, options.jobs), strict=True
-        ):
-            records.append(self.record(planned, outcome, seq[planned.receipt_id]))
+        for planned, outcome in zip(plan.planned, outcomes, strict=True):
+            if outcome.kept:
+                assert planned.previous is not None
+                if claimed.intersection(planned.previous["parts"]):
+                    outcome.kept = False
+                    outcome.images, outcome.thumbs = [], []
+                    outcome.qr = outcome.crop = None
+                    outcome.pending = []
+            records.append(self.record(planned, outcome))
         return records
 
-    def record(self, planned: numbering.Planned, outcome: worker.Outcome, seq: int) -> dict:
+    def record(self, planned: numbering.Planned, outcome: worker.Outcome) -> dict:
         counts = self.counts
         group = planned.group
         group_flags = []
@@ -345,12 +396,17 @@ class Run:
             "receipt_id": planned.receipt_id,
             "key": group[0].sha256,
             "batch": group[0].batch,
-            "seq_in_batch": seq,
+            # Set once every receipt of the run is known (number_in_batches).
+            "seq_in_batch": 0,
             "raw_files": [item.name for item in group],
             "parts": [item.sha256 for item in group],
             "captured_at": group[0].captured_text,
             "group_flags": group_flags,
         }
+        if outcome.kept:
+            assert planned.previous is not None
+            # Everything as recorded: the new parts wait until their conversion succeeds.
+            record = {k: v for k, v in planned.previous.items() if k != "raw_missing"}
         counts.images_written += outcome.images_written
         counts.thumbs_written += outcome.thumbs_written
         counts.crops_written += outcome.crops_written

@@ -141,7 +141,13 @@ def load_overrides(path: Path) -> Overrides:
     return parse_overrides(text)
 
 
-def _check_names(overrides: Overrides, known: dict[str, RawFile]) -> None:
+def _batch_of(name: str) -> str:
+    # The batch is the folder directly under the raw folder, so the name alone tells it, also
+    # for a photo that is not there in this run.
+    return name.split("/", 1)[0]
+
+
+def _check_names(overrides: Overrides, known: dict[str, RawFile], waiting: set[str]) -> None:
     entries: list[tuple[str, str]] = [
         (f"merge[{i}][{j}]", name)
         for i, names in enumerate(overrides.merge)
@@ -150,14 +156,14 @@ def _check_names(overrides: Overrides, known: dict[str, RawFile]) -> None:
     entries += [(f"split[{i}]", name) for i, name in enumerate(overrides.split)]
     entries += [(f"exclude[{i}]", name) for i, name in enumerate(overrides.exclude)]
     for where, name in entries:
-        if name not in known:
+        if name not in known and name not in waiting:
             raise OverrideError(f"{where}: {name!r} is not a scanned raw file")
     excluded = set(overrides.exclude)
     for where, name in entries:
         if not where.startswith("exclude") and name in excluded:
             raise OverrideError(f"{where}: {name!r} is also excluded")
     for index, names in enumerate(overrides.merge):
-        batches = {known[name].batch for name in names}
+        batches = {_batch_of(name) for name in names}
         if len(batches) > 1:
             raise OverrideError(f"merge[{index}]: the files are in different batches")
 
@@ -175,16 +181,21 @@ def apply_overrides(
     overrides: Overrides,
     known: dict[str, RawFile],
     frozen: set[str] | None = None,
+    waiting: set[str] | None = None,
 ) -> Grouped:
     """Apply exclude, then split, then merge.
 
     `known` holds every scanned file by name, `groups` only those that may be regrouped. Names in
     `frozen` (photos of receipts kept as recorded because another of their photos is missing) are
-    valid names, but the entries that use them wait until the receipt is complete again.
+    valid names, but the entries that use them wait until the receipt is complete again. Names in
+    `waiting` are recorded photos missing from this run: valid too, and a merge or split that
+    uses one waits for it. (Excluding a missing photo releases it; the caller handles that.)
     """
-    _check_names(overrides, known)
+    waiting = waiting or set()
+    _check_names(overrides, known, waiting)
     frozen = frozen or set()
-    excluded_names = set(overrides.exclude) - frozen
+    on_hold = frozen | waiting
+    excluded_names = set(overrides.exclude) - on_hold
     excluded = [known[name] for name in sorted(excluded_names, key=lambda n: known[n].order)]
     # Removing a photo keeps the rest of its group together, even when it was in the middle.
     kept = [[f for f in group if f.name not in excluded_names] for group in groups]
@@ -212,7 +223,7 @@ def apply_overrides(
 
     where = {item.name: index for index, group in enumerate(after_split) for item in group}
     for names in overrides.merge:
-        if frozen.intersection(names):
+        if on_hold.intersection(names):
             continue
         first = root(where[names[0]])
         for name in names[1:]:

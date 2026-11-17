@@ -5,7 +5,7 @@ import os
 import stat
 
 import pytest
-from support import receipts, shot, state
+from support import receipt_on_table, receipts, shot, state
 
 from receipt_ingest import fsutil, numbering, pipeline
 
@@ -214,3 +214,40 @@ def test_atomic_write_syncs_the_folder(tmp_path, monkeypatch):
 
 def test_an_empty_state_is_valid():
     assert numbering.load_state(json.dumps(numbering.empty_state())) == numbering.empty_state()
+
+
+def test_a_file_left_as_it_was_keeps_the_versions_that_wrote_it(raw, out, run_tool):
+    shot(raw, "b/IMG_0001.jpg", 0, image=receipt_on_table())
+    run_tool(raw, out)
+    old = {"pillow": "0.0-test"}
+    data = state(out)
+    record = first(data)
+    assert record["crop"]["parts"][0]["file"]
+    for entry in record["images"] + record["thumbs"] + record["crop"]["parts"]:
+        entry["written_by"] = old
+    record["failed_stages"] = ["thumbs"]
+    write_state(out, data)
+
+    # Thumbnails and crop are made again, with the same bytes: nothing is written.
+    result = run_tool(raw, out, "--redo-crop")
+    assert "Written: 0 images, 0 crops, 0 thumbnails" in result.out
+    record = first(state(out))
+    for entry in record["thumbs"] + record["crop"]["parts"]:
+        assert entry["written_by"] == old
+
+    # A photo joins: the first image is encoded again with the same bytes and is not written.
+    shot(raw, "b/IMG_0002.jpg", 2, image=receipt_on_table())
+    result = run_tool(raw, out)
+    assert "Written: 1 images" in result.out
+    images = first(state(out))["images"]
+    assert images[0]["written_by"] == old
+    assert images[1]["written_by"]["pillow"] != "0.0-test"
+
+
+@pytest.mark.parametrize("captured_at", [None, "not a time", "2026-13-01T10:00:00+02:00"])
+def test_a_receipt_without_a_usable_capture_time_comes_last_in_its_batch(captured_at):
+    timed = {"batch": "b", "captured_at": "2026-03-01T10:00:00.5+02:00", "raw_files": ["b/z"]}
+    other = {"batch": "b", "captured_at": captured_at, "raw_files": ["b/a"]}
+    records = [other, timed]
+    pipeline.number_in_batches(records)
+    assert (timed["seq_in_batch"], other["seq_in_batch"]) == (1, 2)
