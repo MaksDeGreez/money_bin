@@ -1,11 +1,12 @@
 source "https://rubygems.org"
 
-# Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
+ruby file: ".ruby-version"
+
 gem "rails", "~> 8.1.4", ">= 8.1.4.1"
 # The modern asset pipeline for Rails [https://github.com/rails/propshaft]
 gem "propshaft"
 # Use postgresql as the database for Active Record
-gem "pg", "~> 1.1"
+gem "pg", "~> 1.7"
 # Use the Puma web server [https://github.com/puma/puma]
 gem "puma", ">= 5.0"
 # Use JavaScript with ESM import maps [https://github.com/rails/importmap-rails]
@@ -14,13 +15,22 @@ gem "importmap-rails"
 gem "turbo-rails"
 # Hotwire's modest JavaScript framework [https://stimulus.hotwired.dev]
 gem "stimulus-rails"
-# Use Tailwind CSS [https://github.com/rails/tailwindcss-rails]
+# Tailwind CSS v4 built by the bundled standalone CLI, no Node needed [https://github.com/rails/tailwindcss-rails]
 gem "tailwindcss-rails"
-# Use Redis adapter to run Action Cable in production
-# gem "redis", ">= 4.0.1"
+# Slim templates [https://github.com/slim-template/slim-rails]
+gem "slim-rails"
+# Lucide icons as inline SVG helpers [https://github.com/heyvito/lucide-rails]
+gem "lucide-rails"
+# Merge conflicting Tailwind utilities when callers override component classes
+gem "tailwind_merge"
 
-# Use Active Model has_secure_password [https://guides.rubyonrails.org/active_model_basics.html#securepassword]
-# gem "bcrypt", "~> 3.1.7"
+# Redis backs the cache store, Action Cable and Sidekiq
+gem "redis", ">= 5.0"
+# Background jobs for Active Job [https://sidekiq.org]
+gem "sidekiq", "~> 8.1"
+
+# Load .env* files into ENV (.env.example lists the settings)
+gem "dotenv"
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem "tzinfo-data", platforms: %i[ windows jruby ]
@@ -29,7 +39,7 @@ gem "tzinfo-data", platforms: %i[ windows jruby ]
 gem "bootsnap", require: false
 
 # Use Active Storage variants [https://guides.rubyonrails.org/active_storage_overview.html#transforming-images]
-gem "image_processing", "~> 1.2"
+gem "image_processing", "~> 2.2"
 
 group :development, :test do
   # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem
@@ -43,6 +53,20 @@ group :development, :test do
 
   # Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
   gem "rubocop-rails-omakase", require: false
+
+  # Slim template linting [https://github.com/sds/slim-lint]
+  gem "slim_lint", require: false
+
+  # Process manager used by bin/dev
+  gem "foreman", require: false
+end
+
+group :test do
+  # Stubs HTTP in tests so no test ever reaches a real service [https://github.com/bblimke/webmock]
+  gem "webmock"
+
+  # Line coverage report and the minimum gate (see test/test_helper.rb)
+  gem "simplecov", require: false
 end
 
 group :development do
