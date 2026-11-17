@@ -1,0 +1,22 @@
+# The plain values are in test/support/api_token_test_helper.rb; only their digests are stored.
+agent_read:
+  user: owner
+  name: Read-only agent
+  token_digest: <%= ApiToken.digest(ApiTokenTestHelper::PLAIN_TOKENS.fetch(:agent_read)) %>
+  scope: read
+
+agent_write:
+  user: owner
+  name: Bookkeeping agent
+  token_digest: <%= ApiToken.digest(ApiTokenTestHelper::PLAIN_TOKENS.fetch(:agent_write)) %>
+  scope: read_write
+  last_used_at: <%= 2.days.ago.utc.iso8601 %>
+
+revoked:
+  user: owner
+  name: Old import script
+  token_digest: <%= ApiToken.digest(ApiTokenTestHelper::PLAIN_TOKENS.fetch(:revoked)) %>
+  scope: read_write
+  created_at: <%= 30.days.ago.utc.iso8601 %>
+  last_used_at: <%= 10.days.ago.utc.iso8601 %>
+  revoked_at: <%= 9.days.ago.utc.iso8601 %>

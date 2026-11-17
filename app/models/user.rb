@@ -15,6 +15,7 @@ class User < ApplicationRecord
   has_secure_password reset_token: false
 
   has_many :sessions, dependent: :delete_all
+  has_many :api_tokens, dependent: :delete_all
 
   normalizes :email_address, with: ->(value) { value.strip.downcase }
 

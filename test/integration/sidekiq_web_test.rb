@@ -29,4 +29,10 @@ class SidekiqWebTest < ActionDispatch::IntegrationTest
 
     assert_response :not_found
   end
+
+  test "an API token does not open it" do
+    get "/sidekiq", headers: bearer(plain_token(:agent_write))
+
+    assert_response :not_found
+  end
 end

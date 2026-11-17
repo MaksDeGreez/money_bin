@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_160800) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_160900) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -54,6 +54,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160800) do
     t.bigint "blob_id", null: false
     t.string "variation_digest", null: false
     t.index ["blob_id", "variation_digest"], name: "index_active_storage_variant_records_uniqueness", unique: true
+  end
+
+  create_table "api_tokens", force: :cascade do |t|
+    t.bigint "user_id", null: false
+    t.string "name", null: false
+    t.string "token_digest", limit: 64, null: false
+    t.string "scope", default: "read", null: false
+    t.datetime "last_used_at"
+    t.datetime "revoked_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
+    t.index ["user_id", "name"], name: "index_api_tokens_on_user_id_and_name_active", unique: true, where: "(revoked_at IS NULL)"
+    t.index ["user_id"], name: "index_api_tokens_on_user_id"
+    t.check_constraint "scope::text = ANY (ARRAY['read'::character varying, 'read_write'::character varying]::text[])", name: "api_tokens_scope_allowed"
+    t.check_constraint "token_digest::text ~ '^[0-9a-f]{64}$'::text", name: "api_tokens_token_digest_format"
   end
 
   create_table "categories", force: :cascade do |t|
@@ -193,6 +209,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160800) do
 
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
+  add_foreign_key "api_tokens", "users", on_delete: :cascade
   add_foreign_key "categories", "categories", column: "parent_id"
   add_foreign_key "receipt_items", "categories"
   add_foreign_key "receipt_items", "categories", column: "suggested_category_id"
