@@ -22,8 +22,12 @@ needs no review) and say which you skipped.
    user-visible, look at it running (`bin/dev`) rather than trusting the tests.
 4. **Review**, in proportion to the change. Docs-only and few-line changes need none. Anything else gets
    the `reviewer` agent (`.claude/agents/reviewer.md`, read-only) on the diff, briefed with the code and
-   the goal, not with your conclusion. Check every finding against the code: fix what is real, note what
-   you reject and why, and put the outcome in the PR body.
+   the goal, not with your conclusion. Changes to the data model, a migration, money arithmetic, an
+   importer or anything hard to undo also get the `codex-review` skill (`bin/codex-review`, another
+   vendor's model) as a second opinion; start both at once in the background. Without Codex (not
+   installed, logged out, out of quota) go on with the reviewer alone and say so. Check every finding
+   against the code: fix what is real, note what you reject and why, and put the outcome in the PR body
+   (`docs/decisions/0003-agent-tooling.md`).
 5. **Pull request.** Commit with explicit paths when the tree may hold scratch files or another agent's
    work, then `git push -u origin <branch>` (the pre-push hook refuses `main` and runs the leak check)
    and `gh pr create`. The PR body says what changed and why, how it was verified, and what the review

@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Regenerates the favicon set in public/ from design/favicon/source.png.
+#
+#   bin/favicon
+#
+# Output (all referenced from app/views/layouts/_head.html.slim):
+#
+#   public/favicon.ico          16, 32 and 48 px (PNG-compressed ICO entries)
+#   public/favicon-96.png       HiDPI tab icon
+#   public/apple-touch-icon.png 180 px, opaque dark background (iOS paints
+#                               transparency black), 8% padding
+#
+# Only needs libvips (via the ruby-vips gem already in the bundle); the ICO
+# container is written by hand because vips cannot save it.
+
+require "bundler/setup"
+require "vips"
+require "fileutils"
+
+ROOT = File.expand_path("..", __dir__)
+SOURCE = File.join(ROOT, "design/favicon/source.png")
+PUBLIC = File.join(ROOT, "public")
+
+# The dark navy behind the artwork on the iOS icon, as RGB.
+APPLE_BACKGROUND = [ 15, 23, 42 ].freeze
+APPLE_SIZE = 180
+APPLE_PADDING = (APPLE_SIZE * 0.08).round
+
+abort "Missing #{SOURCE}" unless File.exist?(SOURCE)
+
+source = Vips::Image.new_from_file(SOURCE)
+abort "Source must be square, got #{source.width}x#{source.height}" unless source.width == source.height
+source = source.bandjoin(255) if source.bands == 3
+
+def png_bytes(image)
+  image.write_to_buffer(".png", compression: 9, palette: false)
+end
+
+def square(source, size)
+  source.thumbnail_image(size, height: size, size: :both)
+end
+
+# Multi-resolution ICO: header, one directory entry per image, then PNG blobs.
+def write_ico(path, images)
+  blobs = images.map { |image| [ image.width, png_bytes(image) ] }
+  header = [ 0, 1, blobs.size ].pack("vvv")
+  offset = header.bytesize + blobs.size * 16
+  entries = +""
+  blobs.each do |size, data|
+    dimension = size >= 256 ? 0 : size
+    entries << [ dimension, dimension, 0, 0, 1, 32, data.bytesize, offset ].pack("CCCCvvVV")
+    offset += data.bytesize
+  end
+  File.binwrite(path, header + entries + blobs.map(&:last).join)
+end
+
+FileUtils.mkdir_p(PUBLIC)
+
+write_ico(File.join(PUBLIC, "favicon.ico"), [ 16, 32, 48 ].map { |size| square(source, size) })
+
+File.binwrite(File.join(PUBLIC, "favicon-96.png"), png_bytes(square(source, 96)))
+
+background = Vips::Image.black(APPLE_SIZE, APPLE_SIZE, bands: 3).add(APPLE_BACKGROUND).cast(:uchar)
+artwork = square(source, APPLE_SIZE - APPLE_PADDING * 2)
+apple = background.composite2(artwork, :over, x: APPLE_PADDING, y: APPLE_PADDING).flatten(background: APPLE_BACKGROUND)
+File.binwrite(File.join(PUBLIC, "apple-touch-icon.png"), png_bytes(apple))
+
+puts Dir.glob(File.join(PUBLIC, "{favicon*,apple-touch-icon}*")).sort.map { |f| "#{File.basename(f)} (#{File.size(f) / 1024} KB)" }
