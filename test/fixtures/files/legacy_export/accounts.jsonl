@@ -1,0 +1,5 @@
+{"legacy_id":1,"name":"Home cash","kind":"cash","currency":"UAH","archived":false}
+{"legacy_id":2,"name":"Daily debit card","kind":"debit","currency":"UAH","archived":false}
+{"legacy_id":3,"name":"Travel credit card","kind":"credit","currency":"UAH","archived":false}
+{"legacy_id":4,"name":"Dollar savings","kind":"savings","currency":"USD","archived":false}
+{"legacy_id":5,"name":"Closed e-wallet","kind":"ewallet","currency":"USD","archived":true}

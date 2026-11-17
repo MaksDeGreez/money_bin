@@ -6,6 +6,7 @@ require "rails/test_help"
 require "webmock/minitest"
 require_relative "support/session_test_helper"
 require_relative "support/api_token_test_helper"
+require_relative "support/legacy_export_files"
 
 # Load every app file, so a file that no test touches still counts in the coverage report. This cannot
 # be config.eager_load: `bin/rails test` boots the app in its test:prepare step, before this file runs.
