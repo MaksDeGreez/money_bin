@@ -27,7 +27,9 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   everyday lists but keeps its history. `external_id` is the identifier a bank or an importer uses.
   The balance is the sum of the account's transaction amounts.
 - **Category.** A group has no parent and only collects categories. Lines and receipt items point at
-  categories, never at groups. `position` orders a level (groups among groups, categories inside their
+  categories, never at groups. So the level is fixed once something points at a row: a category that lines or
+  items use cannot lose its parent, and a group with categories cannot get one. Moving a category to another
+  group is allowed (give it a new slug). `position` orders a level (groups among groups, categories inside their
   group). `description` says in one sentence what belongs there; people, the categoriser and AI agents
   read it.
 - **Payee.** `name` is how the payee is shown. `normalized_name` is the matching key (see Decisions).
@@ -76,6 +78,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | An account's currency cannot change once it has transactions | Model only |
 | An account, a payee or a category that is in use cannot be destroyed | Model (`restrict_with_error`) + DB (foreign keys) |
 | Categories have two levels: a category's parent is a group; a group with categories gets no parent; nothing is its own parent | Model; DB for "not its own parent" (`categories_not_own_parent`) |
+| A category does not become a group, nor a group a category, while child categories, transaction lines or receipt items (accepted or suggested) point at it | Model only |
 | Category names are unique inside their parent, group names among groups | Model + DB (unique `(parent_id, name)` with `NULLS NOT DISTINCT`) |
 | Slugs are unique, well formed, and match the level (a group slug has no `/`, a category slug has one and starts with its group slug) | Model; DB checks uniqueness, format and the slash (`categories_slug_format`, `categories_slug_matches_level`), not the group prefix |
 | Lines and receipt items point at categories, not groups | Model only |

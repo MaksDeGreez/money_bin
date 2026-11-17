@@ -4,7 +4,11 @@
 # - a category is a child of a group ("Eating out / Takeaway & fast food"): transaction lines and receipt
 #   items point at categories, never at groups.
 #
-# A category cannot be placed under another category, and a group that has categories cannot get a parent.
+# A category cannot be placed under another category. A category cannot become a group (lose its parent), and
+# a group cannot become a category (get a parent), while anything points at it: child categories, transaction
+# lines, or receipt items (accepted or suggested). Otherwise lines would point at a group, or a group's
+# categories would end up three levels deep. Moving a category to another group keeps its level and is
+# allowed.
 #
 # `slug` is the stable, globally unique key that the ML service and the API use. A group's slug is its
 # parameterized name ("eating-out"); a category's slug is "<group slug>/<own part>"
@@ -42,6 +46,7 @@ class Category < ApplicationRecord
   validates :position, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
   validate :parent_exists, if: -> { parent_id.present? && will_save_change_to_parent_id? }
   validate :parent_is_a_group
+  validate :level_fixed_while_in_use, on: :update
   validate :slug_matches_level
 
   # The category for lines nobody has categorised yet. It comes from the taxonomy seed; raises
@@ -92,9 +97,21 @@ class Category < ApplicationRecord
         errors.add(:parent, "cannot be the category itself")
       elsif !parent.group?
         errors.add(:parent, "must be a group (a category without a parent)")
-      elsif persisted? && children.exists?
-        errors.add(:parent, "cannot be set on a group that has categories")
       end
+    end
+
+    # Group -> category or category -> group. Moving a category between groups is not a level change.
+    def level_fixed_while_in_use
+      return unless will_save_change_to_parent_id? && parent_id_in_database.nil? != parent_id.nil?
+
+      uses = {
+        "child categories" => children, "transaction lines" => transaction_lines,
+        "receipt items" => receipt_items, "suggested receipt items" => suggested_receipt_items
+      }.filter_map { |name, relation| name if relation.exists? }
+      return if uses.empty?
+
+      change = parent_id.nil? ? "a category cannot become a group" : "a group cannot become a category"
+      errors.add(:parent, "cannot change: #{change} while it has #{uses.to_sentence}")
     end
 
     def slug_matches_level

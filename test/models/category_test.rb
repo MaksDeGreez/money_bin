@@ -128,7 +128,43 @@ class CategoryTest < ActiveSupport::TestCase
     group.parent = categories(:income)
 
     assert_not group.valid?
-    assert_includes group.errors[:parent], "cannot be set on a group that has categories"
+    assert_includes group.errors[:parent], "cannot change: a group cannot become a category while it has child categories"
+  end
+
+  test "a group that lines or items point at cannot become a category" do
+    group = Category.create!(name: "Kids")
+    TransactionLine.where(id: transaction_lines(:coffee_line)).update_all(category_id: group.id) # past the model, as bad data would be
+
+    assert_not group.update(parent: categories(:income), slug: "income/kids")
+    assert_includes group.errors[:parent], "cannot change: a group cannot become a category while it has transaction lines"
+  end
+
+  test "a category in use cannot become a group" do
+    {
+      categories(:cafes) => "transaction lines",
+      categories(:household_supplies) => "transaction lines, receipt items, and suggested receipt items",
+      categories(:takeaway) => "transaction lines and suggested receipt items"
+    }.each do |category, uses|
+      assert_not category.update(parent: nil, slug: nil), category.slug
+      assert_includes category.errors[:parent], "cannot change: a category cannot become a group while it has #{uses}"
+      assert category.reload.leaf?
+    end
+  end
+
+  test "a category nothing points at can become a group, and back" do
+    category = Category.create!(parent: categories(:eating_out), name: "Picnics")
+
+    assert category.update(parent: nil, slug: nil)
+    assert_equal "picnics", category.slug
+    assert category.update(parent: categories(:eating_out), slug: nil)
+    assert_equal "eating-out/picnics", category.slug
+  end
+
+  test "a category in use can move to another group" do
+    category = categories(:cafes)
+
+    assert category.update(parent: categories(:groceries_group), slug: nil)
+    assert category.slug.start_with?("groceries/")
   end
 
   test "a group without categories can become a category" do
