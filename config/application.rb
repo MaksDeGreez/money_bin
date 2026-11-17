@@ -18,6 +18,11 @@ require "rails/test_unit/railtie"
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
 
+# dotenv loads .env files when the application class below is defined. Test runs read none of them: a
+# REDIS_URL or DATABASE_URL written there for development would point the tests, which delete Redis keys
+# and reload tables, at the development data. Real environment variables still apply (CI sets both).
+Dotenv::Rails.files = [] if Dotenv::Rails.env.test?
+
 require_relative "redis_url"
 
 module MoneyBin

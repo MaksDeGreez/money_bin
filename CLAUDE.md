@@ -21,7 +21,7 @@ Master's capstone project (MSc Data Science, engineering project): a personal fi
 - Authentication: the Rails 8 generator's code (`Authentication` concern, `Session`, `Current`), bcrypt. Exactly one `User`, created on the command line; no sign-up, no e-mailed password reset. Every page needs a signed-in session unless the controller calls `allow_unauthenticated_access`. Sidekiq Web (`/sidekiq`) sits behind a route constraint on the session cookie (a 404 otherwise).
 - API: personal API tokens (`ApiToken`: `mbt_` prefix, SHA-256 digest stored, scopes `read` / `read_write`, revoked never deleted). API controllers live in `app/controllers/api/v1/` and inherit from `Api::BaseController` (`ActionController::API`, `Authorization: Bearer` only, errors `{"error": {"code", "message"}}`). Browser cookies never authenticate the API.
 - Times are shown in Kyiv time (`config.time_zone = "Europe/Kyiv"`); the database stores UTC.
-- `dotenv` loads `.env*` (`.env.example` lists the settings).
+- `dotenv` loads `.env*` in development and production (`.env.example` lists the settings). Test runs read no `.env` file (`config/application.rb`); only real environment variables reach them.
 
 ## Running it
 

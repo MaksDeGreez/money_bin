@@ -130,7 +130,10 @@ test needs model weights, real receipts or personal data. Fixtures are invented.
 
 ## Configuration
 
-`bin/setup` copies `.env.example` to `.env` (never committed). Every setting is optional:
+`bin/setup` copies `.env.example` to `.env` (never committed). dotenv loads it in development and
+production. Test runs read no `.env` file at all (`config/application.rb`), so a setting written there
+for development can never point the tests at development data; a real environment variable (as CI sets
+`DATABASE_URL` and `REDIS_URL`) still applies to the tests. Every setting is optional:
 
 | Variable         | Default                         | Meaning |
 | ---------------- | ------------------------------- | ------- |
@@ -138,7 +141,7 @@ test needs model weights, real receipts or personal data. Fixtures are invented.
 | `ML_SERVICE_URL` | `http://127.0.0.1:8100`         | where Rails finds the ML service |
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
-| `DATABASE_URL`   | (unset)                         | overrides `config/database.yml`; CI uses it |
+| `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |
 
 Databases and Redis numbers. The names and numbers are chosen so this app can share PostgreSQL and Redis
 with another local app on the same machine without touching its data, and the ports (3100, 8100) do not
