@@ -329,6 +329,11 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
   the items' sum, `source: receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
   `occurred_at` = `issued_at`, `merchant` = `merchant_name`. When the receipt currency is known, it must be
   the account currency;
+- the payee is the one named by `merchant_name`, through `Payee.find_or_create_by_name!`: the payee
+  normalisation (see Decisions) decides what is the same payee, and a new name creates a payee. A linked
+  transaction that already has a payee keeps it (a person or a bank feed may have chosen it); only an empty
+  payee is filled. A blank merchant name sets no payee. The payee is written in the service's database
+  transaction, so a failed acceptance leaves no new payee, and accepting again finds the same one;
 - the transaction becomes `needs_review` when a line has no category, or when the receipt's printed
   `total` is known and the items do not sum to it (OCR may have skipped an unreadable line). The items are
   still booked: the person may have changed them on purpose. `receipt.total_difference` (the total minus

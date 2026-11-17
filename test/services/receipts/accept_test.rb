@@ -238,6 +238,69 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
     assert_equal "the items sum to -2.5, so there is no expense to book", error.message
   end
 
+  test "a new expense gets the payee named on the receipt, created when it is new" do
+    transaction = nil
+
+    assert_difference -> { Payee.count }, 1 do
+      transaction = accept(receipts(:corner_receipt), account: accounts(:card_uah))
+    end
+
+    assert_equal "Corner Shop", transaction.reload.payee.name
+  end
+
+  test "an existing payee with the same normalised name is reused" do
+    receipts(:corner_receipt).update!(merchant_name: "  EXAMPLE   market ")
+
+    assert_no_difference -> { Payee.count } do
+      assert_equal payees(:example_market), accept(receipts(:corner_receipt), account: accounts(:card_uah)).payee
+    end
+  end
+
+  test "a blank merchant name creates no payee" do
+    [ nil, "", "   " ].each do |merchant_name|
+      receipt = receipts(:corner_receipt)
+      receipt.update!(merchant_name:)
+      receipt.ledger_transaction&.destroy!
+
+      assert_no_difference -> { Payee.count }, merchant_name.inspect do
+        assert_nil accept(receipt.reload, account: accounts(:card_uah)).payee
+      end
+    end
+  end
+
+  test "accepting twice creates one payee" do
+    receipt = receipts(:corner_receipt)
+
+    assert_difference -> { Payee.count }, 1 do
+      accept(receipt, account: accounts(:card_uah))
+      accept(receipt.reload)
+    end
+  end
+
+  test "a linked transaction keeps the payee it already has" do
+    transactions(:market_split).update!(payee: payees(:corner_cafe))
+
+    assert_no_difference -> { Payee.count } do
+      assert_equal payees(:corner_cafe), accept(receipts(:market_receipt)).reload.payee
+    end
+  end
+
+  test "a linked transaction without a payee gets the receipt's one" do
+    transactions(:market_split).update!(payee: nil)
+
+    assert_equal payees(:example_market), accept(receipts(:market_receipt)).reload.payee
+  end
+
+  test "a failed acceptance creates no payee" do
+    receipt = receipts(:corner_receipt)
+    # The receipt loses its photo, so saving it as reviewed fails after the payee and the transaction exist.
+    ActiveStorage::Attachment.where(record: receipt).delete_all
+
+    assert_no_difference [ "Payee.count", "Transaction.count" ] do
+      assert_raises(ActiveRecord::RecordInvalid) { accept(receipt.reload, account: accounts(:card_uah)) }
+    end
+  end
+
   test "every refusal is a Receipts::Accept::Error" do
     [ Receipts::Accept::NotAcceptable, Receipts::Accept::AccountRequired, Receipts::Accept::CurrencyMismatch,
       Receipts::Accept::NothingToBook, Receipts::Accept::TotalMismatch ].each do |error|

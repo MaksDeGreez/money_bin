@@ -13,6 +13,9 @@ module Receipts
   #   sum, source `receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
   #   `occurred_at` = `issued_at`, `merchant` = `merchant_name`. The receipt currency, when known, must be the
   #   account currency.
+  # - The payee is the one named by `merchant_name` (Payee.find_or_create_by_name!, so the payee
+  #   normalisation decides what is the same payee). A linked transaction that already has a payee keeps
+  #   it; only an empty one is filled. A blank merchant name sets no payee.
   # - The transaction ends `needs_review` when a line has no category or when the receipt's printed `total`
   #   is known and the items do not sum to it (Receipt#total_difference says by how much; the items are
   #   still booked, since the person may have edited them on purpose). Otherwise it ends `confirmed`, also
@@ -96,7 +99,8 @@ module Receipts
 
         lines = lines_for(items, sign: transaction.amount.negative? ? -1 : 1)
         old_lines = transaction.lines.map { |line| { id: line.id, _destroy: true } }
-        transaction.update!(lines_attributes: old_lines + lines, status: status_for(lines, items))
+        transaction.update!(lines_attributes: old_lines + lines, status: status_for(lines, items),
+                            payee: transaction.payee || receipt_payee)
         transaction
       end
 
@@ -113,8 +117,15 @@ module Receipts
         Transaction.create!(
           account: @account, amount: -total, source: :receipt, status: status_for(lines, items),
           occurred_on: @receipt.issued_at&.in_time_zone(TIME_ZONE)&.to_date || Date.current,
-          occurred_at: @receipt.issued_at, merchant: @receipt.merchant_name, lines_attributes: lines
+          occurred_at: @receipt.issued_at, merchant: @receipt.merchant_name, payee: receipt_payee, lines_attributes: lines
         )
+      end
+
+      # The payee named by the receipt's merchant_name, found by its normalised name or created; nil when the
+      # name is blank. Runs inside the service's database transaction, so a failed acceptance keeps no payee.
+      def receipt_payee
+        name = @receipt.merchant_name
+        Payee.find_or_create_by_name!(name) unless Payee.normalize_name(name).empty?
       end
 
       def items_total(items)
