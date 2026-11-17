@@ -32,6 +32,15 @@ def ensure_dir(path: Path) -> None:
     os.chmod(path, DIR_MODE)
 
 
+def _fsync_folder(folder: Path) -> None:
+    # The rename is durable only once the folder entry itself reaches the disk.
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_atomic(path: Path, data: bytes) -> None:
     """Write `data` to `path` so that readers see either the old file or the whole new one."""
     fd, tmp_name = tempfile.mkstemp(prefix=TMP_PREFIX, dir=path.parent)
@@ -46,6 +55,7 @@ def write_atomic(path: Path, data: bytes) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
+    _fsync_folder(path.parent)
 
 
 def write_if_changed(path: Path, data: bytes) -> bool:
@@ -83,16 +93,48 @@ def _inside_git(path: Path) -> bool:
     return any((folder / ".git").exists() for folder in (path, *path.parents))
 
 
+def _real_ancestors(path: Path) -> list[Path]:
+    """`path` and every folder above it, following symlinks first so that `..` cannot mislead."""
+    return [path, *path.resolve().parents]
+
+
 def check_output_location(raw_dir: Path, out_dir: Path) -> None:
     """Refuse an output folder that overlaps the raw folder or sits inside a git repository.
 
-    Both paths must already be resolved (absolute, symlinks followed).
+    Folders are compared by file identity (device and inode), not by path text: on a disk that
+    ignores letter case, or through a symlink, two different strings can name the same folder.
     """
-    if out_dir == raw_dir:
-        raise RefusedError("the output folder is the raw folder")
-    if raw_dir in out_dir.parents:
-        raise RefusedError("the output folder is inside the raw folder")
-    if out_dir in raw_dir.parents:
-        raise RefusedError("the output folder contains the raw folder")
-    if _inside_git(_nearest_existing(out_dir)):
+    raw_stat = os.stat(raw_dir)
+    existing = _nearest_existing(out_dir)
+    out_exists = existing == out_dir
+    if not existing.is_dir():
+        if out_exists:
+            raise RefusedError("the output path exists and is not a folder")
+        raise RefusedError("a part of the output path is not a folder")
+    for folder in _real_ancestors(existing):
+        if os.path.samestat(os.stat(folder), raw_stat):
+            if out_exists and folder == existing:
+                raise RefusedError("the output folder is the raw folder")
+            raise RefusedError("the output folder is inside the raw folder")
+    # A folder that does not exist yet cannot contain the raw folder.
+    if out_exists:
+        out_stat = os.stat(out_dir)
+        for folder in _real_ancestors(raw_dir)[1:]:
+            if os.path.samestat(os.stat(folder), out_stat):
+                raise RefusedError("the output folder contains the raw folder")
+    if _inside_git(existing):
         raise RefusedError("the output folder is inside a git repository")
+
+
+def check_output_folders(out_dir: Path, names: tuple[str, ...]) -> None:
+    """Refuse output subfolders that are symlinks or files.
+
+    Writing through a symlinked `images/` would put files, and the clean-up of orphans, into
+    whatever folder the link points at.
+    """
+    for name in names:
+        folder = out_dir / name
+        if folder.is_symlink():
+            raise RefusedError(f"{name}/ in the output folder is a symlink")
+        if folder.exists() and not folder.is_dir():
+            raise RefusedError(f"{name} in the output folder is not a folder")

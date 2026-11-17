@@ -9,9 +9,9 @@ HH:MM:SS), and `mac` the checksum that only offline software registers need.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 KYIV = ZoneInfo("Europe/Kyiv")
@@ -19,22 +19,29 @@ TAX_HOST = "cabinet.tax.gov.ua"
 TAX_PATH = "/cashregs/check"
 QUERY_KEYS = ("date", "time", "id", "sm", "fn", "mac")
 
-_DATE = re.compile(r"\d{8}")
+# [0-9], not \d: \d also matches Arabic-Indic, fullwidth and other digits, which int() and
+# Decimal() would then read as numbers.
+_DATE = re.compile(r"[0-9]{8}")
 _TIME_FORMS = (
-    (re.compile(r"(\d{2})(\d{2})"), False),
-    (re.compile(r"(\d{2})(\d{2})(\d{2})"), True),
-    (re.compile(r"(\d{2}):(\d{2})"), False),
-    (re.compile(r"(\d{2}):(\d{2}):(\d{2})"), True),
+    (re.compile(r"([0-9]{2})([0-9]{2})"), False),
+    (re.compile(r"([0-9]{2})([0-9]{2})([0-9]{2})"), True),
+    (re.compile(r"([0-9]{2}):([0-9]{2})"), False),
+    (re.compile(r"([0-9]{2}):([0-9]{2}):([0-9]{2})"), True),
 )
-_FISCAL = re.compile(r"\d{10}")
+_FISCAL = re.compile(r"[0-9]{10}")
 # Digits on most receipts; letters, digits, "-" and "_" (an 11-character code) on some software
 # registers.
 _RECEIPT_NO = re.compile(r"[0-9A-Za-z_-]+")
-_AMOUNT = re.compile(r"\d+(\.\d{1,2})?")
+_AMOUNT = re.compile(r"[0-9]+(\.[0-9]{1,2})?")
 _TWO_PLACES = Decimal("0.01")
 
 
 def is_tax_url(payload: str | None) -> bool:
+    """http(s), exactly the tax-service host, the check path.
+
+    The network location must be the bare host: a URL with a user name or a port is not the tax
+    service's check page, whatever host follows the `@`.
+    """
     if not payload:
         return False
     try:
@@ -43,15 +50,24 @@ def is_tax_url(payload: str | None) -> bool:
         return False
     return (
         parts.scheme.lower() in ("http", "https")
-        and (parts.hostname or "").lower() == TAX_HOST
+        and parts.netloc.lower() == TAX_HOST
         and parts.path.rstrip("/") == TAX_PATH
     )
 
 
 def query_values(payload: str) -> dict[str, str | None]:
-    """The raw values of the known query keys: the first one when a key repeats, else None."""
-    query = parse_qs(urlsplit(payload.strip()).query, keep_blank_values=True)
-    return {key: (query[key][0] if key in query else None) for key in QUERY_KEYS}
+    """The raw values of the known query keys: the first one when a key repeats, else None.
+
+    The query is split by hand because parse_qs turns `+` into a space; only percent escapes are
+    decoded.
+    """
+    found: dict[str, str] = {}
+    for pair in urlsplit(payload.strip()).query.split("&"):
+        if not pair:
+            continue
+        key, _, value = pair.partition("=")
+        found.setdefault(unquote(key), unquote(value))
+    return {key: found.get(key) for key in QUERY_KEYS}
 
 
 def _issued_at(date: str | None, time: str | None) -> str | None:
@@ -70,6 +86,11 @@ def _issued_at(date: str | None, time: str | None) -> str | None:
             int(date[:4]), int(date[4:6]), int(date[6:]), hour, minute, second, tzinfo=KYIV
         )
     except ValueError:
+        return None
+    # A wall time inside the spring clock change (03:00-03:59 on the last Sunday of March) never
+    # happened in Kyiv; zoneinfo would quietly give it an offset, so a round trip through UTC
+    # finds it. In the repeated autumn hour fold=0 picks the first occurrence (summer time).
+    if local.astimezone(UTC).astimezone(KYIV).replace(tzinfo=None) != local.replace(tzinfo=None):
         return None
     return local.isoformat()
 

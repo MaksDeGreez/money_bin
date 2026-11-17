@@ -1,6 +1,7 @@
 import hashlib
 import os
 
+import pytest
 from PIL import Image
 from support import BASE_TIME, exif_bytes, plain_image, write_jpeg
 
@@ -47,6 +48,13 @@ def test_bytes_values_are_read():
     assert scan.capture_time(exif)[1] == "2026-03-01T10:00:00+02:00"
 
 
+def test_only_ascii_digits_count_in_the_offset():
+    exif = Image.Exif()
+    exif.get_ifd(0x8769)[36867] = "2026:03:01 10:00:00"
+    exif.get_ifd(0x8769)[36881] = "+\u0660\u0665:\u0660\u0660"  # Arabic-Indic digits
+    assert scan.capture_time(exif)[1] == "2026-03-01T10:00:00+02:00"
+
+
 def test_probe_hashes_and_never_writes(tmp_path):
     path = write_jpeg(tmp_path / "a.jpg", plain_image(), exif_bytes())
     before = (path.read_bytes(), path.stat().st_mtime_ns)
@@ -80,16 +88,32 @@ def test_list_candidates(tmp_path):
     os.symlink(raw / "b1" / "a.jpg", raw / "b1" / "link.jpg")
     os.symlink(raw / "b2", raw / "b1" / "linked_dir")
     os.symlink(raw / "b2", raw / "b3")
-    batches, candidates, non_images = scan.list_candidates(raw)
-    assert batches == ["b1", "b2"]
-    assert sorted(name for _, name, _ in candidates) == [
+    found = scan.list_candidates(raw)
+    assert found.batches == ["b1", "b2"]
+    assert sorted(name for _, name, _ in found.files) == [
         "b1/a.jpg",
         "b1/photo.HEIC",
         "b1/photo.heif",
         "b2/nested/deep.JPEG",
     ]
     # notes, .hidden.jpg, .cache/c.jpg, .DS_Store, top.jpg, .hidden_batch, two symlinks, b3
-    assert non_images == 9
+    assert found.non_images == 9
+    assert found.unreadable_folders == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can list any folder")
+def test_a_folder_that_cannot_be_listed_is_reported(tmp_path):
+    raw = tmp_path / "raw"
+    write_jpeg(raw / "b1" / "a.jpg")
+    locked = raw / "b1" / "locked"
+    write_jpeg(locked / "hidden_receipt.jpg")
+    locked.chmod(0)
+    try:
+        found = scan.list_candidates(raw)
+    finally:
+        locked.chmod(0o700)
+    assert [name for _, name, _ in found.files] == ["b1/a.jpg"]
+    assert found.unreadable_folders == [("b1/locked", "PermissionError")]
 
 
 def test_order_files_puts_untimed_last(tmp_path):

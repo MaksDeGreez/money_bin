@@ -45,36 +45,53 @@ def setup():
 
 def test_exclude_keeps_the_rest_of_the_group_together(setup):
     groups, known = setup
-    result, excluded = grouping.apply_overrides(groups, grouping.Overrides(exclude=["b/2"]), known)
-    assert names(result) == [["b/1", "b/3"], ["b/4", "b/5"], ["b/6"], ["c/1"]]
-    assert [item.name for item in excluded] == ["b/2"]
+    grouped = grouping.apply_overrides(groups, grouping.Overrides(exclude=["b/2"]), known)
+    assert names(grouped.groups) == [["b/1", "b/3"], ["b/4", "b/5"], ["b/6"], ["c/1"]]
+    assert [item.name for item in grouped.excluded] == ["b/2"]
+    assert grouped.merged == set()
 
 
 def test_excluding_a_whole_group_removes_it(setup):
     groups, known = setup
-    result, _ = grouping.apply_overrides(groups, grouping.Overrides(exclude=["b/6"]), known)
-    assert names(result) == [["b/1", "b/2", "b/3"], ["b/4", "b/5"], ["c/1"]]
+    result = grouping.apply_overrides(groups, grouping.Overrides(exclude=["b/6"]), known)
+    assert names(result.groups) == [["b/1", "b/2", "b/3"], ["b/4", "b/5"], ["c/1"]]
 
 
 def test_split_starts_a_new_receipt(setup):
     groups, known = setup
     overrides = grouping.Overrides(split=["b/2", "b/4"])
-    result, _ = grouping.apply_overrides(groups, overrides, known)
-    assert names(result) == [["b/1"], ["b/2", "b/3"], ["b/4", "b/5"], ["b/6"], ["c/1"]]
+    result = grouping.apply_overrides(groups, overrides, known)
+    assert names(result.groups) == [["b/1"], ["b/2", "b/3"], ["b/4", "b/5"], ["b/6"], ["c/1"]]
 
 
 def test_merge_joins_whole_groups_in_capture_order(setup):
     groups, known = setup
     overrides = grouping.Overrides(merge=[["b/6", "b/1"], ["b/4", "b/6"]])
-    result, _ = grouping.apply_overrides(groups, overrides, known)
-    assert names(result) == [["b/1", "b/2", "b/3", "b/4", "b/5", "b/6"], ["c/1"]]
+    result = grouping.apply_overrides(groups, overrides, known)
+    assert names(result.groups) == [["b/1", "b/2", "b/3", "b/4", "b/5", "b/6"], ["c/1"]]
+    assert result.merged == {"sha-b/4", "sha-b/6"}
+
+
+def test_entries_naming_a_frozen_photo_wait(setup):
+    # b/4 and b/5 belong to a receipt kept as recorded: they are not in the groups, their names
+    # stay valid, and the entries that use them do nothing for now.
+    groups, known = setup
+    groups = [[item for item in group if item.name not in ("b/4", "b/5")] for group in groups]
+    groups = [group for group in groups if group]
+    overrides = grouping.Overrides(
+        merge=[["b/1", "b/4"], ["b/6", "b/1"]], exclude=["b/5"], split=["b/4"]
+    )
+    result = grouping.apply_overrides(groups, overrides, known, frozen={"b/4", "b/5"})
+    assert names(result.groups) == [["b/1", "b/2", "b/3", "b/6"], ["c/1"]]
+    assert result.excluded == []
+    assert result.merged == {"sha-b/6"}
 
 
 def test_split_then_merge_order(setup):
     groups, known = setup
     overrides = grouping.Overrides(split=["b/3"], merge=[["b/3", "b/4"]])
-    result, _ = grouping.apply_overrides(groups, overrides, known)
-    assert names(result) == [["b/1", "b/2"], ["b/3", "b/4", "b/5"], ["b/6"], ["c/1"]]
+    result = grouping.apply_overrides(groups, overrides, known)
+    assert names(result.groups) == [["b/1", "b/2"], ["b/3", "b/4", "b/5"], ["b/6"], ["c/1"]]
 
 
 @pytest.mark.parametrize(
@@ -124,6 +141,13 @@ def test_empty_files_mean_no_overrides(text):
         ("split: a", "split: must be a list of file names"),
         ("exclude: [[a]]", r"exclude\[0\]: must be a file name"),
         ("merge: [[a, b]\nsplit: [", r"not valid YAML \(\w+\) near line \d"),
+        ("exclude: [a]\nsplit: [b]\nexclude: [c]\n", "'exclude': the key appears more than once"),
+        ("merge: [[a, b]]\nmerge: [[c, d]]\n", "'merge': the key appears more than once"),
+        ("? [a]\n: [b]\n", r"not valid YAML \(\w+\)"),
+        ("merge: [[a, b, a]]", r"merge\[0\]\[2\]: 'a' is already in merge\[0\]\[0\]"),
+        ("merge: [[a, b], [c, b]]", r"merge\[1\]\[1\]: 'b' is already in merge\[0\]\[1\]"),
+        ("split: [a, b, a]", r"split\[2\]: 'a' is already in split\[0\]"),
+        ("exclude: [a, a]", r"exclude\[1\]: 'a' is already in exclude\[0\]"),
     ],
 )
 def test_parse_errors(text, message):

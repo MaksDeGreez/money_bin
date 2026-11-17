@@ -1,6 +1,8 @@
 import hashlib
+import os
 import shutil
 import stat
+from concurrent.futures.process import BrokenProcessPool
 
 import pytest
 from support import (
@@ -19,7 +21,7 @@ from support import (
     write_jpeg,
 )
 
-from receipt_ingest import pipeline, worker
+from receipt_ingest import cli, fsutil, pipeline, worker
 
 KEY_ORDER = [
     "receipt_id",
@@ -222,11 +224,23 @@ def test_excluding_a_whole_receipt(raw, out, run_tool):
 def test_regrouping_by_gap_retires_the_old_number(raw, out, run_tool):
     shot(raw, "b/IMG_0001.jpg", 0)
     shot(raw, "b/IMG_0002.jpg", 5)
+    shot(raw, "b/IMG_0003.jpg", 20)
     run_tool(raw, out)
-    (raw / "b/IMG_0001.jpg").unlink()
-    run_tool(raw, out)
-    assert state(out)["retired"][0]["reason"] == "regrouped"
-    assert ids(out) == {"b/IMG_0002.jpg": "rcpt_000002"}
+    assert ids(out) == {"b/IMG_0001.jpg": "rcpt_000001", "b/IMG_0003.jpg": "rcpt_000002"}
+    # All raw files are present; only the gap changes, so the second receipt joins the first.
+    result = run_tool(raw, out, "--gap", "30")
+    assert result.code == 0
+    assert ids(out) == {"b/IMG_0001.jpg": "rcpt_000001"}
+    assert receipts(out)[0]["raw_files"] == [f"b/IMG_000{i}.jpg" for i in (1, 2, 3)]
+    assert [(e["receipt_id"], e["reason"]) for e in state(out)["retired"]] == [
+        ("rcpt_000002", "regrouped")
+    ]
+    assert not (out / "images/rcpt_000002_1.jpg").exists()
+    assert "1 rewritten, 0 restored, 1 retired" in result.out
+    # Back to the default gap: the old number comes back.
+    result = run_tool(raw, out)
+    assert ids(out) == {"b/IMG_0001.jpg": "rcpt_000001", "b/IMG_0003.jpg": "rcpt_000002"}
+    assert "1 restored" in result.out
 
 
 def test_renaming_a_file_and_a_batch_keeps_everything(raw, out, run_tool):
@@ -388,6 +402,49 @@ def test_console_output_has_no_payload_and_no_exif(raw, out, run_tool):
     assert "skipped unreadable: q/broken.jpg (UnidentifiedImageError)" in results[0].err
 
 
+def test_console_output_of_a_real_pool(raw, out, capfd):
+    # Worker processes write to the inherited file descriptors, which capsys cannot see.
+    qr_batch(raw)
+    (raw / "q" / "broken.jpg").write_bytes(b"\xff\xd8 not really")
+    code = cli.main([str(raw), str(out), "--jobs", "2"])
+    captured = capfd.readouterr()
+    assert code == 0
+    assert "QR 2 (66.7%)" in captured.out
+    text = captured.out + captured.err
+    for secret in ("cabinet", "4000000001", "123456", "12.30", "shop.example", "SyntheticCam"):
+        assert secret not in text
+    assert "2026" not in text and "10:00" not in text
+    assert "Traceback" not in text
+
+
+def test_an_unexpected_error_is_one_line(raw, out, run_tool, monkeypatch):
+    shot(raw, "b/IMG_0001.jpg", 0)
+
+    def crash(self, plan, out_dir):
+        raise BrokenProcessPool("synthetic detail /private/path")
+
+    monkeypatch.setattr(pipeline.Run, "process", crash)
+    result = run_tool(raw, out)
+    assert result.code == 1
+    assert result.err == "error: the run stopped (BrokenProcessPool)\n"
+
+
+def test_unreadable_folder_is_counted_and_named(raw, out, run_tool):
+    if os.geteuid() == 0:
+        pytest.skip("root can list any folder")
+    shot(raw, "b/IMG_0001.jpg", 0)
+    locked = raw / "b" / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        result = run_tool(raw, out)
+    finally:
+        locked.chmod(0o700)
+    assert result.code == 0
+    assert "skipped unreadable folder: b/locked (PermissionError)" in result.err
+    assert "1 unreadable" in result.out
+
+
 def test_jobs_do_not_change_the_result(raw, tmp_path, run_tool):
     qr_batch(raw)
     shot(raw, "q/IMG_0004.jpg", 122)
@@ -470,7 +527,11 @@ def test_damaged_output_is_repaired(raw, out, run_tool):
     (out / "images/.receipt-ingest-tmp-left").write_bytes(b"from a killed run")
     (out / "images/rcpt_000099_1.jpg").write_bytes(b"orphan")
     (out / "images/keep-me.txt").write_text("not ours")
+    # Arabic-Indic digits: \d would take it for one of the tool's own files and delete it.
+    lookalike = out / "images/rcpt_\u0660\u0660\u0660\u0660\u0660\u0661_1.jpg"
+    lookalike.write_text("not ours either")
     result = run_tool(raw, out)
+    assert lookalike.exists()
     assert image.read_bytes() == original
     assert "Written: 1 images, 0 crops, 1 thumbnails, 0 metadata files; 1 files deleted" in (
         result.out
@@ -539,3 +600,84 @@ class TestRefusals:
         result = run_tool(tmp_path / "nope", tmp_path / "out")
         assert result.code == 2
         assert "raw folder does not exist" in result.err
+
+    def test_paths_through_a_symlink_name_the_same_folder(self, tmp_path, raw):
+        # The check compares folders, not path strings, so it holds for paths nobody resolved.
+        link = tmp_path / "link"
+        link.symlink_to(raw)
+        (raw / "b1").mkdir()
+        cases = [
+            (link, "is the raw folder"),
+            (link / "b1", "inside the raw folder"),
+            (link / "b1" / "new" / "out", "inside the raw folder"),
+        ]
+        for out, message in cases:
+            with pytest.raises(fsutil.RefusedError, match=message):
+                fsutil.check_output_location(raw, out)
+        with pytest.raises(fsutil.RefusedError, match="contains the raw folder"):
+            fsutil.check_output_location(link / "b1", tmp_path)
+
+    def test_a_symlink_to_the_raw_folder(self, tmp_path, raw, run_tool):
+        (tmp_path / "link").symlink_to(raw)
+        result = run_tool(raw, tmp_path / "link" / "b1" / "out")
+        assert (result.code, "inside the raw folder" in result.err) == (2, True)
+        assert list(raw.iterdir()) == []
+
+    def test_a_case_changed_path(self, tmp_path, run_tool):
+        probe = tmp_path / "CaseProbe"
+        probe.mkdir()
+        if not (tmp_path / "caseprobe").exists():
+            pytest.skip("this file system tells letter case apart")
+        raw = tmp_path / "raw"
+        (raw / "b1").mkdir(parents=True)
+        shot(raw, "b1/IMG_0001.jpg", 0)
+        before = snapshot(raw)
+        cases = [
+            (tmp_path / "RAW", "is the raw folder"),
+            (tmp_path / "Raw" / "b1", "inside the raw folder"),
+            (tmp_path / "RAW" / "b1" / "out", "inside the raw folder"),
+        ]
+        for out, message in cases:
+            result = run_tool(raw, out)
+            assert (result.code, message in result.err) == (2, True), out
+        outer = tmp_path / "outer"
+        inner = outer / "raw"
+        shutil.copytree(raw, inner)
+        result = run_tool(inner, tmp_path / "OUTER")
+        assert (result.code, "contains the raw folder" in result.err) == (2, True)
+        assert snapshot(raw) == before
+        assert sorted(path.name for path in raw.rglob("*")) == ["IMG_0001.jpg", "b1"]
+
+    def test_an_output_path_that_is_a_file(self, tmp_path, raw, run_tool):
+        target = tmp_path / "a_file"
+        target.write_text("x")
+        result = run_tool(raw, target)
+        assert (result.code, "exists and is not a folder" in result.err) == (2, True)
+        result = run_tool(raw, target / "out")
+        assert (result.code, "is not a folder" in result.err) == (2, True)
+        assert target.read_text() == "x"
+
+    @pytest.mark.parametrize("name", ["images", "thumbs"])
+    def test_a_symlinked_output_subfolder(self, tmp_path, raw, out, run_tool, name):
+        shot(raw, "b/IMG_0001.jpg", 0)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "rcpt_000009_1.jpg").write_bytes(b"would be an orphan")
+        out.mkdir()
+        (out / name).symlink_to(elsewhere)
+        result = run_tool(raw, out)
+        assert (result.code, f"{name}/ in the output folder is a symlink" in result.err) == (
+            2,
+            True,
+        )
+        assert sorted(path.name for path in elsewhere.iterdir()) == ["rcpt_000009_1.jpg"]
+        assert not (out / "state.json").exists()
+
+    def test_an_output_subfolder_that_is_a_file(self, raw, out, run_tool):
+        out.mkdir()
+        (out / "images").write_text("x")
+        result = run_tool(raw, out)
+        assert (result.code, "images in the output folder is not a folder" in result.err) == (
+            2,
+            True,
+        )

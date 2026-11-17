@@ -22,7 +22,7 @@ _EXIF_IFD = 0x8769
 _DATE_TIME_ORIGINAL = 36867
 _OFFSET_TIME_ORIGINAL = 36881
 _SUBSEC_TIME_ORIGINAL = 37521
-_OFFSET = re.compile(r"([+-])(\d{2}):(\d{2})")
+_OFFSET = re.compile(r"([+-])([0-9]{2}):([0-9]{2})")
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ def capture_time(exif: Image.Exif) -> tuple[datetime | None, str | None]:
         naive = datetime.strptime(stamp, "%Y:%m:%d %H:%M:%S")
     except ValueError:
         return None, None
-    subsec = re.sub(r"\D", "", _text(tags.get(_SUBSEC_TIME_ORIGINAL)) or "")
+    subsec = re.sub(r"[^0-9]", "", _text(tags.get(_SUBSEC_TIME_ORIGINAL)) or "")
     microsecond = int((subsec + "000000")[:6]) if subsec else 0
     offset_text = _text(tags.get(_OFFSET_TIME_ORIGINAL))
     match = _OFFSET.fullmatch(offset_text or "")
@@ -106,17 +106,35 @@ def _is_hidden(relative: Path) -> bool:
     return any(part.startswith(".") for part in relative.parts)
 
 
-def list_candidates(raw_dir: Path) -> tuple[list[str], list[tuple[str, str, Path]], int]:
-    """Return (batches, [(batch, name, path)], non_images) without opening any file."""
-    batches: list[str] = []
-    candidates: list[tuple[str, str, Path]] = []
+@dataclass
+class Candidates:
+    batches: list[str] = field(default_factory=list)
+    files: list[tuple[str, str, Path]] = field(default_factory=list)  # (batch, name, path)
+    non_images: int = 0
+    # (relative folder name, exception class name) of folders that could not be listed
+    unreadable_folders: list[tuple[str, str]] = field(default_factory=list)
+
+
+def list_candidates(raw_dir: Path) -> Candidates:
+    """Find the candidate image files without opening any of them."""
+    result = Candidates()
+    batches, candidates = result.batches, result.files
     non_images = 0
+
+    def walk_error(error: OSError) -> None:
+        # os.walk skips a folder it cannot list without a word; such a folder may hold receipts.
+        try:
+            name = Path(error.filename).relative_to(raw_dir).as_posix()
+        except (TypeError, ValueError):
+            name = "?"
+        result.unreadable_folders.append((name, type(error).__name__))
+
     for entry in sorted(raw_dir.iterdir(), key=lambda item: item.name):
         if entry.is_symlink() or not entry.is_dir() or entry.name.startswith("."):
             non_images += 1
             continue
         batches.append(entry.name)
-        for folder, dirnames, filenames in os.walk(entry, followlinks=False):
+        for folder, dirnames, filenames in os.walk(entry, onerror=walk_error, followlinks=False):
             folder_path = Path(folder)
             for dirname in dirnames:
                 if (folder_path / dirname).is_symlink():
@@ -132,7 +150,8 @@ def list_candidates(raw_dir: Path) -> tuple[list[str], list[tuple[str, str, Path
                     non_images += 1
                     continue
                 candidates.append((entry.name, relative.as_posix(), path))
-    return batches, candidates, non_images
+    result.non_images = non_images
+    return result
 
 
 def order_files(files: list[RawFile]) -> list[RawFile]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -18,11 +19,15 @@ class _Parser(argparse.ArgumentParser):
         sys.exit(EXIT_USAGE)
 
 
-def _positive_number(text: str) -> float:
+def _seconds(text: str) -> float:
     try:
         value = float(text)
     except ValueError:
         raise argparse.ArgumentTypeError("must be a number of seconds") from None
+    # float() accepts "nan" and "inf"; a NaN gap compares false with every pause, so it would
+    # quietly put each photo in a receipt of its own.
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError("must be a finite number of seconds")
     if value < 0:
         raise argparse.ArgumentTypeError("must not be negative")
     return value
@@ -50,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("out_dir", metavar="OUT_DIR", type=Path, help="output folder")
     parser.add_argument(
         "--gap",
-        type=_positive_number,
+        type=_seconds,
         default=8.0,
         metavar="SECONDS",
         help="a longer pause between two photos starts a new receipt (default 8)",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
-from receipt_ingest import taxurl
+from receipt_ingest import numbering, taxurl
 
 _STYLE = """
 :root { color-scheme: light dark; --bg: #f7f7f5; --card: #ffffff; --text: #1c1c1c;
@@ -61,7 +61,8 @@ def render(records: list[dict], flags: dict[str, list[str]], excluded: dict[str,
         out.append(f"<h2>{escape(batch)}</h2>")
         out.append('<div class="grid">')
         in_batch = [record for record in records if record["batch"] == batch]
-        for record in sorted(in_batch, key=lambda r: (r["seq_in_batch"], r["receipt_id"])):
+        in_batch.sort(key=lambda r: (r["seq_in_batch"], numbering.id_number(r["receipt_id"])))
+        for record in in_batch:
             out.append(_card(record, flags.get(record["receipt_id"], [])))
         out.append("</div>")
         if excluded.get(batch):

@@ -70,6 +70,77 @@ def test_host_and_scheme_case_do_not_matter():
 @pytest.mark.parametrize(
     "payload",
     [
+        "https://x@cabinet.tax.gov.ua/cashregs/check?id=1",
+        "https://user:pass@cabinet.tax.gov.ua/cashregs/check?id=1",
+        "https://cabinet.tax.gov.ua:444/cashregs/check?id=1",
+        "https://cabinet.tax.gov.ua:443/cashregs/check?id=1",
+        "https://cabinet.tax.gov.ua:/cashregs/check?id=1",
+        "https://cabinet.tax.gov.ua@shop.example.test/cashregs/check?id=1",
+    ],
+)
+def test_userinfo_or_a_port_is_not_the_tax_service(payload):
+    assert not taxurl.is_tax_url(payload)
+    assert taxurl.parse(payload) == (None, None, False)
+
+
+def test_query_values_are_raw():
+    qr, fields, _ = taxurl.parse(
+        f"{BASE}?id=12+34&sm=12%2E30&fn=4000000001&fn=4000000002&date=20260301&time=10%3A15&mac=a%2Bb"
+    )
+    assert qr["id"] == "12+34"  # parse_qs would have made it "12 34"
+    assert qr["sm"] == "12.30"
+    assert qr["fn"] == "4000000001"  # the first of a repeated key
+    assert qr["time"] == "10:15"
+    assert qr["mac"] == "a+b"
+    assert fields["total"] == "12.30" and fields["issued_at"] == "2026-03-01T10:15:00+02:00"
+
+
+def arabic(digits: str) -> str:
+    return "".join(chr(0x0660 + int(d)) for d in digits)
+
+
+def fullwidth(digits: str) -> str:
+    return "".join(chr(0xFF10 + int(d)) if d.isdigit() else d for d in digits)
+
+
+@pytest.mark.parametrize(
+    ("values", "field"),
+    [
+        # Arabic-Indic and fullwidth digits match \d, and int() and Decimal() read them.
+        ({"date": arabic("20260301")}, "issued_at"),
+        ({"time": arabic("1015")}, "issued_at"),
+        ({"sm": fullwidth("12.30")}, "total"),
+        ({"fn": fullwidth("40000000") + "01"}, "fiscal_number"),
+    ],
+)
+def test_only_ascii_digits_count(values, field):
+    query = {"id": "1", "date": "20260301", "time": "1015", "fn": "4000000001", "sm": "1.00"}
+    query.update(values)
+    text = "&".join(f"{key}={value}" for key, value in query.items())
+    _, fields, partial = taxurl.parse(f"{BASE}?{text}")
+    assert fields[field] is None
+    assert partial is True
+
+
+def test_a_time_inside_the_spring_clock_change_never_existed():
+    # Kyiv moved its clocks from 03:00 to 04:00 on 31 March 2024.
+    _, fields, partial = taxurl.parse(f"{BASE}?id=1&date=20240331&time=0330&fn=4000000001&sm=1")
+    assert fields["issued_at"] is None
+    assert partial is True
+    _, fields, _ = taxurl.parse(f"{BASE}?id=1&date=20240331&time=0430&fn=4000000001&sm=1")
+    assert fields["issued_at"] == "2024-03-31T04:30:00+03:00"
+
+
+def test_the_repeated_autumn_hour_takes_the_first_occurrence():
+    # On 27 October 2024 Kyiv clocks went from 04:00 back to 03:00, so 03:30 happened twice.
+    _, fields, partial = taxurl.parse(f"{BASE}?id=1&date=20241027&time=0330&fn=4000000001&sm=1")
+    assert fields["issued_at"] == "2024-10-27T03:30:00+03:00"
+    assert partial is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
         None,
         "",
         "plain text on a receipt",

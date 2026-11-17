@@ -59,9 +59,52 @@ def _string_list(value: object, key: str) -> list[str]:
     return list(value)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """PyYAML's safe loader, except that a key written twice is an error.
+
+    PyYAML keeps the last of two equal keys, so a second `exclude:` would silently drop the first.
+    """
+
+
+def _unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
+    seen: set = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        try:
+            repeated = key in seen
+        except TypeError:  # an unhashable key: the safe constructor below reports it
+            continue
+        if repeated:
+            raise OverrideError(f"{str(key)!r}: the key appears more than once")
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+
+
+def _check_repeats(merge: list[list[str]], split: list[str], exclude: list[str]) -> None:
+    # A name listed twice is almost always a copy-paste slip that hides the name meant instead.
+    seen: dict[str, str] = {}
+    for index, names in enumerate(merge):
+        for position, name in enumerate(names):
+            where = f"merge[{index}][{position}]"
+            if name in seen:
+                raise OverrideError(f"{where}: {name!r} is already in {seen[name]}")
+            seen[name] = where
+    for key, names in (("split", split), ("exclude", exclude)):
+        listed: dict[str, str] = {}
+        for index, name in enumerate(names):
+            where = f"{key}[{index}]"
+            if name in listed:
+                raise OverrideError(f"{where}: {name!r} is already in {listed[name]}")
+            listed[name] = where
+
+
 def parse_overrides(text: str) -> Overrides:
     try:
-        loaded = yaml.safe_load(text)
+        # _UniqueKeyLoader is a SafeLoader: it builds plain data only, never Python objects.
+        loaded = yaml.load(text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f" near line {mark.line + 1}" if mark is not None else ""
@@ -82,11 +125,10 @@ def parse_overrides(text: str) -> Overrides:
             if not isinstance(entry, list) or len(entry) < 2:
                 raise OverrideError(f"merge[{index}]: must be a list of two or more file names")
             merge.append(_string_list(entry, f"merge[{index}]"))
-    return Overrides(
-        merge=merge,
-        split=_string_list(loaded.get("split"), "split"),
-        exclude=_string_list(loaded.get("exclude"), "exclude"),
-    )
+    split = _string_list(loaded.get("split"), "split")
+    exclude = _string_list(loaded.get("exclude"), "exclude")
+    _check_repeats(merge, split, exclude)
+    return Overrides(merge=merge, split=split, exclude=exclude)
 
 
 def load_overrides(path: Path) -> Overrides:
@@ -120,12 +162,29 @@ def _check_names(overrides: Overrides, known: dict[str, RawFile]) -> None:
             raise OverrideError(f"merge[{index}]: the files are in different batches")
 
 
+@dataclass
+class Grouped:
+    groups: list[list[RawFile]]
+    excluded: list[RawFile]
+    # SHA-256 of the first photos of groups that a merge entry joined into an earlier group.
+    merged: set[str]
+
+
 def apply_overrides(
-    groups: list[list[RawFile]], overrides: Overrides, known: dict[str, RawFile]
-) -> tuple[list[list[RawFile]], list[RawFile]]:
-    """Apply exclude, then split, then merge. Return (groups, excluded files)."""
+    groups: list[list[RawFile]],
+    overrides: Overrides,
+    known: dict[str, RawFile],
+    frozen: set[str] | None = None,
+) -> Grouped:
+    """Apply exclude, then split, then merge.
+
+    `known` holds every scanned file by name, `groups` only those that may be regrouped. Names in
+    `frozen` (photos of receipts kept as recorded because another of their photos is missing) are
+    valid names, but the entries that use them wait until the receipt is complete again.
+    """
     _check_names(overrides, known)
-    excluded_names = set(overrides.exclude)
+    frozen = frozen or set()
+    excluded_names = set(overrides.exclude) - frozen
     excluded = [known[name] for name in sorted(excluded_names, key=lambda n: known[n].order)]
     # Removing a photo keeps the rest of its group together, even when it was in the middle.
     kept = [[f for f in group if f.name not in excluded_names] for group in groups]
@@ -153,6 +212,8 @@ def apply_overrides(
 
     where = {item.name: index for index, group in enumerate(after_split) for item in group}
     for names in overrides.merge:
+        if frozen.intersection(names):
+            continue
         first = root(where[names[0]])
         for name in names[1:]:
             other = root(where[name])
@@ -164,4 +225,6 @@ def apply_overrides(
         merged.setdefault(root(index), []).extend(group)
     result = [sorted(group, key=lambda f: f.order) for group in merged.values()]
     result.sort(key=lambda group: group[0].order)
-    return result, excluded
+    heads = {group[0].sha256 for group in result}
+    joined = {group[0].sha256 for group in after_split} - heads
+    return Grouped(result, excluded, joined)

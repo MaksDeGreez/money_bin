@@ -17,6 +17,7 @@ from typing import TextIO
 from receipt_ingest import grouping, numbering, qr, review, scan, taxurl, worker
 from receipt_ingest.fsutil import (
     RefusedError,
+    check_output_folders,
     check_output_location,
     ensure_dir,
     remove_leftover_temps,
@@ -27,7 +28,9 @@ STATE_FILE = "state.json"
 RECEIPTS_FILE = "receipts.jsonl"
 REVIEW_FILE = "groups_review.html"
 # Output files the tool owns. Anything else in images/ and thumbs/ is left alone.
-OWN_FILE = re.compile(r"rcpt_\d{6,}_\d+(_crop)?\.jpg")
+OWN_FILE = re.compile(r"rcpt_[0-9]{6,}_[0-9]+(_crop)?\.jpg")
+# The keys of an image in receipts.jsonl; state.json also records the versions that wrote it.
+IMAGE_KEYS = ("file", "sha256", "width", "height", "bytes")
 FLAG_ORDER = (
     "no_capture_time",
     "too_many_parts",
@@ -107,7 +110,7 @@ def receipt_flags(record: dict) -> list[str]:
     flags = set(record.get("group_flags") or [])
     if record.get("raw_missing"):
         flags.add("raw_missing")
-    if record.get("failed"):
+    if record.get("failed_stages"):
         flags.add("processing_failed")
     qr_result = record.get("qr")
     if qr_result is not None:
@@ -124,20 +127,21 @@ def receipt_flags(record: dict) -> list[str]:
 def jsonl_line(record: dict) -> str:
     payload = (record.get("qr") or {}).get("payload")
     qr_values, qr_fields, _ = taxurl.parse(payload)
+    images = [{key: image[key] for key in IMAGE_KEYS} for image in record.get("images") or []]
     line = {
         "receipt_id": record["receipt_id"],
         "batch": record["batch"],
         "seq_in_batch": record["seq_in_batch"],
         "raw_files": record["raw_files"],
         "captured_at": record["captured_at"],
-        "images": record.get("images") or [],
-        "fingerprint": fingerprint(record.get("images") or []),
+        "images": images,
+        "fingerprint": fingerprint(images),
         "qr_payload": payload,
         "qr": qr_values,
         "qr_fields": qr_fields,
     }
     crops = [
-        {key: part[key] for key in ("file", "sha256", "width", "height", "bytes", "part", "quad")}
+        {key: part[key] for key in (*IMAGE_KEYS, "part", "quad")}
         for part in (record.get("crop") or {}).get("parts", [])
         if "file" in part
     ]
@@ -169,6 +173,7 @@ class Run:
             return EXIT_USAGE
         try:
             check_output_location(raw_dir, out_dir)
+            check_output_folders(out_dir, (worker.IMAGES_DIR, worker.THUMBS_DIR))
         except RefusedError as error:
             self.complain(f"refused: {error}")
             return EXIT_USAGE
@@ -187,11 +192,18 @@ class Run:
 
         scanned = self.scan(raw_dir)
         canonical, duplicates = self.deduplicate(scanned.files, state)
+        all_shas = {item.sha256 for item in scanned.files}
+        # A receipt that lost some of its photos is kept as recorded; the photos it still has
+        # stay with it and are not grouped again.
+        frozen = numbering.frozen_records(state, all_shas)
+        frozen_shas = {sha for record in frozen for sha in record["parts"]}
+        frozen_names = {item.name for item in canonical if item.sha256 in frozen_shas}
         known = {item.name: item for item in canonical}
-        groups = grouping.group_by_gap(canonical, options.gap)
+        free = [item for item in canonical if item.sha256 not in frozen_shas]
+        groups = grouping.group_by_gap(free, options.gap)
         try:
             overrides = grouping.load_overrides(out_dir / grouping.OVERRIDE_FILE)
-            groups, excluded = grouping.apply_overrides(groups, overrides, known)
+            grouped = grouping.apply_overrides(groups, overrides, known, frozen_names)
         except grouping.OverrideError as error:
             self.complain(f"error: {grouping.OVERRIDE_FILE}: {error}")
             return EXIT_USAGE
@@ -201,13 +213,14 @@ class Run:
         ensure_dir(out_dir / worker.THUMBS_DIR)
         remove_leftover_temps([out_dir, out_dir / worker.IMAGES_DIR, out_dir / worker.THUMBS_DIR])
 
-        all_shas = {item.sha256 for item in scanned.files}
-        excluded_shas = {item.sha256 for item in excluded}
-        plan = numbering.plan(groups, state, all_shas, excluded_shas)
+        excluded_shas = {item.sha256 for item in grouped.excluded}
+        plan = numbering.plan(
+            grouped.groups, state, all_shas, excluded_shas, grouped.merged, frozen
+        )
         records = self.process(plan, out_dir)
         records += [{**record, "raw_missing": True} for record in plan.raw_missing]
         self.counts.status["raw_missing"] = len(plan.raw_missing)
-        records.sort(key=lambda record: record["receipt_id"])
+        records.sort(key=lambda record: numbering.id_number(record["receipt_id"]))
 
         restored = {planned.group[0].sha256 for planned in plan.planned}
         newly_retired = {entry["key"]: entry for entry in plan.retired}
@@ -217,18 +230,24 @@ class Run:
             if entry["key"] not in restored and entry["key"] not in newly_retired
         ]
         retired += plan.retired
-        retired.sort(key=lambda entry: entry["receipt_id"])
+        retired.sort(key=lambda entry: numbering.id_number(entry["receipt_id"]))
         self.counts.retired = len(plan.retired)
 
-        self.counts.files_deleted = self.remove_orphans(out_dir, records)
         new_state = {
             "format": numbering.STATE_FORMAT,
             "next_id": plan.next_id,
             "receipts": records,
             "retired": retired,
         }
+        # state.json is the commit point. Orphans are deleted only once it no longer refers to
+        # them, and the two derived files are written last: a run killed in between leaves
+        # files that the next run cleans up or rewrites, never a state that points at nothing.
+        if write_if_changed(out_dir / STATE_FILE, numbering.dump_state(new_state)):
+            self.counts.metadata_written += 1
+        self.counts.files_deleted = self.remove_orphans(out_dir, records)
+
         excluded_by_batch: dict[str, list[str]] = {}
-        for item in excluded:
+        for item in grouped.excluded:
             excluded_by_batch.setdefault(item.batch, []).append(item.name)
         flags = {record["receipt_id"]: receipt_flags(record) for record in records}
         jsonl = "".join(jsonl_line(record) + "\n" for record in records)
@@ -236,7 +255,6 @@ class Run:
         for name, data in (
             (RECEIPTS_FILE, jsonl.encode("utf-8")),
             (REVIEW_FILE, html.encode("utf-8")),
-            (STATE_FILE, numbering.dump_state(new_state)),
         ):
             if write_if_changed(out_dir / name, data):
                 self.counts.metadata_written += 1
@@ -245,11 +263,15 @@ class Run:
         return EXIT_FAILED if self.counts.failures else EXIT_OK
 
     def scan(self, raw_dir: Path) -> scan.ScanResult:
-        batches, candidates, non_images = scan.list_candidates(raw_dir)
+        found = scan.list_candidates(raw_dir)
+        candidates = found.files
         items = [(str(path), name) for _, name, path in candidates]
         batch_of = {name: batch for batch, name, _ in candidates}
         path_of = {name: path for _, name, path in candidates}
-        result = scan.ScanResult(batches=batches, files=[], non_images=non_images)
+        result = scan.ScanResult(batches=found.batches, files=[], non_images=found.non_images)
+        for name, error in found.unreadable_folders:
+            result.unreadable.append(name)
+            self.complain(f"skipped unreadable folder: {name} ({error})")
         files = []
         for probed in _map(_probe, items, self.options.jobs):
             if probed.error is not None:
@@ -329,20 +351,6 @@ class Run:
             "captured_at": group[0].captured_text,
             "group_flags": group_flags,
         }
-        if outcome.error is not None:
-            counts.failures += 1
-            counts.status["failed"] += 1
-            self.complain(f"error: {outcome.error_file or planned.receipt_id}: {outcome.error}")
-            # `failed` makes the next run try this receipt again from the raw photos.
-            record.update(images=[], thumbs=[], qr=None, crop=None, failed=True)
-            return record
-        wrote = outcome.images_written or outcome.thumbs_written or outcome.crops_written
-        if planned.status == "unchanged":
-            counts.status["rewritten" if wrote or outcome.qr_decoded else "unchanged"] += 1
-        elif planned.status == "changed":
-            counts.status["rewritten"] += 1
-        else:
-            counts.status[planned.status] += 1
         counts.images_written += outcome.images_written
         counts.thumbs_written += outcome.thumbs_written
         counts.crops_written += outcome.crops_written
@@ -354,8 +362,23 @@ class Run:
             thumbs=outcome.thumbs,
             qr=outcome.qr,
             crop=outcome.crop,
-            written_by=outcome.written_by,
+            # The next run tries these stages again.
+            failed_stages=outcome.failed_stages,
         )
+        if outcome.failures:
+            counts.failures += 1
+            counts.status["failed"] += 1
+            for failure in outcome.failures:
+                where = failure.file or planned.receipt_id
+                self.complain(f"error: {where}: {failure.error} ({failure.stage})")
+            return record
+        wrote = outcome.images_written or outcome.thumbs_written or outcome.crops_written
+        if planned.status == "unchanged":
+            counts.status["rewritten" if wrote or outcome.qr_decoded else "unchanged"] += 1
+        elif planned.status == "changed":
+            counts.status["rewritten"] += 1
+        else:
+            counts.status[planned.status] += 1
         return record
 
     @staticmethod
@@ -447,4 +470,10 @@ class Run:
 
 
 def run(options: Options, out: TextIO, err: TextIO) -> int:
-    return Run(options, out, err).execute()
+    try:
+        return Run(options, out, err).execute()
+    except Exception as error:
+        # A traceback or an exception message can quote a path, a payload or an EXIF value; the
+        # class name alone says enough to start looking.
+        print(f"error: the run stopped ({type(error).__name__})", file=err)
+        return EXIT_FAILED
