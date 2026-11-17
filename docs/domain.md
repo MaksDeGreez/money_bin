@@ -101,7 +101,8 @@ The rule "lines sum to the amount" spans two tables, so a check constraint canno
 PostgreSQL trigger could (a deferred constraint trigger that re-sums at commit), but it is not used for now:
 
 - every write goes through the models. Lines are written as nested attributes of their transaction, which
-  checks the sum before it saves. A line saved on its own compares itself with its saved siblings, and a
+  checks the sum before it saves. A line saved on its own that changes an amount compares itself with the
+  stored transaction amount and the stored siblings, under a row lock (see "Concurrent writers"), and a
   line cannot be destroyed on its own at all;
 - the trigger would have to be deferred to commit time (a transaction and its lines are written in
   several statements), which makes errors hard to read and tests slow to write;
@@ -127,13 +128,20 @@ add up. Two mechanisms stop that:
   A save that changes only lines (nested attributes) still writes the transaction row: it touches
   `updated_at`, so it bumps the version too. The row update runs before the lines are written, so the loser
   writes nothing.
+- **A row lock for a line saved on its own.** A new line, or a line whose amount changes, outside its
+  transaction's save reads the transaction's stored `amount` and `transfer_id` with `SELECT ... FOR UPDATE`
+  and sums the stored sibling lines. It never trusts the transaction copy in memory, which may hold an
+  unsaved amount. The lock is held until commit, so parallel writers of that transaction wait. The save
+  then bumps the transaction's `lock_version`, so a copy read before it cannot write lines over it.
+  Changing only a line's category or comment needs neither.
 
 `ActiveRecord::StaleObjectError` is an exception, not a validation error: the copy was correct when it was
 read, and only the person or the client can decide what to do with their change. Callers handle it like this:
 
 - a browser form reloads the transaction and shows "changed somewhere else, check and save again"; the form
   carries `lock_version` as a hidden field, so a page that was open for an hour also conflicts;
-- the API answers `409 Conflict` (code `stale_transaction`) and the client reads the row again;
+- the API (when it writes transactions) answers `409 Conflict` with the code `stale_transaction`, and the
+  client reads the row again;
 - a service that reads and writes in one go (`Receipts::Accept`) takes the row lock first
   (`transaction.lock!`), so it waits for a parallel writer instead of failing;
 - nothing retries on its own: a retry with the same stale data would only fail again.
