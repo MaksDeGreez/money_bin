@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_160200) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_160400) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -79,7 +79,56 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160200) do
     t.index ["normalized_name"], name: "index_payees_on_normalized_name", unique: true
   end
 
+  create_table "transaction_lines", force: :cascade do |t|
+    t.bigint "transaction_id", null: false
+    t.bigint "category_id"
+    t.decimal "amount", precision: 15, scale: 2, null: false
+    t.string "legacy_category_path"
+    t.text "comment"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["category_id"], name: "index_transaction_lines_on_category_id"
+    t.index ["transaction_id"], name: "index_transaction_lines_on_transaction_id"
+    t.check_constraint "amount <> 0::numeric", name: "transaction_lines_amount_non_zero"
+  end
+
+  create_table "transactions", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.date "occurred_on", null: false
+    t.timestamptz "occurred_at"
+    t.decimal "amount", precision: 15, scale: 2, null: false
+    t.decimal "original_amount", precision: 15, scale: 2
+    t.string "original_currency", limit: 3
+    t.bigint "payee_id"
+    t.text "comment"
+    t.string "mcc", limit: 4
+    t.text "bank_description"
+    t.string "merchant"
+    t.string "source", null: false
+    t.string "external_id"
+    t.string "status", default: "confirmed", null: false
+    t.uuid "transfer_id"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index "transfer_id, ((amount > (0)::numeric))", name: "index_transactions_one_leg_per_side", unique: true, where: "(transfer_id IS NOT NULL)"
+    t.index ["account_id", "occurred_on"], name: "index_transactions_on_account_id_and_occurred_on"
+    t.index ["occurred_on"], name: "index_transactions_on_occurred_on"
+    t.index ["payee_id"], name: "index_transactions_on_payee_id"
+    t.index ["source", "external_id"], name: "index_transactions_on_source_and_external_id", unique: true, where: "(external_id IS NOT NULL)"
+    t.index ["status"], name: "index_transactions_on_status"
+    t.check_constraint "amount <> 0::numeric", name: "transactions_amount_non_zero"
+    t.check_constraint "mcc::text ~ '^[0-9]{4}$'::text", name: "transactions_mcc_format"
+    t.check_constraint "original_amount IS NULL AND original_currency IS NULL OR original_amount IS NOT NULL AND original_currency IS NOT NULL AND original_amount <> 0::numeric AND sign(original_amount) = sign(amount)", name: "transactions_original_amount_consistent"
+    t.check_constraint "original_currency::text ~ '^[A-Z]{3}$'::text", name: "transactions_original_currency_format"
+    t.check_constraint "source::text = ANY (ARRAY['legacy'::character varying, 'receipt'::character varying, 'manual'::character varying, 'api'::character varying, 'bank'::character varying]::text[])", name: "transactions_source_allowed"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'needs_review'::character varying, 'confirmed'::character varying]::text[])", name: "transactions_status_allowed"
+  end
+
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "categories", "categories", column: "parent_id"
+  add_foreign_key "transaction_lines", "categories"
+  add_foreign_key "transaction_lines", "transactions"
+  add_foreign_key "transactions", "accounts"
+  add_foreign_key "transactions", "payees"
 end

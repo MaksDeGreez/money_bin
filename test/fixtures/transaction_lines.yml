@@ -1,0 +1,29 @@
+salary_line:
+  parent: salary
+  category: salary
+  amount: 50000.00
+
+coffee_line:
+  parent: coffee
+  category: cafes
+  amount: -85.00
+
+market_groceries:
+  parent: market_split
+  category: groceries
+  amount: -1000.40
+
+market_household:
+  parent: market_split
+  category: household_supplies
+  amount: -250.00
+
+snack_line:
+  parent: snack
+  category: takeaway
+  amount: -60.00
+  legacy_category_path: Food / Snacks
+
+subscription_line:
+  parent: subscription
+  amount: -830.00

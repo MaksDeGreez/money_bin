@@ -85,6 +85,11 @@ class PayeeTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) { Payee.find_or_create_by_name!(" ") }
   end
 
+  test "a payee with transactions cannot be destroyed" do
+    assert_not payees(:corner_cafe).destroy
+    assert Payee.create!(name: "Unused Shop").destroy
+  end
+
   test "the database keeps normalised names unique" do
     assert_raises(ActiveRecord::RecordNotUnique) do
       payees(:corner_cafe).update_column(:normalized_name, "example market")

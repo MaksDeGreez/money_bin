@@ -72,6 +72,30 @@ class AccountTest < ActiveSupport::TestCase
     assert_not_includes Account.active, accounts(:old_wallet)
   end
 
+  test "balance is the sum of the transaction amounts" do
+    assert_equal BigDecimal("47834.60"), accounts(:card_uah).balance
+    assert_equal BigDecimal("-60"), accounts(:cash_uah).balance
+    assert_equal BigDecimal("0"), accounts(:old_wallet).balance
+    assert_kind_of BigDecimal, accounts(:card_uah).balance
+  end
+
+  test "currency cannot change once the account has transactions" do
+    account = accounts(:card_uah)
+
+    assert_not account.update(currency: "EUR")
+    assert_includes account.errors[:currency], "cannot change once the account has transactions"
+  end
+
+  test "currency can change while the account has no transactions" do
+    assert accounts(:old_wallet).update(currency: "USD")
+  end
+
+  test "an account with transactions cannot be destroyed" do
+    assert_not accounts(:card_uah).destroy
+    assert_includes accounts(:card_uah).errors[:base], "Cannot delete record because dependent transactions exist"
+    assert accounts(:old_wallet).destroy
+  end
+
   test "the database rejects an unknown kind" do
     assert_violates("accounts_kind_allowed") { accounts(:cash_uah).update_column(:kind, "piggy_bank") }
   end

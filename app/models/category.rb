@@ -22,6 +22,7 @@ class Category < ApplicationRecord
   belongs_to :parent, class_name: "Category", optional: true, inverse_of: :children
   has_many :children, -> { order(:position, :name) }, class_name: "Category", foreign_key: :parent_id, inverse_of: :parent,
     dependent: :restrict_with_error
+  has_many :transaction_lines, dependent: :restrict_with_error
 
   scope :groups, -> { where(parent_id: nil) }
   scope :leaves, -> { where.not(parent_id: nil) }
