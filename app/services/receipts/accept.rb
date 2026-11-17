@@ -83,6 +83,9 @@ module Receipts
           raise ArgumentError, "the receipt is already booked on #{transaction.account.name}, not on #{@account.name}"
         end
 
+        # Locks and re-reads the row, so a parallel edit of the transaction waits instead of failing this
+        # call with ActiveRecord::StaleObjectError.
+        transaction.lock!
         total = items_total(items)
         if total != transaction.amount.abs
           raise TotalMismatch.new(items_total: total, transaction_amount: transaction.amount)

@@ -14,7 +14,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `accounts` | A place where money is kept, in one currency | `name` (unique), `kind` (cash, debit, credit, savings, ewallet, business), `currency` (ISO 4217), `archived`, `external_id` (optional, unique) |
 | `categories` | A group (root) or a category (child of a group) | `parent_id`, `name`, `slug` (unique), `position`, `description` |
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
-| `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `external_id`, `status`, `transfer_id` |
+| `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `external_id`, `status`, `transfer_id`, `lock_version` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
 | `receipts` | A photographed shop receipt and its OCR result | `transaction_id` (nullable), `status`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `qr_payload`, `batch`, `sha256` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
@@ -46,6 +46,7 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   - `status`: `confirmed` (the default), `needs_review` (a person should look, for example at an
     uncategorised line), or `draft` (still being prepared).
   - `transfer_id` joins the two legs of a transfer.
+  - `lock_version` is Active Record's optimistic lock counter (see "Concurrent writers").
 - **Transaction line.** `category_id` nil means "not categorised yet". `legacy_category_path` keeps the old
   app's category path ("Food / Snacks") when the history importer brings the line in, so the original label
   is never lost.
@@ -85,6 +86,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | `(source, external_id)` is unique when `external_id` is set | Model + DB (partial unique index) |
 | A transaction that is not a transfer leg has at least one line, and its lines sum exactly to its amount | Model only (see below) |
 | A line saved on its own cannot break the sum and cannot be destroyed on its own | Model only |
+| A stale copy of a transaction cannot save or destroy, also when only its lines change | Model (optimistic locking, `lock_version`) |
 | A transfer has exactly two legs, on different accounts, with opposite signs and no lines | DB for "at most one leg per sign" (unique index `index_transactions_one_leg_per_side`); model for the rest |
 | A same-currency transfer nets to exactly zero | Model only |
 | A leg cannot leave its transfer; destroying one leg destroys the other | Model only |
@@ -112,6 +114,29 @@ Transfers follow the same idea. The database refuses a third leg and two legs wi
 other rules are checked when a leg is saved, against its saved counterpart, so a single save cannot break
 an existing pair. A lone leg is valid, because the first leg of a pair is always saved alone; writers
 create both legs in one database transaction and check the pair afterwards (below).
+
+### Concurrent writers
+
+The browser, the API and the importer can write the same transaction at the same time. The line-sum rule is
+checked on the copy in memory, so two stale copies could each pass it and together leave lines that do not
+add up. Two mechanisms stop that:
+
+- **Optimistic locking on `transactions`.** The `lock_version` column turns on Active Record's optimistic
+  locking. Each save writes `lock_version + 1` with `WHERE lock_version = <the value it read>`, so a save or a
+  destroy from a stale copy raises `ActiveRecord::StaleObjectError` and its database transaction rolls back.
+  A save that changes only lines (nested attributes) still writes the transaction row: it touches
+  `updated_at`, so it bumps the version too. The row update runs before the lines are written, so the loser
+  writes nothing.
+
+`ActiveRecord::StaleObjectError` is an exception, not a validation error: the copy was correct when it was
+read, and only the person or the client can decide what to do with their change. Callers handle it like this:
+
+- a browser form reloads the transaction and shows "changed somewhere else, check and save again"; the form
+  carries `lock_version` as a hidden field, so a page that was open for an hour also conflicts;
+- the API answers `409 Conflict` (code `stale_transaction`) and the client reads the row again;
+- a service that reads and writes in one go (`Receipts::Accept`) takes the row lock first
+  (`transaction.lock!`), so it waits for a parallel writer instead of failing;
+- nothing retries on its own: a retry with the same stale data would only fail again.
 
 ## Transfers
 

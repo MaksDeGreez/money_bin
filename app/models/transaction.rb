@@ -18,6 +18,10 @@
 # idempotent. `status` is the review state: `confirmed` by default, `needs_review` when something still
 # needs a person (an uncategorised line), `draft` for a row that is still being prepared.
 #
+# Concurrent writers: `lock_version` turns on Active Record's optimistic locking. Saving or destroying a stale
+# copy raises ActiveRecord::StaleObjectError. A save that changes only lines still bumps the version (it
+# touches `updated_at`), so two stale copies can never both write lines (docs/domain.md, "Concurrent writers").
+#
 # Naming: Active Record has a `transaction` method, so no association may be called `transaction`
 # (`belongs_to :transaction` raises ArgumentError). Lines point back with `parent`, a receipt with
 # `ledger_transaction`. The model itself can still be called Transaction.
@@ -35,6 +39,7 @@ class Transaction < ApplicationRecord
   # Declared before `has_many :lines` so the flag is already on when its `dependent: :destroy` runs.
   around_save :managing_lines
   around_destroy :managing_lines
+  before_save :touch_when_only_lines_change, if: :persisted?
 
   belongs_to :account
   belongs_to :payee, optional: true
@@ -79,6 +84,14 @@ class Transaction < ApplicationRecord
     lines.reject(&:marked_for_destruction?)
   end
 
+  # True when the next save writes a line: a new one, a changed one or one marked for destruction. Only lines
+  # already in memory can change, so this never loads the association.
+  def lines_changing?
+    association(:lines).target.any? do |line|
+      line.new_record? || line.marked_for_destruction? || line.has_changes_to_save?
+    end
+  end
+
   # True while this transaction validates, saves or destroys itself. Lines touched then are covered by
   # lines_add_up, so TransactionLine skips the checks it runs when a line is saved on its own.
   def managing_lines?
@@ -97,6 +110,12 @@ class Transaction < ApplicationRecord
       yield
     ensure
       @managing_lines = was_managing
+    end
+
+    # A save that changes only lines would not write the transaction row, so it would not check or bump
+    # lock_version. Touching updated_at makes it write the row, so a stale copy fails here.
+    def touch_when_only_lines_change
+      self.updated_at = Time.current if lines_changing? && !has_changes_to_save?
     end
 
     # The payee is optional, so belongs_to does not check it; a made-up id would otherwise surface as

@@ -219,6 +219,59 @@ class TransactionTest < ActiveSupport::TestCase
     assert_equal [ BigDecimal("-1250.40") ], split.lines.reload.map(&:amount)
   end
 
+  # Two copies of one transaction, both with their lines loaded, as two parallel requests would hold them.
+  def two_copies(transaction)
+    Array.new(2) { Transaction.find(transaction.id).tap { |copy| copy.lines.load } }
+  end
+
+  test "a stale copy cannot save after another copy changed the amount and lines" do
+    expense = build_expense.tap(&:save!)
+    first, second = two_copies(expense)
+    line_id = first.lines.first.id
+
+    assert first.update(amount: "-120.00", lines_attributes: [ { id: line_id, amount: "-120.00" } ])
+    assert_raises(ActiveRecord::StaleObjectError) do
+      second.update(amount: "-120.00", lines_attributes: [ { amount: "-20.00" } ])
+    end
+
+    expense.reload
+    assert_equal BigDecimal("-120"), expense.amount
+    assert_equal [ BigDecimal("-120") ], expense.lines.map(&:amount)
+  end
+
+  test "a change of lines only conflicts with a parallel change of lines only" do
+    expense = build_expense.tap(&:save!)
+    first, second = two_copies(expense)
+    line_id = first.lines.first.id
+
+    assert first.update(lines_attributes: [ { id: line_id, amount: "-60.00" }, { amount: "-40.00" } ])
+    assert_raises(ActiveRecord::StaleObjectError) do
+      second.update(lines_attributes: [ { id: line_id, amount: "-70.00" }, { amount: "-30.00" } ])
+    end
+
+    assert_equal BigDecimal("-100"), expense.reload.lines.sum(:amount)
+    assert_equal 2, expense.lines.count
+  end
+
+  test "a lines-only change bumps lock_version; a save without changes does not" do
+    expense = build_expense.tap(&:save!)
+
+    assert_no_changes -> { expense.reload.lock_version } do
+      assert expense.save
+    end
+    assert_changes -> { expense.reload.lock_version }, from: 0, to: 1 do
+      expense.update!(lines_attributes: [ { id: expense.lines.first.id, comment: "Lunch" } ])
+    end
+  end
+
+  test "a stale copy cannot be destroyed" do
+    stale = Transaction.find(transactions(:coffee).id)
+    transactions(:coffee).update!(comment: "Flat white")
+
+    assert_raises(ActiveRecord::StaleObjectError) { stale.destroy }
+    assert Transaction.exists?(stale.id)
+  end
+
   test "scopes" do
     assert_includes Transaction.expenses, transactions(:coffee)
     assert_not_includes Transaction.expenses, transactions(:salary)

@@ -88,6 +88,17 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
     assert transaction.confirmed?
   end
 
+  test "accepting again works after the transaction was edited elsewhere" do
+    receipt = receipts(:market_receipt)
+    receipt.ledger_transaction # an old copy in the association cache
+    Transaction.find(transactions(:market_split).id).update!(comment: "Edited in another tab")
+
+    transaction = accept(receipt)
+
+    assert_equal "Edited in another tab", transaction.comment
+    assert_equal 2, transaction.lock_version
+  end
+
   test "lines on a linked income carry its positive sign" do
     refund = Transaction.create!(account: accounts(:card_uah), amount: "152.50", occurred_on: Date.new(2026, 10, 9), source: :manual,
                                  lines_attributes: [ { amount: "152.50" } ])
