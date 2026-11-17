@@ -80,12 +80,12 @@ Rails.application.configure do
   # Only use :id for inspections in production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
-  #
+  # Enable DNS rebinding protection and other `Host` header attacks. The app runs on the owner's machine,
+  # so it answers to the localhost names only, plus APP_HOST when the owner serves it under another name
+  # (for example a name on the home network). A web page that points a name of its own at 127.0.0.1
+  # gets a 403.
+  config.hosts = [ "localhost", IPAddr.new("127.0.0.1"), IPAddr.new("::1"), ENV["APP_HOST"].presence ].compact
+
   # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end

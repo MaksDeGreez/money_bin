@@ -12,7 +12,7 @@ html lang="en"
               = ui_link_button "API tokens", settings_api_tokens_path, variant: :ghost, size: :sm
               = ui_link_button "Sidekiq", "/sidekiq", variant: :ghost, size: :sm, data: { turbo: false }
             span.hidden.text-xs.text-ink-muted class="sm:inline" = Current.user.email_address
-            = ui_button_to "Sign out", session_path, method: :delete, variant: :ghost, size: :sm
+            = ui_button_to "Sign out", session_path, method: :delete, variant: :ghost, size: :sm, form: { data: { turbo: false } }
           = render "ui/theme_toggle"
     main#main-content.mx-auto.max-w-6xl.px-6.py-8 class="sm:px-10"
       = render "ui/flash"

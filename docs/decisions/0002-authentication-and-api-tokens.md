@@ -53,6 +53,14 @@ identity, with as little machinery as possible.
   cookie in the `sessions` table (`Session.from_cookies`, the same lookup as for pages and Action Cable).
   For a visitor without a valid session the route does not exist: they get a plain 404 and cannot tell
   that the dashboard is there. An API token does not open it.
+- **A Content Security Policy on every page** (`config/initializers/content_security_policy.rb`):
+  scripts, styles, images and connections from the app only, plus the Google Fonts hosts the layout
+  loads; inline scripts and styles only with the page's nonce (the importmap tags, the theme boot script
+  in the head, Turbo's progress bar); no `unsafe-inline`; no framing by other sites. The nonce is the
+  Rails session id, so it stays the same while Turbo swaps pages, and the sign-in and sign-out forms load
+  a whole new page because they reset the session. **In production the app answers only to
+  `localhost`, `127.0.0.1`, `::1` and an optional `APP_HOST`** (`config.hosts`), which stops DNS
+  rebinding: a web page cannot reach the local server through a name of its own.
 - **Active Storage's own routes are not drawn** (`config.active_storage.draw_routes = false`). Rails
   serves direct uploads, the disk service and blob and representation links from its own controllers,
   which do not inherit from `ApplicationController`: they would accept and serve receipt photos without a

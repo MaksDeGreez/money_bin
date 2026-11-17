@@ -3,7 +3,7 @@
 .mx-auto.max-w-sm
   = render "ui/page_header", title: "Sign in"
 
-  = form_with url: session_path, class: "mt-6 space-y-4" do |f|
+  = form_with url: session_path, class: "mt-6 space-y-4", data: { turbo: false } do |f|
     .field
       = f.label :email_address, "E-mail address"
       = f.email_field :email_address, required: true, autofocus: true, autocomplete: "username", value: params[:email_address]

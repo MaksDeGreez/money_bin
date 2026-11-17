@@ -81,6 +81,10 @@ history). A second user is refused. There is no password reset by e-mail: `bin/r
 the reset. Seeds never create a user.
 
 Every page needs a signed-in session, except the sign-in page and `/up`. Sign in at `/session/new`.
+Rails' own Active Storage routes (`/rails/active_storage/...`) are not drawn, because they would skip
+the sign-in check: receipt photos will be served by the app's own controllers. Every page is sent with a
+strict Content Security Policy, and in production the app answers only to `localhost`, `127.0.0.1`,
+`::1` and `APP_HOST`.
 
 AI agents and scripts use **personal API tokens**, not the browser session. Create one at
 `/settings/api_tokens` (signed in): give it a name and a scope, `read` (GET requests only) or
@@ -141,6 +145,7 @@ for development can never point the tests at development data; a real environmen
 | `ML_SERVICE_URL` | `http://127.0.0.1:8100`         | where Rails finds the ML service |
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
+| `APP_HOST`       | (unset)                         | production only: one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1` |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |
 
 Databases and Redis numbers. The names and numbers are chosen so this app can share PostgreSQL and Redis
