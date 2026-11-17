@@ -108,6 +108,17 @@ class Receipt < ApplicationRecord
     items.sum(BigDecimal("0")) { |item| item.amount || 0 }
   end
 
+  # The printed total minus the items' sum, as a BigDecimal: positive when items are missing (OCR skipped an
+  # unreadable line), negative when there are too many. nil when the total is unknown.
+  def total_difference
+    total - items_total if total
+  end
+
+  # False when the total is known and the items do not sum to it.
+  def items_match_total?
+    total_difference.nil? || total_difference.zero?
+  end
+
   private
     # Only new attachments are fingerprinted: they are still in memory as the caller's files or IO objects.
     def set_fingerprint

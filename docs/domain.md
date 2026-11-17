@@ -260,7 +260,7 @@ are strict. `Receipts::ApplyOcr` keeps what it can instead of failing the receip
   `unit_price` on an item;
 - an item still refused after that (no name, no readable amount, a negative discount) is skipped. Its
   position stays free, `ocr_raw` keeps it, and the items no longer sum to `total`, which the person sees
-  at review. Failing the whole receipt for one smudged line would throw away the other lines.
+  at review (`Receipts::Accept` then books the transaction as `needs_review`). Failing the whole receipt for one smudged line would throw away the other lines.
 
 `Receipts::ApplyOcr` never changes a `reviewed` receipt (it raises `AlreadyReviewed`; the job then stops
 quietly, since the person's result wins). Applying the same result twice gives the same rows.
@@ -297,8 +297,14 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
   the items' sum, `source: receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
   `occurred_at` = `issued_at`, `merchant` = `merchant_name`. When the receipt currency is known, it must be
   the account currency;
-- the transaction becomes `needs_review` when a line has no category, else `confirmed`. The receipt
-  becomes `reviewed` and is linked to the transaction;
+- the transaction becomes `needs_review` when a line has no category, or when the receipt's printed
+  `total` is known and the items do not sum to it (OCR may have skipped an unreadable line). The items are
+  still booked: the person may have changed them on purpose. `receipt.total_difference` (the total minus
+  the items' sum, nil when the total is unknown) and `receipt.items_match_total?` let a screen show the gap.
+  Otherwise the transaction becomes `confirmed`;
+- the earlier status of a linked transaction does not matter: a `draft` (or a `confirmed` one) also ends
+  `needs_review` or `confirmed`, because accepting the receipt is the review. The receipt becomes
+  `reviewed` and is linked to the transaction;
 - only `extracted` receipts (the first acceptance) and `reviewed` ones (accepting again after a change)
   can be accepted. `uploaded` and `processing` have no OCR result yet, and `failed` has none to trust;
 - it runs in one database transaction with the receipt row locked, so a failure changes nothing and two

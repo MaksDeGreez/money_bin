@@ -13,8 +13,11 @@ module Receipts
   #   sum, source `receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
   #   `occurred_at` = `issued_at`, `merchant` = `merchant_name`. The receipt currency, when known, must be the
   #   account currency.
-  # - The transaction ends `needs_review` when a line has no category, else `confirmed`. The receipt ends
-  #   `reviewed` and linked to the transaction.
+  # - The transaction ends `needs_review` when a line has no category or when the receipt's printed `total`
+  #   is known and the items do not sum to it (Receipt#total_difference says by how much; the items are
+  #   still booked, since the person may have edited them on purpose). Otherwise it ends `confirmed`, also
+  #   when it was a `draft`: accepting the receipt is the review. The receipt ends `reviewed` and linked to
+  #   the transaction.
   # - Only `extracted` receipts (first acceptance) and `reviewed` ones (accept again after a change) can be
   #   accepted. `uploaded` and `processing` have no OCR result yet; `failed` has none to trust.
   #
@@ -93,7 +96,7 @@ module Receipts
 
         lines = lines_for(items, sign: transaction.amount.negative? ? -1 : 1)
         old_lines = transaction.lines.map { |line| { id: line.id, _destroy: true } }
-        transaction.update!(lines_attributes: old_lines + lines, status: status_for(lines))
+        transaction.update!(lines_attributes: old_lines + lines, status: status_for(lines, items))
         transaction
       end
 
@@ -108,7 +111,7 @@ module Receipts
 
         lines = lines_for(items, sign: -1)
         Transaction.create!(
-          account: @account, amount: -total, source: :receipt, status: status_for(lines),
+          account: @account, amount: -total, source: :receipt, status: status_for(lines, items),
           occurred_on: @receipt.issued_at&.in_time_zone(TIME_ZONE)&.to_date || Date.current,
           occurred_at: @receipt.issued_at, merchant: @receipt.merchant_name, lines_attributes: lines
         )
@@ -126,8 +129,10 @@ module Receipts
         end
       end
 
-      def status_for(lines)
-        lines.any? { |line| line[:category_id].nil? } ? :needs_review : :confirmed
+      def status_for(lines, items)
+        uncategorised = lines.any? { |line| line[:category_id].nil? }
+        short_or_long = @receipt.total.present? && @receipt.total != items_total(items)
+        uncategorised || short_or_long ? :needs_review : :confirmed
       end
   end
 end

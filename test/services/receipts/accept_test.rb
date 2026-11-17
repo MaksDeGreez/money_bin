@@ -46,6 +46,42 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
       line_summary(transaction)
   end
 
+  test "items that do not sum to the printed total are booked, but need review" do
+    receipt = receipts(:corner_receipt)
+    receipt_items(:corner_sandwich).update!(category: categories(:takeaway))
+    receipt.update!(total: "160.00") # OCR skipped a 7.50 line
+
+    transaction = accept(receipt, account: accounts(:card_uah))
+
+    assert_equal BigDecimal("-152.50"), transaction.amount
+    assert transaction.needs_review?
+    assert_equal BigDecimal("7.50"), receipt.reload.total_difference
+    assert_not receipt.items_match_total?
+  end
+
+  test "an unknown total does not hold up a categorised receipt" do
+    receipt = receipts(:corner_receipt)
+    receipt_items(:corner_sandwich).update!(category: categories(:takeaway))
+    receipt.update!(total: nil)
+
+    assert accept(receipt, account: accounts(:card_uah)).confirmed?
+    assert_nil receipt.total_difference
+    assert receipt.items_match_total?
+  end
+
+  test "accepting again with a total that differs moves the transaction to needs_review" do
+    receipt = receipts(:market_receipt)
+    receipt.update!(total: "1300.40")
+
+    assert accept(receipt).needs_review?
+  end
+
+  test "accepting a receipt whose transaction is a draft ends the draft" do
+    transactions(:market_split).update!(status: :draft)
+
+    assert accept(receipts(:market_receipt)).confirmed?
+  end
+
   test "a category whose items are a refund gives a line of the opposite sign" do
     receipt_items(:corner_deposit).update!(category: categories(:household_supplies))
 
