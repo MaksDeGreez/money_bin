@@ -1,0 +1,68 @@
+# A slice of the taxonomy in db/seeds/taxonomy.yml. Names, slugs and positions match the seed exactly, so
+# running the seed in a test updates these rows instead of adding new ones.
+groceries_group:
+  name: Groceries
+  slug: groceries
+  position: 1
+
+groceries:
+  parent: groceries_group
+  name: Groceries
+  slug: groceries/groceries
+  position: 1
+  description: Food and everyday groceries, including drinking-water delivery.
+
+eating_out:
+  name: Eating out
+  slug: eating-out
+  position: 2
+
+cafes:
+  parent: eating_out
+  name: Cafes, bars & restaurants
+  slug: eating-out/cafes-bars-restaurants
+  position: 1
+  description: Meals and drinks at cafes, bars and restaurants.
+
+takeaway:
+  parent: eating_out
+  name: Takeaway & fast food
+  slug: eating-out/takeaway-fast-food
+  position: 2
+  description: Takeaway, food delivery and fast food.
+
+household_group:
+  name: Household & shopping
+  slug: household-shopping
+  position: 4
+
+household_supplies:
+  parent: household_group
+  name: Household supplies
+  slug: household-shopping/household-supplies
+  position: 1
+  description: Household goods, cleaning and personal-care supplies, small items.
+
+income:
+  name: Income
+  slug: income
+  position: 18
+
+salary:
+  parent: income
+  name: Salary & main contracts
+  slug: income/salary-main-contracts
+  position: 1
+  description: Salary and the main contract work.
+
+uncategorised_group:
+  name: Uncategorised
+  slug: uncategorised
+  position: 21
+
+uncategorised:
+  parent: uncategorised_group
+  name: Uncategorised
+  slug: uncategorised/uncategorised
+  position: 1
+  description: Transactions that have no category yet.

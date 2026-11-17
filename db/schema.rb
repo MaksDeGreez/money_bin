@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_160100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -56,6 +56,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_160000) do
     t.index ["blob_id", "variation_digest"], name: "index_active_storage_variant_records_uniqueness", unique: true
   end
 
+  create_table "categories", force: :cascade do |t|
+    t.bigint "parent_id"
+    t.string "name", null: false
+    t.string "slug", null: false
+    t.integer "position", null: false
+    t.text "description"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["parent_id", "name"], name: "index_categories_on_parent_id_and_name", unique: true, nulls_not_distinct: true
+    t.index ["slug"], name: "index_categories_on_slug", unique: true
+    t.check_constraint "(parent_id IS NULL) = (strpos(slug::text, '/'::text) = 0)", name: "categories_slug_matches_level"
+    t.check_constraint "parent_id <> id", name: "categories_not_own_parent"
+    t.check_constraint "slug::text ~ '^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)?$'::text", name: "categories_slug_format"
+  end
+
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
+  add_foreign_key "categories", "categories", column: "parent_id"
 end
