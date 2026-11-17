@@ -2,9 +2,10 @@
 
 A personal finance tracker for one person and an AI agent. The core flow: take a photo of a receipt, a
 local ML service reads it (OCR), the items get categories, and they land in a ledger. A REST API and an
-MCP server for AI agents come later, and so does an import of the history kept by the previous version
-of the app. It is a master's capstone project (MSc Data Science, engineering project). It is local-first:
-everything runs on the owner's machine, and the data and photos stay there.
+MCP server for AI agents come later. The history kept by the previous version of the app is loaded with
+an importer (see "Importing the history"). It is a master's capstone project (MSc Data Science,
+engineering project). It is local-first: everything runs on the owner's machine, and the data and photos
+stay there.
 
 ```
   browser ─┐                       ┌─> PostgreSQL (ledger)
@@ -106,6 +107,24 @@ Errors have one shape, `{"error": {"code": "...", "message": "..."}}`: 401 `unau
 `invalid_token` (unknown, malformed or revoked), 403 `insufficient_scope` (a `read` token on a request
 that changes data).
 
+## Importing the history
+
+The previous version of the app writes an export folder (a manifest and four JSON Lines files). Keep it
+outside this repository: it holds personal data. Then:
+
+```sh
+DRY_RUN=1 bin/rails "import:money_bin[/path/to/export]"   # check and count, then roll back
+bin/rails "import:money_bin[/path/to/export]"             # import
+```
+
+The importer checks the whole export before it writes anything (hashes, counts, every field, references,
+transfer pairs), writes everything in one database transaction, and can be run again. Each imported row
+remembers a digest of the export row it came from: the same export a second time writes nothing and keeps
+every change made in the app since (a category given, a row confirmed, a comment fixed); only a row that
+changed in the export is written again from it. It prints counts and warnings only, never a name or an amount, and exits
+with status 1 when it stops. The taxonomy must be loaded first (`bin/rails db:seed`). The format and every
+rule are in [`docs/import-contract.md`](docs/import-contract.md).
+
 ## Tests and checks
 
 ```sh
@@ -180,7 +199,8 @@ bin/              setup, dev, ci, services, worktree and pull request scripts, l
 config/           Rails config; ci.rb (the bin/ci steps), redis_url.rb, worktree_isolation.rb
 db/               migrations, schema, seeds
 design/           favicon/source.png, the artwork behind the logo and the favicons
-docs/             domain.md (the data model) and decisions/ (architecture decision records)
+docs/             domain.md (the data model), import-contract.md (the history export) and decisions/
+                  (architecture decision records)
 ml/               the Python ML service (FastAPI, uv); see ml/README.md
 test/             Minitest tests and invented fixtures; test/support/coverage.rb is the coverage gate
 .githooks/        the git hooks (pre-commit, pre-push)

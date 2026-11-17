@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_190000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -22,6 +22,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_170000) do
     t.string "external_id"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "import_digest"
     t.index ["external_id"], name: "index_accounts_on_external_id", unique: true
     t.index ["name"], name: "index_accounts_on_name", unique: true
     t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "accounts_currency_format"
@@ -185,6 +186,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_170000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.integer "lock_version", default: 0, null: false
+    t.string "source_system"
+    t.string "import_digest"
     t.index "transfer_id, ((amount > (0)::numeric))", name: "index_transactions_one_leg_per_side", unique: true, where: "(transfer_id IS NOT NULL)"
     t.index ["account_id", "occurred_on"], name: "index_transactions_on_account_id_and_occurred_on"
     t.index ["occurred_on"], name: "index_transactions_on_occurred_on"

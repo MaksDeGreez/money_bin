@@ -114,6 +114,14 @@ class TransactionTest < ActiveSupport::TestCase
     assert_includes expense.errors[:source], "is not included in the list"
   end
 
+  test "source_system is optional free text" do
+    expense = build_expense(source: :legacy, source_system: "Example Budget App")
+
+    assert expense.save
+    assert_equal "Example Budget App", expense.reload.source_system
+    assert build_expense(source_system: nil).valid?
+  end
+
   test "source and status are stored as readable strings" do
     assert_equal [ "bank", "needs_review" ], Transaction.where(id: transactions(:subscription)).pick(:source, :status)
     assert transactions(:subscription).from_bank?
