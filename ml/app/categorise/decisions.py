@@ -455,7 +455,9 @@ class DecisionsCategoriser(Categoriser):
         `proposals[i]`: up to `MAX_CANDIDATES` slugs proposed for item i, best first; slugs not in
         the request's categories are skipped. Each becomes one `noul` question; its probability is
         the proposal's score, and the verified proposals are ranked by it. An item with nothing to
-        verify, or whose questions were all refused, gets no candidates.
+        verify, or whose questions were all refused, gets no candidates. Unlike `categorise`, the
+        scores are separate yes-probabilities and may add up to more than 1; that is why `verify`
+        is not part of `/categorise`.
         """
         if len(proposals) != len(request.texts):
             raise ValueError("verify needs one list of proposals per item")

@@ -26,7 +26,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.index ["external_id"], name: "index_accounts_on_external_id", unique: true
     t.index ["name"], name: "index_accounts_on_name", unique: true
     t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "accounts_currency_format"
-    t.check_constraint "kind::text = ANY (ARRAY['cash'::character varying, 'debit'::character varying, 'credit'::character varying, 'savings'::character varying, 'ewallet'::character varying, 'business'::character varying]::text[])", name: "accounts_kind_allowed"
+    t.check_constraint "kind::text = ANY (ARRAY['cash'::character varying::text, 'debit'::character varying::text, 'credit'::character varying::text, 'savings'::character varying::text, 'ewallet'::character varying::text, 'business'::character varying::text])", name: "accounts_kind_allowed"
   end
 
   create_table "active_storage_attachments", force: :cascade do |t|
@@ -69,7 +69,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
     t.index ["user_id", "name"], name: "index_api_tokens_on_user_id_and_name_active", unique: true, where: "(revoked_at IS NULL)"
     t.index ["user_id"], name: "index_api_tokens_on_user_id"
-    t.check_constraint "scope::text = ANY (ARRAY['read'::character varying, 'read_write'::character varying]::text[])", name: "api_tokens_scope_allowed"
+    t.check_constraint "scope::text = ANY (ARRAY['read'::character varying::text, 'read_write'::character varying::text])", name: "api_tokens_scope_allowed"
     t.check_constraint "token_digest::text ~ '^[0-9a-f]{64}$'::text", name: "api_tokens_token_digest_format"
   end
 
@@ -118,14 +118,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.index ["source"], name: "index_receipt_ground_truths_on_source"
     t.check_constraint "(checked_at IS NULL) = (check_outcome IS NULL) AND (check_note IS NULL OR checked_at IS NOT NULL)", name: "receipt_ground_truths_check_consistent"
     t.check_constraint "categories_known OR NOT jsonb_path_exists(document, '$.\"items\"[*].\"category_slug\"?(@ != null)'::jsonpath) AND NOT jsonb_path_exists(document, '$.\"category_slug\"?(@ != null)'::jsonpath)", name: "receipt_ground_truths_unknown_categories_null"
-    t.check_constraint "check_outcome::text = ANY (ARRAY['matches'::character varying, 'differs'::character varying]::text[])", name: "receipt_ground_truths_check_outcome_allowed"
+    t.check_constraint "check_outcome::text = ANY (ARRAY['matches'::character varying::text, 'differs'::character varying::text])", name: "receipt_ground_truths_check_outcome_allowed"
     t.check_constraint "items_known OR (document -> 'items'::text) = '[]'::jsonb", name: "receipt_ground_truths_unknown_items_empty"
     t.check_constraint "jsonb_typeof(document) = 'object'::text AND document ? 'items'::text AND jsonb_typeof(document -> 'items'::text) = 'array'::text", name: "receipt_ground_truths_document_shape"
     t.check_constraint "schema_version > 0", name: "receipt_ground_truths_schema_version_positive"
     t.check_constraint "schema_version >= 2 OR NOT categories_known", name: "receipt_ground_truths_categories_need_version_2"
     t.check_constraint "source::text <> 'dps_xml'::text OR source_sha256 IS NOT NULL AND source_format IS NOT NULL AND prefilled_by IS NULL AND prefilled_model_version IS NULL AND prefilled_prompt_version IS NULL AND categories_prefilled_by IS NULL AND NOT categories_known", name: "receipt_ground_truths_imported_fields"
     t.check_constraint "source::text <> 'manual'::text OR source_sha256 IS NULL AND source_format IS NULL AND prefilled_by IS NOT NULL", name: "receipt_ground_truths_manual_fields"
-    t.check_constraint "source::text = ANY (ARRAY['dps_xml'::character varying, 'manual'::character varying]::text[])", name: "receipt_ground_truths_source_allowed"
+    t.check_constraint "source::text = ANY (ARRAY['dps_xml'::character varying::text, 'manual'::character varying::text])", name: "receipt_ground_truths_source_allowed"
     t.check_constraint "source_sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipt_ground_truths_source_sha256_format"
   end
 
@@ -204,9 +204,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "receipts_currency_format"
     t.check_constraint "filled_from IS NULL OR filled_from::text = 'dps_xml'::text", name: "receipts_filled_from_allowed"
     t.check_constraint "ingest_id::text ~ '^rcpt_[0-9]{6,}$'::text", name: "receipts_ingest_id_format"
-    t.check_constraint "kind::text = ANY (ARRAY['fiscal'::character varying, 'card_slip'::character varying]::text[])", name: "receipts_kind_allowed"
+    t.check_constraint "kind::text = ANY (ARRAY['fiscal'::character varying::text, 'card_slip'::character varying::text])", name: "receipts_kind_allowed"
     t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipts_sha256_format"
-    t.check_constraint "status::text = ANY (ARRAY['uploaded'::character varying, 'processing'::character varying, 'extracted'::character varying, 'reviewed'::character varying, 'failed'::character varying]::text[])", name: "receipts_status_allowed"
+    t.check_constraint "status::text = ANY (ARRAY['uploaded'::character varying::text, 'processing'::character varying::text, 'extracted'::character varying::text, 'reviewed'::character varying::text, 'failed'::character varying::text])", name: "receipts_status_allowed"
     t.check_constraint "suggested_category_confidence >= 0::double precision AND suggested_category_confidence <= 1::double precision", name: "receipts_suggested_category_confidence_range"
   end
 
@@ -264,8 +264,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.check_constraint "mcc::text ~ '^[0-9]{4}$'::text", name: "transactions_mcc_format"
     t.check_constraint "original_amount IS NULL AND original_currency IS NULL OR original_amount IS NOT NULL AND original_currency IS NOT NULL AND original_amount <> 0::numeric AND sign(original_amount) = sign(amount)", name: "transactions_original_amount_consistent"
     t.check_constraint "original_currency::text ~ '^[A-Z]{3}$'::text", name: "transactions_original_currency_format"
-    t.check_constraint "source::text = ANY (ARRAY['legacy'::character varying, 'receipt'::character varying, 'manual'::character varying, 'api'::character varying, 'bank'::character varying]::text[])", name: "transactions_source_allowed"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'needs_review'::character varying, 'confirmed'::character varying]::text[])", name: "transactions_status_allowed"
+    t.check_constraint "source::text = ANY (ARRAY['legacy'::character varying::text, 'receipt'::character varying::text, 'manual'::character varying::text, 'api'::character varying::text, 'bank'::character varying::text])", name: "transactions_source_allowed"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'needs_review'::character varying::text, 'confirmed'::character varying::text])", name: "transactions_status_allowed"
   end
 
   create_table "users", force: :cascade do |t|
