@@ -164,6 +164,45 @@ class LeakCheckTest < ActiveSupport::TestCase
       output.lines.grep(/term on line/).map(&:strip)
   end
 
+  # In a merge, git prints one path per entry, also for a rename ("RM", then one path). Reading two paths
+  # there would lose the place and skip the name of the file listed next.
+  test "a file a merge adds is checked by name, also next to a file renamed on one side" do
+    commit({ "b.txt" => "one\ntwo\nthree\nfour\nfive\n" }, "Add b")
+    git("switch", "-q", "-c", "side")
+    git("mv", "b.txt", "a-renamed.txt")
+    commit({}, "Rename b")
+    git("switch", "-q", "-c", "feature", "main")
+    commit({ "own.txt" => "plain own\n" }, "Own")
+    git("merge", "-q", "--no-ff", "--no-commit", "side")
+    File.write(File.join(@work, "a-renamed.txt"), "one\ntwo\nthree\nfour\nfive\nsix from the merge\n")
+    merge = commit({ "zorblax-new.txt" => "plain\n" }, "Merge side")
+    statuses = git("diff-tree", "-r", "-M", "--cc", "--name-status", "--no-commit-id", merge)
+    assert_match(/^R\S*M?\ta-renamed\.txt$|^MR\ta-renamed\.txt$/, statuses, "the merge must list the renamed file with a combined status")
+
+    output, status = push("feature")
+
+    assert_blocked output, status
+    assert_equal [ "commit #{merge[0, 12]} added file <term 3>-new.txt: term on line 3 of the terms file" ],
+      output.lines.grep(/term on line/).map(&:strip)
+  end
+
+  test "a file a merge renames against both parents is checked by its new name" do
+    commit({ "b.txt" => "one\ntwo\nthree\nfour\nfive\n" }, "Add b")
+    git("switch", "-q", "-c", "side")
+    commit({ "side.txt" => "plain side\n" }, "Side")
+    git("switch", "-q", "-c", "feature", "main")
+    commit({ "own.txt" => "plain own\n" }, "Own")
+    git("merge", "-q", "--no-ff", "--no-commit", "side")
+    git("mv", "b.txt", "quuxwidget.txt")
+    merge = commit({}, "Merge side")
+
+    output, status = push("feature")
+
+    assert_blocked output, status
+    assert_equal [ "commit #{merge[0, 12]} added file <term 4>.txt: term on line 4 of the terms file" ],
+      output.lines.grep(/term on line/).map(&:strip)
+  end
+
   test "an annotated tag is checked: its message and its new commits" do
     git("tag", "-a", "v1", "-m", "Release for Zorblax")
 

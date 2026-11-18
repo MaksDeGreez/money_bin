@@ -213,30 +213,30 @@ module LeakCheck
       end
     end
 
-    # Paths the commit adds or renames to. A merge (combined status such as "AA") counts only paths that
-    # are new against every parent: the others came from a parent, which is checked on its own.
+    # Paths the commit adds or renames to. A merge has a combined status, one letter per parent ("AA",
+    # "RM"): it counts only paths that are new against every parent (added, renamed or copied: "AA", "RR",
+    # "AR"); the others came from a parent, which is checked on its own.
+    #
+    # A rename or a copy against one parent comes with a score and two paths ("R100", old, new). A combined
+    # status has no score and one path, also when a letter is R or C.
     def new_paths(sha)
       fields = LeakCheck.git("diff-tree", "-r", "-z", "-M", "--cc", "--name-status", "--root", "--no-commit-id", sha)
         .split("\0")
       paths = []
       until fields.empty?
         status = fields.shift
-        if status.start_with?("R", "C")
-          fields.shift
-          paths << fields.shift
-        else
-          path = fields.shift
-          paths << path if status.match?(/\AA+\z/)
-        end
+        fields.shift if status.match?(/\A[RC]\d+\z/) # the old path
+        path = fields.shift
+        paths << path if status.match?(/\A[ARC]+\d*\z/)
       end
       paths
     end
 
     # Yields path, line number and text of every line the commit adds, with the terms that occur somewhere
     # in the commit's patch (the only ones an added line can hold). A patch without any term yields
-    # nothing. Works for plain and combined (merge)
-    # diffs: a combined diff has one marker column per parent, and a line is new only when every column is
-    # "+" (otherwise it came from a parent). --text shows binary files and files marked "-diff" as text.
+    # nothing. Works for plain and combined (merge) diffs: a combined diff has one marker column per
+    # parent, and a line is new only when every column is "+" (otherwise it came from a parent). --text
+    # shows binary files and files marked "-diff" as text.
     def added_lines(sha)
       patch = LeakCheck.git("diff-tree", "-p", "--text", "--cc", "-M", "-U0", "--root", "--no-commit-id", "--no-color",
                             "--no-ext-diff", "--no-textconv", sha)
