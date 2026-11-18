@@ -36,19 +36,20 @@ class BulkAcceptance < ApplicationRecord
     end
   end
 
-  # One row per transaction of `relation` with uncategorised lines whose suggestion reaches `threshold`. A
-  # transaction whose qualifying lines carry different suggestions (scored at different times) is left out: one
-  # item takes one suggestion.
+  # One row per transaction of `relation` with an uncategorised line whose suggestion reaches `threshold`. Left
+  # out: a split transaction (the model scores the transaction as a whole, so every line of it carries the same
+  # suggestion: a person decides line by line) and one booked from a receipt (categorised on the receipt, whose
+  # "Accept again" rebuilds the lines).
   def self.snapshot(relation, threshold)
+    single = TransactionLine.group(:transaction_id).having("COUNT(*) = 1").select(:transaction_id)
     lines = TransactionLine.uncategorised.joins(:parent)
       .where(transaction_id: relation.unscope(:order).select(:id), transactions: { transfer_id: nil })
+      .where(transaction_id: single).where.not(transaction_id: Receipt.where.not(transaction_id: nil).select(:transaction_id))
       .where.not(suggested_category_id: nil).where(suggestion_probability: threshold..)
       .order(:transaction_id, :id)
       .pluck(:transaction_id, :id, :suggested_category_id, :suggestion_probability, :suggestion_model_version,
         Arel.sql("transactions.lock_version"))
-    lines.group_by(&:first).filter_map do |transaction_id, rows|
-      next if rows.map { |row| row.values_at(2, 4) }.uniq.size > 1
-
+    lines.group_by(&:first).map do |transaction_id, rows|
       _id, _line, category_id, probability, version, lock_version = rows.first
       { transaction_id:, lock_version:, line_ids: rows.map(&:second), category_id:, probability:, model_version: version }
     end
@@ -80,17 +81,29 @@ class BulkAcceptance < ApplicationRecord
   def refresh_counts!
     counts = items.unscope(:order).group(:outcome).count
     update!(accepted_count: counts.fetch("accepted", 0), stale_count: counts.fetch("stale", 0),
-      changed_count: counts.fetch("changed", 0))
+      changed_count: counts.fetch("changed", 0), failed_count: counts.fetch("failed", 0), updated_at: Time.current)
   end
 
   def processed_count
-    accepted_count + stale_count + changed_count
+    accepted_count + stale_count + changed_count + failed_count
   end
 
-  # failed → queued again ("Resume"): the items already handled keep their outcome. Returns whether it did.
+  # A run that has not moved for LOST_AFTER is taken for dead (a worker killed mid-run); it can be resumed.
+  LOST_AFTER = 1.hour
+
+  def lost?
+    running? && updated_at < LOST_AFTER.ago
+  end
+
+  def resumable?
+    failed? || lost?
+  end
+
+  # failed, or running but lost → queued again ("Resume"): the items already handled keep their outcome. Returns
+  # whether it did.
   def resume!
     with_lock do
-      next false unless failed?
+      next false unless resumable?
 
       update!(status: "queued", error: nil, finished_at: nil)
       true

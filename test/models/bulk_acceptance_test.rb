@@ -146,6 +146,54 @@ class BulkAcceptanceTest < ActiveJob::TestCase
     assert_equal [ "done", 2 ], [ acceptance.reload.status, acceptance.accepted_count ]
   end
 
+  test "split transactions and those booked from a receipt are left out of the preview" do
+    split = Transaction.create!(account: accounts(:cash_uah), occurred_on: Date.new(2026, 10, 9), amount: BigDecimal("-10"), source: "manual",
+      merchant: "Invented split", status: "needs_review", lines_attributes: [ { amount: BigDecimal("-6") }, { amount: BigDecimal("-4") } ])
+    split.lines.update_all(suggested_category_id: categories(:groceries).id, suggestion_probability: 0.99, suggestion_model_version: VERSION)
+    booked = receipts(:market_receipt).ledger_transaction
+    booked.lines.first.update!(category: nil)
+    booked.lines.first.update_columns(suggested_category_id: categories(:groceries).id, suggestion_probability: 0.99, suggestion_model_version: VERSION)
+
+    ids = preview(90).items.map(&:transaction_id)
+
+    assert_not_includes ids, split.id
+    assert_not_includes ids, booked.id
+  end
+
+  test "an item the ledger's rules refuse is marked failed, and the rest carries on" do
+    acceptance = preview
+    acceptance.confirm!
+    @transaction.update_columns(original_currency: "UAH")
+
+    BulkAcceptanceJob.perform_now(acceptance)
+
+    acceptance.reload
+    assert_equal [ "done", 1, 1 ], [ acceptance.status, acceptance.accepted_count, acceptance.failed_count ]
+    assert_nil @line.reload.category
+  end
+
+  test "a run that stopped moving can be resumed; one still moving cannot" do
+    acceptance = preview
+    acceptance.confirm!
+    acceptance.update!(status: "running")
+    assert_not acceptance.resume!
+
+    acceptance.update_columns(updated_at: 2.hours.ago)
+    assert acceptance.reload.lost?
+    assert acceptance.resume!
+    BulkAcceptanceJob.perform_now(acceptance)
+    assert_equal [ "done", 2 ], [ acceptance.reload.status, acceptance.accepted_count ]
+  end
+
+  test "a category a bulk acceptance refers to cannot be destroyed" do
+    category = Category.create!(parent: categories(:eating_out), name: "Picnics")
+    BulkAcceptanceItem.create!(bulk_acceptance: bulk_acceptances(:needs_review_preview), ledger_transaction: @others.first, lock_version: 0,
+      line_ids: @others.first.lines.ids, category:, probability: 0.9, model_version: VERSION)
+
+    assert_not category.destroy
+    assert_includes category.errors.full_messages.to_sentence, "bulk acceptance items"
+  end
+
   test "the threshold is a whole percent from 1 to 100" do
     assert_raises(ActiveRecord::RecordInvalid) { preview(0) }
     assert_raises(ActiveRecord::RecordInvalid) { preview(101) }

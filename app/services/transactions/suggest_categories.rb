@@ -5,8 +5,9 @@ module Transactions
   #   Transactions::SuggestCategories.call(run)  # run: a TransactionSuggestionRun; returns it, finished
   #
   # - Which lines: those with no category or the taxonomy's Uncategorised, on transactions that are not transfer
-  #   legs, whose stored suggestion is missing or was made by another artefact than the one the ML service serves
-  #   now. So a new artefact refreshes every suggestion, and a second run with the same artefact asks nothing.
+  #   legs, whose stored suggestion is missing (never made, or its category was deleted since) or was made by
+  #   another artefact than the one the ML service serves now. So a new artefact refreshes every suggestion, and a
+  #   second run with the same artefact asks nothing.
   # - How: the transactions go to POST /categorise/transaction in batches of BATCH (thousands of lines are a few
   #   dozen calls, never one per row), with the app's category list (Categories::TransactionCandidates). A
   #   transaction with no text and no MCC cannot be scored and is counted as skipped.
@@ -28,7 +29,8 @@ module Transactions
     # The transactions with an uncategorised line whose suggestion is missing or from another artefact.
     def self.pending_transaction_ids(model_version)
       TransactionLine.uncategorised.joins(:parent).where(transactions: { transfer_id: nil })
-        .where("transaction_lines.suggestion_model_version IS DISTINCT FROM ?", model_version)
+        .where("transaction_lines.suggested_category_id IS NULL OR " \
+          "transaction_lines.suggestion_model_version IS DISTINCT FROM ?", model_version)
         .distinct.order(:transaction_id).pluck(:transaction_id)
     end
 
@@ -87,15 +89,24 @@ module Transactions
           skipped_count: @run.skipped_count + transactions.size - scorable.size)
       end
 
+      # The lines are locked in id order first, the order Transactions::Categorise locks them in, so a person
+      # categorising the same transaction meanwhile waits or makes this wait, and neither deadlocks.
       def write(transaction, result, version, by_slug, now)
         best, runner_up = result["candidates"]
-        TransactionLine.uncategorised.where(transaction_id: transaction.id).update_all(
+        TransactionLine.transaction do
+          ids = TransactionLine.uncategorised.where(transaction_id: transaction.id).order(:id).lock.pluck(:id)
+          TransactionLine.where(id: ids).update_all(attributes(best, runner_up, result["source"], version, by_slug, now)) if ids.any?
+        end
+      end
+
+      def attributes(best, runner_up, source, version, by_slug, now)
+        {
           suggested_category_id: by_slug.fetch(best["category_slug"]).id,
           suggestion_probability: best["probability"].to_f.clamp(0.0, 1.0),
           runner_up_category_id: runner_up && by_slug.fetch(runner_up["category_slug"]).id,
           runner_up_probability: runner_up && runner_up["probability"].to_f.clamp(0.0, 1.0),
-          suggestion_source: result["source"], suggestion_model_version: version, suggested_at: now
-        )
+          suggestion_source: source, suggestion_model_version: version, suggested_at: now
+        }
       end
   end
 end

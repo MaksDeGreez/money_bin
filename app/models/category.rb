@@ -36,6 +36,8 @@ class Category < ApplicationRecord
     inverse_of: :suggested_category, dependent: :nullify
   has_many :runner_up_transaction_lines, class_name: "TransactionLine", foreign_key: :runner_up_category_id,
     inverse_of: :runner_up_category, dependent: :nullify
+  # Bulk acceptances that would take (or took) this category: their record of what was confirmed.
+  has_many :bulk_acceptance_items, dependent: :restrict_with_error
   # A card slip's one category (Receipt#category) and the categoriser's guess for it.
   has_many :receipts, dependent: :restrict_with_error
   has_many :suggested_receipts, class_name: "Receipt", foreign_key: :suggested_category_id, inverse_of: :suggested_category,
@@ -117,7 +119,8 @@ class Category < ApplicationRecord
         "child categories" => children, "transaction lines" => transaction_lines,
         "receipt items" => receipt_items, "suggested receipt items" => suggested_receipt_items,
         "receipts" => receipts, "suggested receipts" => suggested_receipts,
-        "suggested transaction lines" => suggested_transaction_lines, "runner-up transaction lines" => runner_up_transaction_lines
+        "suggested transaction lines" => suggested_transaction_lines, "runner-up transaction lines" => runner_up_transaction_lines,
+        "bulk acceptance items" => bulk_acceptance_items
       }.filter_map { |name, relation| name if relation.exists? }
       return if uses.empty?
 

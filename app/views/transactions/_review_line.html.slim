@@ -1,31 +1,12 @@
 / One uncategorised line under its transaction: its suggestion and runner-up, "Take" (the suggestion) and a
 / category picker with "Save" (TransactionsController#categorise). The form carries the transaction's
-/ lock_version: an edit made since the page was loaded wins.
-- split = transaction.lines.size > 1
+/ lock_version: an edit made since the page was loaded wins. A line booked from a receipt links to the receipt instead.
 tr.data-grid-sub id=dom_id(line, :review) tabindex="0" data-review-queue-target="row" aria-label="Uncategorised line of #{receipt_money(line.amount, transaction.account.currency)}"
   td colspan="6"
-    = form_with model: TransactionLine.new, scope: :review, url: categorise_transaction_path(transaction), method: :post, class: "flex flex-wrap items-center gap-3", data: { action: "turbo:submit-end->review-queue#advance" } do |f|
-      = hidden_field_tag :line_id, line.id, id: nil
-      = hidden_field_tag :lock_version, transaction.lock_version, id: nil
-      / The suggestion shown: "Take" saves exactly this one, and a refresh since then saves nothing.
-      - if line.suggested_category
-        = hidden_field_tag :shown_category_id, line.suggested_category_id, id: nil
-        = hidden_field_tag :shown_model_version, line.suggestion_model_version, id: nil
-      - filter.to_params.each do |key, value|
-        = hidden_field_tag "filter[#{key}]", value, id: nil
-      - if split
-        span.text-xs.text-ink-muted = "Line of #{receipt_money(line.amount, transaction.account.currency)}:"
-      - if line.suggested_category
-        span.text-sm
-          strong = transaction_suggestion(line)
-          span.text-xs.text-ink-muted =< transaction_suggestion_source(line)
-        - if (runner_up = transaction_runner_up(line))
-          span.text-xs.text-ink-muted = runner_up
-        = f.button nil, variant: :primary, size: :sm, name: "take", value: "1", data: { review_queue_target: "take" } do
-          = ui_icon "check"
-          span Take
-      - else
-        span.text-sm.text-ink-muted No suggestion yet.
-      .w-64 data-review-queue-target="picker"
-        = f.category_select :category_id, category_choices, "aria-label": "Another category for this line", id: "review_category_#{line.id}", suggestion: line.suggested_category, class: "combobox-compact"
-      = f.submit "Save", name: nil, variant: :secondary, size: :sm
+    - if transaction.receipt
+      p.text-sm.text-ink-muted
+        | Booked from a receipt: categorise its items on
+        =< link_to "the receipt", receipt_path(transaction.receipt), data: { turbo_prefetch: false }
+        | .
+    - else
+      = render "transactions/review_form", transaction:, line:, filter:

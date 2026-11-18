@@ -5,7 +5,9 @@
 #
 # The name is matched to a payee by the app's payee normalisation (Payee.normalize_name). Its history is its booked
 # transactions that are not transfer legs, counted once per category they have a line in (only categories among
-# `categories`, so never Uncategorised). The rule is the label memory's: the category of the most transactions,
+# `categories`, so never Uncategorised). Only a person's labels count: a line whose category came from a taken
+# transaction suggestion (`category_origin` `suggestion` or `bulk`) is left out, so the history never repeats the
+# model's own output with a history's confidence. The rule is the label memory's: the category of the most transactions,
 # when it has a strict majority (a tie, a split transaction's two categories included, suggests nothing), with the confidence (agreeing + 1) / (transactions + 1.25) (LabelMemory.confidence);
 # it suggests only from MIN_CONFIDENCE up ("consistent enough": one booking 0.89, two that agree 0.92, 3 of 4 0.76,
 # 2 of 3 0.71 is not), and below that the model decides.
@@ -26,6 +28,7 @@ class PayeeHistory
 
     lines = TransactionLine.joins(:parent).merge(Transaction.booked)
       .where(transactions: { payee_id: payee.id, transfer_id: nil }, category_id: @category_ids)
+      .where(category_origin: [ nil, "person" ])
     lines = lines.where.not(transaction_id: except_transaction_id) if except_transaction_id
     counts = lines.group(:category_id).distinct.count(:transaction_id)
     return nil if counts.empty?

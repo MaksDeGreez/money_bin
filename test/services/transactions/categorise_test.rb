@@ -83,16 +83,40 @@ class Transactions::CategoriseTest < ActiveSupport::TestCase
     assert_equal "draft", @transaction.reload.status
   end
 
+  test "a transaction booked from a receipt is categorised on the receipt, never here" do
+    transaction = receipts(:market_receipt).ledger_transaction
+    line = transaction.lines.first
+    line.update!(category: nil)
+
+    assert_equal :on_receipt, take(line, category: categories(:groceries), origin: "person").status
+    assert_nil line.reload.category
+  end
+
   test "a receipt's other reason to review keeps the transaction to be reviewed" do
     receipt = receipts(:market_receipt)
     transaction = receipt.ledger_transaction
-    line = transaction.lines.first
-    line.update!(category: nil)
-    transaction.update!(status: "needs_review")
     receipt.update_columns(total: receipt.items_total + 1)
+    transaction.status = "needs_review"
 
-    assert take(line, category: categories(:groceries), origin: "person").categorised?
-    assert_equal "needs_review", transaction.reload.status
+    assert_empty transaction.lines.select(&:uncategorised?)
+    assert_equal "needs_review", transaction.status_after_categorising
+    receipt.update_columns(total: receipt.items_total)
+    assert_equal "confirmed", Transaction.find(transaction.id).tap { |t| t.status = "needs_review" }.status_after_categorising
+  end
+
+  test "a save the ledger's rules refuse is invalid, not an exception" do
+    @transaction.update_columns(original_currency: "UAH")
+
+    assert_equal :invalid, take.status
+    assert_nil @line.reload.category
+  end
+
+  test "a line's origin needs its category, and a taken suggestion its probability and artefact" do
+    @line.category_origin = "bulk"
+    assert_not @line.valid?
+    assert_includes @line.errors[:category], "must be set when its origin is"
+    assert_includes @line.errors[:category_origin_probability], "can't be blank"
+    assert_includes @line.errors[:category_origin_model_version], "can't be blank"
   end
 
   test "a group, Uncategorised, an unknown origin or no choice at all is refused" do

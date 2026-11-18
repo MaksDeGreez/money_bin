@@ -1,9 +1,10 @@
 # One transaction of a bulk acceptance as it was previewed (BulkAcceptance): its lock_version, the uncategorised
 # lines to categorise, and the suggestion to take (category, probability, artefact). `outcome` is nil until the job
-# handles it, then `accepted`, `stale` (the transaction was edited after the preview) or `changed` (a line has a
-# category by now, or a different suggestion).
+# handles it, then `accepted`, `stale` (the transaction was edited after the preview), `changed` (a line has a
+# category by now, or a different suggestion) or `failed` (the model refused the save: a row that no longer passes
+# its validations; nothing written, the job goes on).
 class BulkAcceptanceItem < ApplicationRecord
-  OUTCOMES = %w[accepted stale changed].freeze
+  OUTCOMES = %w[accepted stale changed failed].freeze
 
   belongs_to :bulk_acceptance, inverse_of: :items
   belongs_to :ledger_transaction, class_name: "Transaction", foreign_key: :transaction_id
@@ -41,6 +42,7 @@ class BulkAcceptanceItem < ApplicationRecord
       case Transactions::Categorise.call(transaction_id, lock_version:, choices:).status
       when :categorised then "accepted"
       when :stale then "stale"
+      when :invalid then "failed"
       else "changed"
       end
     end

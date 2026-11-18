@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_19_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -88,7 +88,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_100000) do
     t.index ["category_id"], name: "index_bulk_acceptance_items_on_category_id"
     t.index ["transaction_id"], name: "index_bulk_acceptance_items_on_transaction_id"
     t.check_constraint "cardinality(line_ids) > 0", name: "bulk_acceptance_items_has_lines"
-    t.check_constraint "outcome::text = ANY (ARRAY['accepted'::character varying, 'stale'::character varying, 'changed'::character varying]::text[])", name: "bulk_acceptance_items_outcome_known"
+    t.check_constraint "outcome::text = ANY (ARRAY['accepted'::character varying, 'stale'::character varying, 'changed'::character varying, 'failed'::character varying]::text[])", name: "bulk_acceptance_items_outcome_known"
     t.check_constraint "probability >= 0::double precision AND probability <= 1::double precision", name: "bulk_acceptance_items_probability_range"
   end
 
@@ -100,6 +100,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_100000) do
     t.integer "accepted_count", default: 0, null: false
     t.integer "stale_count", default: 0, null: false
     t.integer "changed_count", default: 0, null: false
+    t.integer "failed_count", default: 0, null: false
     t.timestamptz "confirmed_at"
     t.timestamptz "started_at"
     t.timestamptz "finished_at"
@@ -280,6 +281,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_100000) do
     t.index ["transaction_id"], name: "index_transaction_lines_on_transaction_id"
     t.check_constraint "(category_origin::text <> ALL (ARRAY['suggestion'::character varying, 'bulk'::character varying]::text[])) OR category_origin_probability IS NOT NULL AND category_origin_model_version IS NOT NULL", name: "transaction_lines_taken_suggestion_recorded"
     t.check_constraint "amount <> 0::numeric", name: "transaction_lines_amount_non_zero"
+    t.check_constraint "category_origin IS NULL OR category_id IS NOT NULL", name: "transaction_lines_category_origin_needs_category"
     t.check_constraint "category_origin::text = ANY (ARRAY['person'::character varying, 'suggestion'::character varying, 'bulk'::character varying]::text[])", name: "transaction_lines_category_origin_known"
     t.check_constraint "category_origin_probability >= 0::double precision AND category_origin_probability <= 1::double precision", name: "transaction_lines_category_origin_probability_range"
     t.check_constraint "runner_up_probability >= 0::double precision AND runner_up_probability <= 1::double precision", name: "transaction_lines_runner_up_probability_range"

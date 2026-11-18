@@ -91,6 +91,24 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     assert_equal [ categories(:cafes), "person" ], [ @line.reload.category, @line.category_origin ]
   end
 
+  test "Enter in the picker submits through Take, and the category picked there wins" do
+    post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1",
+      review: { category_id: categories(:cafes).id }, **shown }
+
+    assert_equal [ categories(:cafes), "person", nil ], [ @line.reload.category, @line.category_origin, @line.category_origin_probability ]
+  end
+
+  test "a line booked from a receipt links to the receipt instead of offering a category" do
+    transaction = receipts(:market_receipt).ledger_transaction
+    transaction.lines.first.update!(category: nil)
+
+    get transactions_path
+    assert_select "tr[id=?]", "review_transaction_line_#{transaction.lines.first.id}" do
+      assert_select "a[href=?]", receipt_path(receipts(:market_receipt)), text: "the receipt"
+      assert_select "form", false
+    end
+  end
+
   test "a stale row saves nothing and shows the transaction as it is now" do
     seen = @transaction.lock_version
     @transaction.update!(comment: "edited elsewhere")
@@ -167,6 +185,8 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     get root_path
 
     assert_select "a[href=?]", transactions_path(status: "needs_review")
-    assert_select "a[href^=?][href*='uncategorised=1']", transactions_path
+    assert_select "a[href^=?][href*='uncategorised=1'][href*='expense=1']", transactions_path
+    get transactions_path(expense: "1")
+    assert_select "tbody[id^=list_transaction]", Transaction.expenses.count
   end
 end

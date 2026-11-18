@@ -59,6 +59,9 @@ class TransactionLine < ApplicationRecord
   validates :suggestion_source, inclusion: { in: SUGGESTION_SOURCES }, allow_nil: true
   validates :suggestion_probability, :runner_up_probability, :category_origin_probability,
     numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 1 }, allow_nil: true
+  validates :category, presence: { message: "must be set when its origin is" }, if: -> { category_origin.present? }
+  validates :category_origin_probability, :category_origin_model_version, presence: true,
+    if: -> { category_origin.in?(%w[suggestion bulk]) }
 
   # True when nobody has categorised the line yet (no category, or Uncategorised).
   def uncategorised?

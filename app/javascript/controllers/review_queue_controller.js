@@ -2,10 +2,11 @@ import { Controller } from "@hotwired/stimulus"
 
 // The keyboard on the transactions list's uncategorised lines (docs/domain.md, "Transaction suggestions"):
 //
-//   div data-controller="review-queue" data-action="keydown->review-queue#keydown"
+//   div data-controller="review-queue" data-action="keydown@window->review-queue#keydown"
 //     tr data-review-queue-target="row" tabindex="0"  (one per uncategorised line, with its form)
 //
-// - j or ArrowDown / k or ArrowUp: the next / previous line;
+// - j / k anywhere on the page: the next / previous line; ArrowDown / ArrowUp too, once a line has the focus
+//   (elsewhere they scroll the page as usual);
 // - t: take the focused line's suggestion ("Take"); c: open its category picker;
 // - after a line is saved, the focus moves on to the next line still waiting (the answer replaces the
 //   transaction's rows, so the place is remembered before).
@@ -20,12 +21,16 @@ export default class extends Controller {
     const row = event.target.closest("[data-review-queue-target='row']")
     switch (event.key) {
       case "j":
-      case "ArrowDown":
         this.move(row, 1, event)
         break
       case "k":
-      case "ArrowUp":
         this.move(row, -1, event)
+        break
+      case "ArrowDown":
+        if (row) this.move(row, 1, event)
+        break
+      case "ArrowUp":
+        if (row) this.move(row, -1, event)
         break
       case "t":
         if (row) this.press(row.querySelector("[data-review-queue-target='take']"), event)

@@ -67,6 +67,20 @@ class Receipts::SuggestSlipCategoryTest < ActiveSupport::TestCase
     assert_equal [ categories(:groceries), "transaction_categoriser_not_configured" ], [ @receipt.suggested_category, @receipt.categoriser_error ]
   end
 
+  test "a payee's labels taken from the model's suggestions are not its history" do
+    transaction_lines(:coffee_line).update_columns(category_origin: "bulk", category_origin_probability: 0.9,
+      category_origin_model_version: MODEL_VERSION)
+
+    assert_nil PayeeHistory.new.lookup("corner cafe")
+  end
+
+  test "an ML service that is not on this machine gets nothing, and the receipt records why" do
+    with_env("ML_SERVICE_URL" => "http://remote.example.test:8100") { call }
+
+    assert_equal "ml_not_local", @receipt.reload.categoriser_error
+    assert_not_requested :any, /remote\.example\.test/
+  end
+
   test "switched off, it does nothing at all" do
     with_env("CATEGORISE_BACKEND" => "off") do
       assert_equal :off, Receipts::SuggestSlipCategory.call(@receipt).status

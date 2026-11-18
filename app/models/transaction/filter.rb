@@ -9,7 +9,7 @@
 # A value that is not one of the choices (an unknown status, a date that is not a date, an id that is not a
 # number) is ignored, so an old or edited URL never fails.
 class Transaction::Filter
-  KEYS = %i[from to account_id category_id status source payee q uncategorised currency].freeze
+  KEYS = %i[from to account_id category_id status source payee q uncategorised currency expense].freeze
 
   attr_reader(*KEYS)
 
@@ -31,12 +31,13 @@ class Transaction::Filter
     @payee = values[:payee].to_s.squish.first(200).presence
     @q = values[:q].to_s.squish.first(200).presence
     @uncategorised = values[:uncategorised].to_s == "1" || nil
+    @expense = values[:expense].to_s == "1" || nil
     currency = values[:currency].to_s.strip.upcase
     @currency = currency if currency.match?(Account::CURRENCY_FORMAT)
   end
 
   def query
-    TransactionsQuery.new(from:, to:, account_id:, category_id:, status:, source:, payee:, q:, uncategorised:, currency:)
+    TransactionsQuery.new(from:, to:, account_id:, category_id:, status:, source:, payee:, q:, uncategorised:, currency:, expense:)
   end
 
   # The matching transactions, newest first.
@@ -46,7 +47,7 @@ class Transaction::Filter
 
   def to_params
     { from: from&.iso8601, to: to&.iso8601, account_id:, category_id:, status:, source:, payee:, q:,
-      uncategorised: (uncategorised ? "1" : nil), currency: }.compact
+      uncategorised: (uncategorised ? "1" : nil), currency:, expense: (expense ? "1" : nil) }.compact
   end
 
   # The same filter with some values changed (nil removes one).

@@ -3,7 +3,7 @@ ruby:
   acceptance = @acceptance
   filter_params = @filter.to_params
 / Live while the job runs: BulkAcceptanceJob broadcasts a refresh every few dozen transactions.
-- unless acceptance.finished? || acceptance.previewed?
+- if (acceptance.queued? || acceptance.running?) && !acceptance.lost?
   div data-controller="live-refresh" data-live-refresh-pending-value="true"
     = turbo_stream_from acceptance
 
@@ -19,7 +19,7 @@ ruby:
       .text-sm.space-y-1
         p
           strong = "#{pluralize(acceptance.total_count, 'transaction')} would be categorised."
-        p Each one is accepted only if nobody changed it since this preview: a transaction edited meanwhile is skipped and counted, never overwritten. Transactions whose lines are then all categorised become confirmed.
+        p Each one is accepted only if nobody changed it since this preview: a transaction edited meanwhile is skipped and counted, never overwritten. Transactions whose lines are then all categorised become confirmed. Split transactions and those booked from a receipt are not included: categorise them one by one.
 - else
   dl.data-table.mt-6
     .data-row
@@ -37,6 +37,9 @@ ruby:
     .data-row
       dt.data-row-title Skipped: categorised or suggested otherwise meanwhile
       dd.data-row-value.tabular-nums = acceptance.changed_count
+    .data-row
+      dt.data-row-title Skipped: refused by the ledger's rules
+      dd.data-row-value.tabular-nums = acceptance.failed_count
     - if acceptance.error
       .data-row
         dt.data-row-title Error
@@ -68,7 +71,7 @@ ruby:
   - if acceptance.previewed?
     = ui_button_to transactions_bulk_acceptance_path(acceptance), method: :delete, variant: :ghost do
       span Drop this preview
-  - if acceptance.failed?
+  - if acceptance.resumable?
     = ui_button_to transactions_bulk_acceptance_path(acceptance), method: :patch, variant: :secondary do
       = ui_icon "rotate-ccw"
       span Resume

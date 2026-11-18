@@ -142,7 +142,7 @@ class CategoryTest < ActiveSupport::TestCase
   test "a category in use cannot become a group" do
     {
       categories(:cafes) => "transaction lines and runner-up transaction lines",
-      categories(:household_supplies) => "transaction lines, receipt items, suggested receipt items, and suggested transaction lines",
+      categories(:household_supplies) => "transaction lines, receipt items, suggested receipt items, suggested transaction lines, and bulk acceptance items",
       categories(:takeaway) => "transaction lines and suggested receipt items"
     }.each do |category, uses|
       assert_not category.update(parent: nil, slug: nil), category.slug

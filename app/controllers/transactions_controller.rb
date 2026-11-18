@@ -10,7 +10,8 @@ class TransactionsController < ApplicationController
     categorised: nil,
     stale: "Changed somewhere else since this page was loaded: nothing was saved. Here it is as it is now.",
     changed: "This line has a category by now, or a new suggestion: nothing was saved. Here it is as it is now.",
-    invalid: "Choose a category (not Uncategorised) first."
+    invalid: "Choose a category (not Uncategorised) first.",
+    on_receipt: "Booked from a receipt: categorise its items on the receipt and accept it again."
   }.freeze
 
   def index
@@ -50,7 +51,9 @@ class TransactionsController < ApplicationController
   # suggestion refreshed since, saves nothing (Transactions::Categorise checks both under row locks).
   def categorise
     shown_category_id = integer(params[:shown_category_id])
-    category_id = params[:take].present? ? shown_category_id : integer(params.dig(:review, :category_id))
+    picked = integer(params.dig(:review, :category_id))
+    # Enter in the picker submits through "Take", the form's first button: a category picked there wins.
+    category_id = params[:take].present? && (picked.nil? || picked == shown_category_id) ? shown_category_id : picked
     taken = category_id.present? && category_id == shown_category_id
     choice = Transactions::Categorise::Choice.new(line_id: integer(params[:line_id]), category_id:,
       origin: taken ? "suggestion" : "person", shown_category_id:, shown_model_version: params[:shown_model_version].presence)

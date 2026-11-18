@@ -28,6 +28,10 @@
     label.form-check-label
       = f.check_box :uncategorised, { checked: filter.uncategorised.present? }, "1", nil
       span Uncategorised only
+  .field
+    label.form-check-label
+      = f.check_box :expense, { checked: filter.expense.present? }, "1", nil
+      span Booked expenses only
   - if filter.currency
     = f.hidden_field :currency, value: filter.currency
   .filter-bar-actions

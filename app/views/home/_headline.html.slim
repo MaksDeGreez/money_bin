@@ -19,7 +19,7 @@
     p.stat-value = dashboard_money(uncategorised, currency)
     p.stat-note
       = link_to "#{dashboard_transactions(uncategorised_transactions)} in #{dashboard_period_label(dashboard.period)}",
-        transactions_path(uncategorised: 1, from: dashboard.period.from&.iso8601, to: dashboard.period.to&.iso8601, currency:)
+        transactions_path(uncategorised: 1, expense: 1, from: dashboard.period.from&.iso8601, to: dashboard.period.to&.iso8601, currency:)
   .stat-tile
     p.stat-label Needs a look
     p.stat-value = link_to dashboard_transactions(dashboard.needs_review_count), transactions_path(status: "needs_review"), class: "no-underline"

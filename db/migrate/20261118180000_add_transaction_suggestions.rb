@@ -41,6 +41,8 @@ class AddTransactionSuggestions < ActiveRecord::Migration[8.1]
       "category_origin NOT IN ('suggestion', 'bulk') OR (category_origin_probability IS NOT NULL AND " \
       "category_origin_model_version IS NOT NULL)",
       name: "transaction_lines_taken_suggestion_recorded"
+    add_check_constraint :transaction_lines, "category_origin IS NULL OR category_id IS NOT NULL",
+      name: "transaction_lines_category_origin_needs_category"
 
     create_table :transaction_suggestion_runs do |t|
       t.string :status, null: false, default: "queued"
@@ -64,6 +66,7 @@ class AddTransactionSuggestions < ActiveRecord::Migration[8.1]
       t.integer :accepted_count, null: false, default: 0
       t.integer :stale_count, null: false, default: 0
       t.integer :changed_count, null: false, default: 0
+      t.integer :failed_count, null: false, default: 0
       t.timestamptz :confirmed_at
       t.timestamptz :started_at
       t.timestamptz :finished_at
@@ -87,7 +90,7 @@ class AddTransactionSuggestions < ActiveRecord::Migration[8.1]
     end
     add_index :bulk_acceptance_items, %i[bulk_acceptance_id transaction_id], unique: true
     add_check_constraint :bulk_acceptance_items, "probability BETWEEN 0 AND 1", name: "bulk_acceptance_items_probability_range"
-    add_check_constraint :bulk_acceptance_items, "outcome IN ('accepted', 'stale', 'changed')",
+    add_check_constraint :bulk_acceptance_items, "outcome IN ('accepted', 'stale', 'changed', 'failed')",
       name: "bulk_acceptance_items_outcome_known"
     add_check_constraint :bulk_acceptance_items, "cardinality(line_ids) > 0", name: "bulk_acceptance_items_has_lines"
   end

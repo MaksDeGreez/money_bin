@@ -55,6 +55,31 @@ class Transactions::SuggestCategoriesTest < ActiveSupport::TestCase
     assert_not_includes transaction_requests.first["categories"].map { |c| c["slug"] }, Category::UNCATEGORISED_SLUG
   end
 
+  test "a suggestion whose category was deleted is asked again" do
+    stub_transaction_categoriser(version: MODEL_VERSION)
+    stub_categorise_transactions
+    @line.update_columns(suggested_category_id: nil)
+
+    run = run_suggestions
+
+    assert_equal [ 1, 1 ], [ run.total_count, run.scored_count ]
+    assert_equal categories(:household_supplies), @line.reload.suggested_category
+  end
+
+  test "an ML service that is not on this machine gets no transaction data" do
+    stub_request(:any, /remote\.example\.test/)
+    with_env("ML_SERVICE_URL" => "http://remote.example.test:8100") do
+      stub_request(:get, "http://remote.example.test:8100/categorise/transaction").to_return(status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: JSON.generate(model_name: "transaction-categoriser", model_version: "2026-12-01-abcdefabcdef", fitted_at: "2026-12-01"))
+
+      run = run_suggestions
+
+      assert_equal [ "failed", "ml_not_local" ], [ run.status, run.error ]
+    end
+    assert_not_requested :post, /remote\.example\.test/
+  end
+
   test "a transaction with nothing to go on is skipped, not sent" do
     stub_transaction_categoriser(version: NEW_VERSION)
     stub_categorise_transactions(version: NEW_VERSION)

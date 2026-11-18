@@ -5,7 +5,7 @@ module Transactions
   #   Transactions::Categorise.call(transaction_id, lock_version: 7, choices: [
   #     Transactions::Categorise::Choice.new(line_id: 12, category_id: 5, origin: "suggestion",
   #       shown_category_id: 5, shown_model_version: "2026-11-18-0123456789ab")
-  #   ])  # => Result with status :categorised, :stale, :changed or :invalid
+  #   ])  # => Result with status :categorised, :stale, :changed, :on_receipt or :invalid
   #
   # The rules:
   # - Only an uncategorised line (no category, or Uncategorised) is ever written: a category a person (or anything
@@ -18,8 +18,11 @@ module Transactions
   #   A line whose stored suggestion is not that one any more (refreshed by another artefact since) is :changed:
   #   nobody approved the new one. A taken suggestion (`suggestion`, `bulk`) must be the one shown, and its
   #   probability and artefact are recorded from the line, as verified under the lock.
+  # - A transaction booked from a receipt is :on_receipt: its lines are rebuilt from the receipt's items on every
+  #   "Accept again", so a category set here would be lost; it is categorised on the receipt.
   # - The lines are written through their transaction (nested autosave), so the model's rules run: a line must be
-  #   a category (not a group), the sum is untouched, the save bumps lock_version.
+  #   a category (not a group), the sum is untouched, the save bumps lock_version. A save the model refuses
+  #   (a row that no longer passes a validation) is :invalid, never an exception.
   # - The status follows Transaction#status_after_categorising: `needs_review` becomes `confirmed` once no line is
   #   uncategorised and no other reason remains; a draft stays a draft.
   #
@@ -59,6 +62,8 @@ module Transactions
       Result.new(status:, transaction:)
     rescue ActiveRecord::StaleObjectError
       Result.new(status: :stale, transaction:)
+    rescue ActiveRecord::RecordInvalid
+      Result.new(status: :invalid, transaction:)
     end
 
     private
@@ -73,6 +78,7 @@ module Transactions
       def check(transaction)
         return :changed if transaction.nil? || transaction.transfer_leg?
         return :stale if transaction.lock_version != @lock_version
+        return :on_receipt if transaction.receipt
         return :invalid if @choices.empty? || !@choices.all? { |choice| TransactionLine::CATEGORY_ORIGINS.include?(choice.origin) }
 
         lines = transaction.lines.index_by(&:id)
