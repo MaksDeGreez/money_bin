@@ -215,7 +215,9 @@ end
 die(2, "unexpected argument: #{ARGV.first}\n#{parser.banner}") if ARGV.any?
 model = opts[:model] || ENV["CODEX_REVIEW_MODEL"].to_s.strip
 model = DEFAULT_MODEL if model.empty?
-die(2, "not a model id: #{model.inspect}") unless model.match?(%r{\A[\w.:/-]+\z})
+# A model id starts with a letter or a digit: `--model --dry-run` (the id forgotten) must not take the next
+# option as the id, or a preview would turn into a real run.
+die(2, "not a model id: #{model.inspect}") unless model.match?(%r{\A[A-Za-z0-9][\w.:/-]*\z})
 effort = opts[:effort] || ENV["CODEX_REVIEW_EFFORT"].to_s.strip
 effort = DEFAULT_EFFORT if effort.empty?
 die(2, "CODEX_REVIEW_EFFORT must be one of #{EFFORTS.join(', ')}, got #{effort.inspect}") unless EFFORTS.include?(effort)

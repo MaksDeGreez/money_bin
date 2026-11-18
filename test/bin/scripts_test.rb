@@ -91,7 +91,8 @@ class BinScriptsTest < ActiveSupport::TestCase
   end
 
   test "codex-review --dry-run prints the read-only command and the prompt, and calls nothing" do
-    out, status = run_script({ "CODEX_BIN" => "/no/such/codex" }, "bin/codex-review", "--plan", "README.md",
+    clean = { "CODEX_BIN" => "/no/such/codex", "CODEX_REVIEW_MODEL" => nil, "CODEX_REVIEW_EFFORT" => nil }
+    out, status = run_script(clean, "bin/codex-review", "--plan", "README.md",
                              "--focus", "the plan's ordering", "--effort", "medium", "--dry-run")
 
     assert status.success?, out
@@ -133,6 +134,16 @@ class BinScriptsTest < ActiveSupport::TestCase
     out, status = run_script(clean, "bin/codex-review", "--plan", "README.md", "--model", "a model; rm -rf", "--dry-run")
     assert_equal 2, status.exitstatus, out
     assert_match(/not a model id/, out)
+  end
+
+  # OptionParser hands the next word to --model, also when it is another option.
+  test "codex-review with the model id forgotten stops instead of swallowing the next option" do
+    clean = { "CODEX_BIN" => "/no/such/codex", "CODEX_REVIEW_MODEL" => nil, "CODEX_REVIEW_EFFORT" => nil }
+
+    out, status = run_script(clean, "bin/codex-review", "--plan", "README.md", "--model", "--dry-run")
+
+    assert_equal 2, status.exitstatus, out
+    assert_match(/not a model id: "--dry-run"/, out)
   end
 
   # The checks catch mistakes in a query file; they are not a sandbox (the database role is a superuser).
