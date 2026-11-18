@@ -14,9 +14,15 @@
 #   bin/codex-review --uncommitted         staged, unstaged and untracked changes
 #   bin/codex-review --commit SHA          one commit
 #   bin/codex-review --plan FILE           a plan or design document, checked against the code
-#   options: --focus TEXT   --effort low|medium|high|xhigh   --timeout SECONDS (default 900)   --dry-run
+#   options: --focus TEXT   --timeout SECONDS (default 900)   --dry-run
+#            --model ID     the Codex model (default gpt-6.2-sol, or $CODEX_REVIEW_MODEL)
+#            --effort low|medium|high|xhigh   its reasoning effort (default high, or $CODEX_REVIEW_EFFORT)
 #            --sql FILE     database evidence: the wrapper runs FILE's queries itself and puts the output
 #                           in the prompt (see below)
+#
+# The model and the effort are always passed to Codex, so a review does not depend on what the machine's
+# own Codex config (~/.codex/config.toml) happens to say. A model the account cannot use ends as exit 7,
+# with Codex's message in codex.log.
 #
 # Codex cannot reach the database: its read-only sandbox blocks the PostgreSQL socket, and opening the
 # socket would open the internet too (docs/decisions/0003-agent-tooling.md). With --sql, the wrapper runs
@@ -47,6 +53,10 @@ require "time"
 require "uri"
 
 CODEX = ENV.fetch("CODEX_BIN", "codex")
+# What a review runs on unless a flag or the environment says otherwise.
+DEFAULT_MODEL = "gpt-6.2-sol"
+DEFAULT_EFFORT = "high"
+EFFORTS = %w[low medium high xhigh].freeze
 PSQL = ENV.fetch("PSQL_BIN", "psql")
 DEFAULT_DATABASE = "money_bin_v2_development"
 DATABASE_PREFIX = "money_bin_v2_" # --sql never queries anything else, whatever $DATABASE_URL names
@@ -191,7 +201,8 @@ parser = OptionParser.new do |o|
   o.on("--commit SHA") { |v| opts[:commit] = v }
   o.on("--plan FILE") { |v| opts[:plan] = File.expand_path(v) }
   o.on("--focus TEXT") { |v| opts[:focus] = v }
-  o.on("--effort LEVEL", %w[low medium high xhigh]) { |v| opts[:effort] = v }
+  o.on("--model ID") { |v| opts[:model] = v }
+  o.on("--effort LEVEL", EFFORTS) { |v| opts[:effort] = v }
   o.on("--timeout SECONDS", Integer) { |v| opts[:timeout] = v }
   o.on("--sql FILE") { |v| opts[:sql] = File.expand_path(v) }
   o.on("--dry-run") { opts[:dry_run] = true }
@@ -202,6 +213,14 @@ rescue OptionParser::ParseError => e
   die(2, "#{e.message}\n#{parser.banner}")
 end
 die(2, "unexpected argument: #{ARGV.first}\n#{parser.banner}") if ARGV.any?
+model = opts[:model] || ENV["CODEX_REVIEW_MODEL"].to_s.strip
+model = DEFAULT_MODEL if model.empty?
+# A model id starts with a letter or a digit: `--model --dry-run` (the id forgotten) must not take the next
+# option as the id, or a preview would turn into a real run.
+die(2, "not a model id: #{model.inspect}") unless model.match?(%r{\A[A-Za-z0-9][\w.:/-]*\z})
+effort = opts[:effort] || ENV["CODEX_REVIEW_EFFORT"].to_s.strip
+effort = DEFAULT_EFFORT if effort.empty?
+die(2, "CODEX_REVIEW_EFFORT must be one of #{EFFORTS.join(', ')}, got #{effort.inspect}") unless EFFORTS.include?(effort)
 targets = opts.slice(:base, :uncommitted, :commit, :plan)
 die(2, "choose one target\n#{parser.banner}") if targets.size > 1
 
@@ -242,9 +261,8 @@ prompt << database_evidence(opts[:sql], dry_run: opts[:dry_run]) if opts[:sql]
 prompt << format(RULES, minutes: [ opts[:timeout] / 60 - 2, 3 ].max) << "\n" << OUTPUT
 
 run_dir = File.join("tmp", "codex", "#{Time.now.utc.strftime('%Y%m%d-%H%M%S')}-#{kind}-#{Process.pid}")
-command = [ CODEX, "exec", "-s", "read-only", "-C", root, "--color", "never", "-o", File.join(run_dir, "review.md") ]
-command += [ "-c", %(model_reasoning_effort="#{opts[:effort]}") ] if opts[:effort]
-command << "-"
+command = [ CODEX, "exec", "-s", "read-only", "-C", root, "--color", "never", "-o", File.join(run_dir, "review.md"),
+            "-m", model, "-c", %(model_reasoning_effort="#{effort}"), "-" ]
 
 if opts[:dry_run]
   puts command.join(" "), "", prompt

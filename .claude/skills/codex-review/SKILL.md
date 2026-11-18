@@ -13,8 +13,11 @@ in `docs/decisions/0003-agent-tooling.md`.
 
 - Targets, one at a time: `--base REF` (this branch's commits against REF; with no target at all, against
   `origin/main`), `--uncommitted`, `--commit SHA`, `--plan FILE`. `--focus "…"` adds what you most want
-  checked. `--effort medium` is enough for small diffs. `--dry-run` prints the command and the prompt
-  without calling Codex or running a query.
+  checked. `--dry-run` prints the command and the prompt without calling Codex or running a query.
+- A review runs on `gpt-6.2-sol` with `high` reasoning effort unless told otherwise: `--model ID` and
+  `--effort low|medium|high|xhigh`, or `CODEX_REVIEW_MODEL` and `CODEX_REVIEW_EFFORT` in the environment
+  (a flag wins). The wrapper always passes both, so the machine's own Codex config does not decide.
+  `--effort medium` is enough for a small diff.
 - Codex cannot reach the database. When the review should check data (a data migration after its run, an
   import), write the queries that show the state into a file under `tmp/` and pass `--sql tmp/<name>.sql`:
   the wrapper runs them itself (read-only session, 30 s statement timeout, `$DATABASE_URL` or
