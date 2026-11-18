@@ -228,4 +228,80 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
     assert_equal "Corner Shop", receipt.merchant_name
     assert_equal 3, receipt.items.count
   end
+
+  test "kind and card digits are stored when the answer carries valid values" do
+    receipt = receipts(:new_receipt)
+
+    apply(receipt, ml_ocr_result(receipt: { kind: " Card_Slip ", card_last4: " 4242 " }))
+
+    receipt.reload
+    assert_equal [ "card_slip", "4242" ], [ receipt.kind, receipt.card_last4 ]
+  end
+
+  test "a kind or card digits that are not valid store nil" do
+    [ [ "invoice", "42" ], [ 1, 4242 ], [ nil, nil ], [ "", "12345" ], [ "fiscal ", "١٢٣٤" ] ].each do |kind, card_last4|
+      receipt = receipts(:corner_receipt)
+      receipt.update_columns(kind: "card_slip", card_last4: "1111", status: "processing")
+
+      apply(receipt, ml_ocr_result(receipt: { kind:, card_last4: }))
+
+      receipt.reload
+      assert receipt.extracted?, [ kind, card_last4 ].inspect
+      if kind == "fiscal "
+        assert_equal "fiscal", receipt.kind
+      else
+        assert_nil receipt.kind, kind.inspect
+      end
+      assert_nil receipt.card_last4, card_last4.inspect
+    end
+  end
+
+  test "an answer without the kind and card keys still works and stores nil for them" do
+    receipt = receipts(:corner_receipt)
+    result = ml_ocr_result
+    assert_not result.receipt.key?("kind")
+
+    apply(receipt, result)
+
+    receipt.reload
+    assert receipt.extracted?
+    assert_nil receipt.kind
+    assert_nil receipt.card_last4
+    assert_equal "Sample Grocer", receipt.merchant_name
+  end
+
+  test "an answer with a null total and currency is stored" do
+    receipt = receipts(:new_receipt)
+
+    apply(receipt, ml_ocr_result(receipt: { total: nil, currency: nil }))
+
+    receipt.reload
+    assert receipt.extracted?
+    assert_nil receipt.total
+    assert_nil receipt.currency
+    assert_equal 2, receipt.items.count
+    assert receipt.items_match_total?, "an unknown total is no mismatch"
+  end
+
+  test "items with a null quantity and unit price are kept" do
+    receipt = receipts(:new_receipt)
+
+    apply(receipt, ml_ocr_result(receipt: { items: [ { name: "Bread", quantity: nil, unit_price: nil, amount: "32.50", discount: nil } ] }))
+
+    assert_equal [ [ 1, "Bread", nil, nil, BigDecimal("32.50"), BigDecimal("0") ] ], item_rows(receipt)
+  end
+
+  test "OCR never writes the QR ground truth, the ingest fields, or the incomplete flag" do
+    receipt = receipts(:market_receipt)
+    receipt.update_columns(status: "processing", transaction_id: nil, incomplete: true)
+    kept = %w[qr_payload qr_issued_at qr_total qr_fiscal_number qr_receipt_number ingest_id batch incomplete sha256]
+    before = receipt.reload.attributes.slice(*kept)
+
+    apply(receipt, ml_ocr_result(receipt: { total: "1.00", issued_at: "2020-01-01T00:00:00+02:00", fiscal_number: "1", receipt_number: "2",
+      qr_total: "9.99", incomplete: false, ingest_id: "rcpt_999999", batch: "other" }))
+
+    receipt.reload
+    assert_equal BigDecimal("1.00"), receipt.total
+    assert_equal before, receipt.attributes.slice(*kept)
+  end
 end

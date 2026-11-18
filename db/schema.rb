@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_100000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -136,11 +136,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_190000) do
     t.string "sha256", limit: 64, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "kind"
+    t.boolean "incomplete", default: false, null: false
+    t.string "card_last4", limit: 4
+    t.timestamptz "qr_issued_at"
+    t.decimal "qr_total", precision: 15, scale: 2
+    t.string "qr_fiscal_number"
+    t.string "qr_receipt_number"
+    t.string "ingest_id"
     t.index ["batch"], name: "index_receipts_on_batch"
+    t.index ["ingest_id"], name: "index_receipts_on_ingest_id", unique: true, where: "(ingest_id IS NOT NULL)"
+    t.index ["kind"], name: "index_receipts_on_kind"
     t.index ["sha256"], name: "index_receipts_on_sha256", unique: true
     t.index ["status"], name: "index_receipts_on_status"
     t.index ["transaction_id"], name: "index_receipts_on_transaction_id", unique: true
+    t.check_constraint "card_last4::text ~ '^[0-9]{4}$'::text", name: "receipts_card_last4_format"
     t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "receipts_currency_format"
+    t.check_constraint "ingest_id::text ~ '^rcpt_[0-9]{6,}$'::text", name: "receipts_ingest_id_format"
+    t.check_constraint "kind::text = ANY (ARRAY['fiscal'::character varying, 'card_slip'::character varying]::text[])", name: "receipts_kind_allowed"
     t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipts_sha256_format"
     t.check_constraint "status::text = ANY (ARRAY['uploaded'::character varying, 'processing'::character varying, 'extracted'::character varying, 'reviewed'::character varying, 'failed'::character varying]::text[])", name: "receipts_status_allowed"
   end

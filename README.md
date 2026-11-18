@@ -59,7 +59,7 @@ processes in `Procfile.dev` with foreman:
 | Process   | What it is                                   | Port |
 | --------- | -------------------------------------------- | ---- |
 | `web`     | Puma, the Rails app                          | 3100 (`PORT`) |
-| `sidekiq` | background jobs (`config/sidekiq.yml`)       | -    |
+| `sidekiq` | background jobs (`config/sidekiq.yml`): 4 threads, plus 1 for OCR jobs | -    |
 | `css`     | the Tailwind watcher                         | -    |
 | `ml`      | the ML service (`uvicorn app.main:app`)      | 8100 |
 
@@ -146,6 +146,24 @@ is `images/rcpt_000123_1.jpg` and so on, `receipts.jsonl` (one line per receipt)
 folder. Options, the output format and the rules are in
 [`tools/receipt_ingest/README.md`](tools/receipt_ingest/README.md); the reasons are in
 [`docs/decisions/0004-receipt-ingest.md`](docs/decisions/0004-receipt-ingest.md).
+
+### Loading the receipt set into the app
+
+```sh
+DRY_RUN=1 bin/rails "receipts:load[$HOME/Documents/money_bin_data/receipts]"   # check and count, then roll back
+bin/rails "receipts:load[$HOME/Documents/money_bin_data/receipts]"             # load
+```
+
+Every receipt of the set becomes a `Receipt` (status `uploaded`) with its photos, its ingest number
+(`ingest_id`), its batch and what its tax QR code says (`qr_*` columns, kept apart from what OCR will
+read). The task checks the whole `receipts.jsonl` and every image (inside the folder, size, SHA-256,
+fingerprint) before it writes anything, then writes one receipt per database transaction. Run it again
+after each new ingest run: unchanged receipts are left alone, receipts the tool regrouped get their new
+photos while nobody has worked on them yet, and receipts that left the set are deleted while untouched
+(otherwise kept and reported). It enqueues no OCR. It prints counts (in total and per batch folder) and receipt ids only, never a QR
+value, a total, a date or a photo name, and exits with status 1 when the check fails or a receipt could
+not be written. A real run needs Redis (Active Storage analyses photos in background jobs). The rules are
+in [`docs/domain.md`](docs/domain.md), "Receipt load".
 
 ## Tests and checks
 

@@ -20,8 +20,13 @@
 # (the service's own code, or one of ml_unreachable, ml_timeout, invalid_response, no_images,
 # image_missing) and a one-line message. Any other exception is a bug or an infrastructure problem: it is
 # raised, Sidekiq's own retries apply, and the receipt stays `processing` until a run succeeds.
+#
+# The job has its own queue, `receipt_ocr`, worked by a Sidekiq capsule with one thread
+# (config/sidekiq.yml): the local OCR model reads one receipt at a time, so parallel jobs would only wait
+# for it and run into the client's timeout.
 class ReceiptOcrJob < ApplicationJob
-  queue_as :default
+  QUEUE = :receipt_ocr
+  queue_as QUEUE
 
   ATTEMPTS = 5
   STARTABLE_STATUSES = %w[uploaded processing failed].freeze

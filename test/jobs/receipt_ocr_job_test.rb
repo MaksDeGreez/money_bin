@@ -70,10 +70,10 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     assert receipt.reload.extracted?
   end
 
-  test "is enqueued on the default queue" do
+  test "is enqueued on its own queue, which one Sidekiq thread works (config/sidekiq.yml)" do
     receipt = receipts(:new_receipt)
 
-    assert_enqueued_with(job: ReceiptOcrJob, args: [ receipt ], queue: "default") do
+    assert_enqueued_with(job: ReceiptOcrJob, args: [ receipt ], queue: "receipt_ocr") do
       ReceiptOcrJob.perform_later(receipt)
     end
   end

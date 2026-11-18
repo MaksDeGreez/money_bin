@@ -1,10 +1,18 @@
 # Invented receipts. Each has one photo (test/fixtures/active_storage); the sha256 values are digests of
-# made-up text, since the photo bytes are not stored.
+# made-up text, since the photo bytes are not stored. The QR values and the ingest id are invented too.
 
-# Accepted: booked as the market_split transaction (groceries + household).
+# Accepted: booked as the market_split transaction (groceries + household). A fiscal receipt from the
+# ingest set, whose tax QR code agrees with what OCR read.
 market_receipt:
   ledger_transaction: market_split
   status: reviewed
+  kind: fiscal
+  ingest_id: rcpt_000041
+  qr_payload: "https://cabinet.tax.gov.ua/cashregs/check?id=A-1024&fn=4000000001&sm=1250.40&date=20261003&time=1840"
+  qr_issued_at: 2026-10-03T18:40:00+03:00
+  qr_total: 1250.40
+  qr_fiscal_number: "4000000001"
+  qr_receipt_number: "A-1024"
   ocr_raw: { "engine": "stub", "lines_read": 3 }
   ocr_model_name: stub-ocr
   ocr_model_version: "0.1.0"
@@ -17,9 +25,11 @@ market_receipt:
   batch: october-shopping
   sha256: 0ee3d325089dc00907ec6937d2418c6e4bfa5d21ff915120588ff1ec24a09fa8
 
-# Read by OCR, waiting for a person: one item has only a suggested category.
+# Read by OCR, waiting for a person: one item has only a suggested category. A card slip, no QR code.
 corner_receipt:
   status: extracted
+  kind: card_slip
+  card_last4: "4242"
   ocr_model_name: stub-ocr
   ocr_model_version: "0.1.0"
   issued_at: 2026-10-08T12:05:00+03:00
@@ -29,6 +39,6 @@ corner_receipt:
   batch: october-shopping
   sha256: e7a5eee269ee224283be2be8045c153a46238ff33d4ce9056a7b3750f3ae0fbf
 
-# Just uploaded: no OCR yet, no items.
+# Just uploaded in the app: no OCR yet, no items, kind not known.
 new_receipt:
   sha256: 135c2f31616a107039a7880c07ccb4c86f730b414ac45bd495a49106c0699a9c

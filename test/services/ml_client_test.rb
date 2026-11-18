@@ -159,6 +159,18 @@ class MlClientTest < ActiveSupport::TestCase
     assert_equal [], receipt["items"]
   end
 
+  test "ocr allows a null total and currency, null item quantities and prices, and extra keys" do
+    stub_ml_ocr(receipt: { total: nil, currency: nil, kind: "card_slip", card_last4: "4242",
+      items: [ { name: "Tea", quantity: nil, unit_price: nil, amount: "45.00", discount: "0.00" } ] })
+
+    receipt = client.ocr([ image ]).receipt
+
+    assert_nil receipt["total"]
+    assert_nil receipt["currency"]
+    assert_equal "card_slip", receipt["kind"]
+    assert_nil receipt["items"].first["quantity"]
+  end
+
   test "ocr answers that miss required parts are invalid responses" do
     {
       ml_ocr_body.except(:receipt) => "misses receipt",
