@@ -1,0 +1,8 @@
+subscription_item:
+  bulk_acceptance: needs_review_preview
+  ledger_transaction: subscription
+  lock_version: 0
+  line_ids: [ <%= ActiveRecord::FixtureSet.identify(:subscription_line) %> ]
+  category: household_supplies
+  probability: 0.91
+  model_version: 2026-11-18-0123456789ab

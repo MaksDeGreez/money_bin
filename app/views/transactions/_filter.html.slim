@@ -1,0 +1,36 @@
+/ The list filter, a GET form: its state is the URL (Transaction::Filter).
+= form_with url: transactions_path, method: :get, class: "filter-bar mt-8", role: "search", aria: { label: "Filter transactions" } do |f|
+  .field
+    = f.label :from, "From"
+    = f.date_field :from, value: filter.from&.iso8601
+  .field
+    = f.label :to, "To"
+    = f.date_field :to, value: filter.to&.iso8601
+  .field
+    = f.label :account_id, "Account"
+    = f.select :account_id, options_for_select(accounts.map { |account| [ "#{account.name} (#{account.currency})", account.id ] }, filter.account_id), include_blank: "Any account"
+  .field
+    = f.label :category_id, "Category or group"
+    = f.select :category_id, grouped_options_for_select(transaction_filter_categories, filter.category_id), include_blank: "Any category"
+  .field
+    = f.label :status, "Status"
+    = f.select :status, options_for_select(Transaction.statuses.keys.map { |status| [ status.humanize, status ] }, filter.status), include_blank: "Any status"
+  .field
+    = f.label :source, "Source"
+    = f.select :source, options_for_select(Transaction.sources.keys.map { |source| [ source.humanize, source ] }, filter.source), include_blank: "Any source"
+  .field
+    = f.label :payee, "Payee"
+    = f.text_field :payee, value: filter.payee
+  .field
+    = f.label :q, "Text"
+    = f.text_field :q, value: filter.q, placeholder: "Payee, merchant, comment, bank text"
+  .field
+    label.form-check-label
+      = f.check_box :uncategorised, { checked: filter.uncategorised.present? }, "1", nil
+      span Uncategorised only
+  - if filter.currency
+    = f.hidden_field :currency, value: filter.currency
+  .filter-bar-actions
+    = f.submit "Filter", name: nil, variant: :secondary
+    - if filter.any?
+      = ui_link_button "Clear", transactions_path, variant: :ghost

@@ -31,6 +31,11 @@ class Category < ApplicationRecord
   # Suggestions are only guesses; they go when the category goes.
   has_many :suggested_receipt_items, class_name: "ReceiptItem", foreign_key: :suggested_category_id, inverse_of: :suggested_category,
     dependent: :nullify
+  # The transaction categoriser's guesses for uncategorised lines (the best one and the runner-up).
+  has_many :suggested_transaction_lines, class_name: "TransactionLine", foreign_key: :suggested_category_id,
+    inverse_of: :suggested_category, dependent: :nullify
+  has_many :runner_up_transaction_lines, class_name: "TransactionLine", foreign_key: :runner_up_category_id,
+    inverse_of: :runner_up_category, dependent: :nullify
   # A card slip's one category (Receipt#category) and the categoriser's guess for it.
   has_many :receipts, dependent: :restrict_with_error
   has_many :suggested_receipts, class_name: "Receipt", foreign_key: :suggested_category_id, inverse_of: :suggested_category,

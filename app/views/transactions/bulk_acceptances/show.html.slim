@@ -1,0 +1,73 @@
+- content_for :title, "Accept suggestions · Money Bin"
+- acceptance = @acceptance
+- filter_params = @filter.to_params
+/ Live while the job runs: BulkAcceptanceJob broadcasts a refresh every few dozen transactions.
+- unless acceptance.finished? || acceptance.previewed?
+  div data-controller="live-refresh" data-live-refresh-pending-value="true"
+    = turbo_stream_from acceptance
+
+= render "ui/page_header", title: "Accept suggestions from #{acceptance.threshold_percent} %",
+  description: "Every uncategorised line of the list's filter whose suggestion reaches the threshold, as it was when this preview was made." do
+  = ui_link_button transactions_path(filter_params), variant: :ghost, size: :sm do
+    = ui_icon "chevron-left"
+    span Back to the list
+
+- if acceptance.previewed?
+  .mt-6
+    = render "ui/callout", tone: :signal do
+      .text-sm.space-y-1
+        p
+          strong = "#{pluralize(acceptance.total_count, 'transaction')} would be categorised."
+        p Each one is accepted only if nobody changed it since this preview: a transaction edited meanwhile is skipped and counted, never overwritten. Transactions whose lines are then all categorised become confirmed.
+- else
+  dl.data-table.mt-6
+    .data-row
+      dt.data-row-title Status
+      dd.data-row-value = acceptance.status.humanize
+    .data-row
+      dt.data-row-title Progress
+      dd.data-row-value.tabular-nums = "#{acceptance.processed_count} of #{acceptance.total_count}"
+    .data-row
+      dt.data-row-title Accepted
+      dd.data-row-value.tabular-nums = acceptance.accepted_count
+    .data-row
+      dt.data-row-title Skipped: edited since the preview
+      dd.data-row-value.tabular-nums = acceptance.stale_count
+    .data-row
+      dt.data-row-title Skipped: categorised or suggested otherwise meanwhile
+      dd.data-row-value.tabular-nums = acceptance.changed_count
+    - if acceptance.error
+      .data-row
+        dt.data-row-title Error
+        dd.data-row-value
+          code.text-xs = acceptance.error
+
+- if acceptance.total_count.positive?
+  section.mt-8 aria-labelledby="per-category-heading"
+    h2.text-base#per-category-heading Per category
+    .data-grid-wrapper.mt-3
+      table.data-grid
+        thead
+          tr
+            th Category
+            th.data-grid-num Transactions
+        tbody
+          - acceptance.counts_by_category.each do |category, count|
+            tr
+              td = category.full_name
+              td.data-grid-num = count
+    p.mt-2.text-xs.text-ink-muted = "Suggestions by #{acceptance.counts_by_model_version.map { |version, count| "#{version} (#{count})" }.join(', ')}."
+
+.mt-6.flex.flex-wrap.gap-3
+  - if acceptance.previewed? && acceptance.total_count.positive?
+    = ui_button_to transactions_bulk_acceptance_path(acceptance), method: :patch, variant: :primary,
+      form: { data: { turbo_confirm: "Categorise #{pluralize(acceptance.total_count, 'transaction')} with their suggestions?" } } do
+      = ui_icon "check-check"
+      span = "Accept #{pluralize(acceptance.total_count, 'transaction')}"
+  - if acceptance.previewed?
+    = ui_button_to transactions_bulk_acceptance_path(acceptance), method: :delete, variant: :ghost do
+      span Drop this preview
+  - if acceptance.failed?
+    = ui_button_to transactions_bulk_acceptance_path(acceptance), method: :patch, variant: :secondary do
+      = ui_icon "rotate-ccw"
+      span Resume

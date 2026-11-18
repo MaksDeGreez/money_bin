@@ -24,6 +24,14 @@ snack_line:
   amount: -60.00
   legacy_category_path: Food / Snacks
 
+# Not categorised yet, with the transaction categoriser's stored suggestion.
 subscription_line:
   parent: subscription
   amount: -830.00
+  suggested_category: household_supplies
+  suggestion_probability: 0.91
+  runner_up_category: cafes
+  runner_up_probability: 0.05
+  suggestion_source: model
+  suggestion_model_version: 2026-11-18-0123456789ab
+  suggested_at: 2026-11-18T12:00:00Z

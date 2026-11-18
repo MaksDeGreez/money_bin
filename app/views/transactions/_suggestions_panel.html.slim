@@ -1,0 +1,21 @@
+/ The transaction categoriser on the list: the latest refresh of the stored suggestions, "Refresh suggestions",
+/ and "Accept suggestions at or above N %" for this filter (a preview first, BulkAcceptance).
+- filter_params = filter.to_params
+section.mt-6.rounded-md.border.border-hairline.p-4 aria-labelledby="suggestions-heading"
+  .flex.flex-wrap.items-start.justify-between.gap-4
+    div
+      h2.text-base#suggestions-heading Category suggestions
+      p.mt-1.text-sm.text-ink-muted role="status" = transaction_suggestion_run_summary(run)
+      - if without_suggestion.positive?
+        p.mt-1.text-sm.text-ink-muted = "#{pluralize(without_suggestion, 'transaction')} in this list #{without_suggestion == 1 ? 'has' : 'have'} an uncategorised line without a suggestion."
+    .flex.flex-wrap.items-end.gap-3
+      = ui_button_to transactions_suggestion_runs_path(filter: filter_params), variant: :ghost, size: :sm, disabled: (run && !run.finished? && run.updated_at > TransactionSuggestionRun::LOST_AFTER.ago) do
+        = ui_icon "sparkles"
+        span Refresh suggestions
+      = form_with url: transactions_bulk_acceptances_path, method: :post, class: "flex items-end gap-2" do |f|
+        - filter_params.each do |key, value|
+          = hidden_field_tag "filter[#{key}]", value
+        .field
+          = f.label :threshold_percent, "Accept suggestions from (%)", class: "text-xs"
+          = f.number_field :threshold_percent, value: 95, min: 1, max: 100, step: 1, class: "form-control-compact w-20"
+        = f.submit "Preview", name: nil, variant: :secondary, size: :sm

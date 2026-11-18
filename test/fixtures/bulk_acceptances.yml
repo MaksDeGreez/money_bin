@@ -1,0 +1,6 @@
+# A preview nobody confirmed yet: the needs-review list at 90 %.
+needs_review_preview:
+  filter: { "status": "needs_review" }
+  threshold_percent: 90
+  status: previewed
+  total_count: 1

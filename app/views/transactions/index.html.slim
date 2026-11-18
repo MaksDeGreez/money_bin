@@ -1,0 +1,47 @@
+- content_for :title, "Transactions · Money Bin"
+- filter_params = @filter.to_params
+
+= render "ui/page_header", title: "Transactions", description: "Every transaction, newest first. Filter it, open one, or categorise what is still uncategorised." do
+  = ui_link_button new_transaction_path, variant: :secondary do
+    = ui_icon "plus"
+    span Add expense
+
+= render "transactions/filter", filter: @filter, accounts: @accounts
+
+= render "transactions/suggestions_panel", filter: @filter, run: @suggestion_run, without_suggestion: @without_suggestion
+
+- if @transactions.empty?
+  .mt-6
+    = render "ui/callout" do
+      p.text-sm
+        - if @filter.any?
+          | No transaction matches this filter.
+          =< link_to "Show all transactions", transactions_path
+        - else
+          | No transactions yet.
+- else
+  / The review keys work across the rows (review_queue_controller.js): j / k move, t takes the suggestion, c opens
+  / the category picker.
+  .data-grid-wrapper.mt-4 data-controller="review-queue" data-action="keydown->review-queue#keydown"
+    table.data-grid
+      thead
+        tr
+          th Date
+          th Payee
+          th Account
+          th Category
+          th.data-grid-num Amount
+          th Status
+      = render partial: "transactions/transaction", collection: @transactions, locals: { filter: @filter }
+  p.mt-2.text-xs.text-ink-muted
+    | Review keys:
+    =< ui_kbd "j"
+    |  /
+    =< ui_kbd "k"
+    |  next and previous uncategorised line,
+    =< ui_kbd "t"
+    |  take the suggestion,
+    =< ui_kbd "c"
+    |  choose another category.
+  .mt-4
+    = render "ui/pagination", pagination: @pagination, url: ->(page) { transactions_path(filter_params.merge(page:)) }

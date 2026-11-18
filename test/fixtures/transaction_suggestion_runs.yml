@@ -1,0 +1,9 @@
+# A finished refresh of the transaction suggestions (invented).
+finished:
+  status: done
+  model_version: 2026-11-18-0123456789ab
+  total_count: 1
+  scored_count: 1
+  skipped_count: 0
+  started_at: 2026-11-18T11:59:00Z
+  finished_at: 2026-11-18T12:00:00Z

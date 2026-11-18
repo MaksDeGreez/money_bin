@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_19_100000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -71,6 +71,43 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.index ["user_id"], name: "index_api_tokens_on_user_id"
     t.check_constraint "scope::text = ANY (ARRAY['read'::character varying, 'read_write'::character varying]::text[])", name: "api_tokens_scope_allowed"
     t.check_constraint "token_digest::text ~ '^[0-9a-f]{64}$'::text", name: "api_tokens_token_digest_format"
+  end
+
+  create_table "bulk_acceptance_items", force: :cascade do |t|
+    t.bigint "bulk_acceptance_id", null: false
+    t.bigint "transaction_id", null: false
+    t.integer "lock_version", null: false
+    t.bigint "line_ids", null: false, array: true
+    t.bigint "category_id", null: false
+    t.float "probability", null: false
+    t.string "model_version", null: false
+    t.string "outcome"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["bulk_acceptance_id", "transaction_id"], name: "idx_on_bulk_acceptance_id_transaction_id_c5d1226bb3", unique: true
+    t.index ["category_id"], name: "index_bulk_acceptance_items_on_category_id"
+    t.index ["transaction_id"], name: "index_bulk_acceptance_items_on_transaction_id"
+    t.check_constraint "cardinality(line_ids) > 0", name: "bulk_acceptance_items_has_lines"
+    t.check_constraint "outcome::text = ANY (ARRAY['accepted'::character varying, 'stale'::character varying, 'changed'::character varying]::text[])", name: "bulk_acceptance_items_outcome_known"
+    t.check_constraint "probability >= 0::double precision AND probability <= 1::double precision", name: "bulk_acceptance_items_probability_range"
+  end
+
+  create_table "bulk_acceptances", force: :cascade do |t|
+    t.jsonb "filter", default: {}, null: false
+    t.integer "threshold_percent", null: false
+    t.string "status", default: "previewed", null: false
+    t.integer "total_count", default: 0, null: false
+    t.integer "accepted_count", default: 0, null: false
+    t.integer "stale_count", default: 0, null: false
+    t.integer "changed_count", default: 0, null: false
+    t.timestamptz "confirmed_at"
+    t.timestamptz "started_at"
+    t.timestamptz "finished_at"
+    t.string "error"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.check_constraint "status::text = ANY (ARRAY['previewed'::character varying, 'queued'::character varying, 'running'::character varying, 'done'::character varying, 'failed'::character varying]::text[])", name: "bulk_acceptances_status_known"
+    t.check_constraint "threshold_percent >= 1 AND threshold_percent <= 100", name: "bulk_acceptances_threshold_range"
   end
 
   create_table "categories", force: :cascade do |t|
@@ -227,9 +264,41 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
     t.text "comment"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.bigint "suggested_category_id"
+    t.float "suggestion_probability"
+    t.bigint "runner_up_category_id"
+    t.float "runner_up_probability"
+    t.string "suggestion_source"
+    t.string "suggestion_model_version"
+    t.timestamptz "suggested_at"
+    t.string "category_origin"
+    t.float "category_origin_probability"
+    t.string "category_origin_model_version"
     t.index ["category_id", "transaction_id"], name: "index_transaction_lines_on_category_id_and_transaction_id"
+    t.index ["runner_up_category_id"], name: "index_transaction_lines_on_runner_up_category_id", where: "(runner_up_category_id IS NOT NULL)"
+    t.index ["suggested_category_id"], name: "index_transaction_lines_on_suggested_category_id", where: "(suggested_category_id IS NOT NULL)"
     t.index ["transaction_id"], name: "index_transaction_lines_on_transaction_id"
+    t.check_constraint "(category_origin::text <> ALL (ARRAY['suggestion'::character varying, 'bulk'::character varying]::text[])) OR category_origin_probability IS NOT NULL AND category_origin_model_version IS NOT NULL", name: "transaction_lines_taken_suggestion_recorded"
     t.check_constraint "amount <> 0::numeric", name: "transaction_lines_amount_non_zero"
+    t.check_constraint "category_origin::text = ANY (ARRAY['person'::character varying, 'suggestion'::character varying, 'bulk'::character varying]::text[])", name: "transaction_lines_category_origin_known"
+    t.check_constraint "category_origin_probability >= 0::double precision AND category_origin_probability <= 1::double precision", name: "transaction_lines_category_origin_probability_range"
+    t.check_constraint "runner_up_probability >= 0::double precision AND runner_up_probability <= 1::double precision", name: "transaction_lines_runner_up_probability_range"
+    t.check_constraint "suggestion_probability >= 0::double precision AND suggestion_probability <= 1::double precision", name: "transaction_lines_suggestion_probability_range"
+    t.check_constraint "suggestion_source::text = ANY (ARRAY['model'::character varying, 'history'::character varying, 'mix'::character varying]::text[])", name: "transaction_lines_suggestion_source_known"
+  end
+
+  create_table "transaction_suggestion_runs", force: :cascade do |t|
+    t.string "status", default: "queued", null: false
+    t.string "model_version"
+    t.integer "total_count", default: 0, null: false
+    t.integer "scored_count", default: 0, null: false
+    t.integer "skipped_count", default: 0, null: false
+    t.string "error"
+    t.timestamptz "started_at"
+    t.timestamptz "finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.check_constraint "status::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'done'::character varying, 'failed'::character varying]::text[])", name: "transaction_suggestion_runs_status_known"
   end
 
   create_table "transactions", force: :cascade do |t|
@@ -280,6 +349,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "api_tokens", "users", on_delete: :cascade
+  add_foreign_key "bulk_acceptance_items", "bulk_acceptances", on_delete: :cascade
+  add_foreign_key "bulk_acceptance_items", "categories"
+  add_foreign_key "bulk_acceptance_items", "transactions", on_delete: :cascade
   add_foreign_key "categories", "categories", column: "parent_id"
   add_foreign_key "receipt_ground_truths", "receipts", on_delete: :cascade
   add_foreign_key "receipt_items", "categories"
@@ -290,6 +362,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
   add_foreign_key "receipts", "transactions", on_delete: :nullify
   add_foreign_key "sessions", "users", on_delete: :cascade
   add_foreign_key "transaction_lines", "categories"
+  add_foreign_key "transaction_lines", "categories", column: "runner_up_category_id", on_delete: :nullify
+  add_foreign_key "transaction_lines", "categories", column: "suggested_category_id", on_delete: :nullify
   add_foreign_key "transaction_lines", "transactions"
   add_foreign_key "transactions", "accounts"
   add_foreign_key "transactions", "payees"

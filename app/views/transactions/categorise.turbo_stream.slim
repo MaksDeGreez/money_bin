@@ -1,0 +1,4 @@
+/ The answer to categorising a line from the list: the transaction's rows as they are now (categorised, or
+/ unchanged with the reason nothing was saved).
+- if @transaction
+  = turbo_stream.replace dom_id(@transaction, :list), partial: "transactions/transaction", locals: { transaction: @transaction, filter: @filter, message: @message }
