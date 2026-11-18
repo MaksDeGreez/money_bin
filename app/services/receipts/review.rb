@@ -99,6 +99,11 @@ module Receipts
       ActiveModel::Type::Boolean.new.cast(@params[:without_categories]) == true
     end
 
+    # True when this save turned the receipt into a card slip (it then wants a slip suggestion).
+    def became_slip?
+      @became_slip == true
+    end
+
     # True when the receipt changed under the form.
     def conflict?
       @conflict == true
@@ -110,6 +115,7 @@ module Receipts
         next refuse_detached(not_editable_message) if not_editable_message
         next refuse_detached(CONFLICT, conflict: true) if stale?
 
+        kind_before = @receipt.kind
         assign
         next false unless valid?
         next refuse(BOOKED_UNCHANGED) if ground_truth? && @receipt.reviewed? && form_changes?
@@ -119,6 +125,7 @@ module Receipts
           @removed_items = @receipt.items.select(&:marked_for_destruction?)
           @receipt.save!
         end
+        @became_slip = kind_before != "card_slip" && @receipt.card_slip? && !accept?
         @transaction = Accept.call(Receipt.find(@receipt.id), account: @account) if accept?
         if ground_truth?
           @ground_truth = SaveGroundTruth.call(Receipt.includes(:category, items: :category).find(@receipt.id),

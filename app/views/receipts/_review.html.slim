@@ -149,11 +149,14 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
     section.review-section hidden=!slip data-receipt-review-target="slipOnly" aria-labelledby=dom_id(receipt, :slip_heading)
       h2.text-base id=dom_id(receipt, :slip_heading) Card slip
       p.text-sm.text-ink-muted Booked as one line: the whole total in one category.
-      .field.mt-3.max-w-sm
+      / "Use" (or Enter in the empty field) takes the slip's suggestion, as for an item; the save stores it.
+      .field.mt-3.max-w-sm data-slip-suggestion-id=slip_suggestion&.id
         = f.label :category_id, "Category"
         = f.category_select :category_id, category_choices, "aria-label": "Category of the slip", suggestion: slip_suggestion
         - if slip_suggestion
-          p.field-hint = "Suggested: #{form_receipt.suggested_category.name}#{" (#{receipt_confidence(form_receipt.suggested_category_confidence)})" if form_receipt.suggested_category_confidence}"
+          p.field-hint
+            span = [ "Suggested: #{form_receipt.suggested_category.name}", (receipt_confidence(form_receipt.suggested_category_confidence) if form_receipt.suggested_category_confidence), receipt_slip_suggestion_source(form_receipt) ].compact.join(" · ")
+            =< ui_button "Use", variant: :link, size: :sm, data: { action: "receipt-review#useSlipSuggestion" }
         = f.error_for :category_id
       / Every kept row counts, typed ones too: a slip saves with none.
       - stored_items = items.count { |item| !item.marked_for_destruction? && (item.id || item.name.present? || item.amount_before_type_cast.present?) }

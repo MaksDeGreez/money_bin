@@ -80,6 +80,20 @@ module ReceiptsHelper
     "Category suggestions for #{sources.values.sum} of #{pluralize(items.size, 'item')}: #{parts.to_sentence}."
   end
 
+  # Where a card slip's suggestion came from (Receipts::SuggestSlipCategory), in words.
+  def receipt_slip_suggestion_source(receipt)
+    return unless receipt.suggested_category_id
+
+    receipt.categoriser_model_name == PayeeHistory::CATEGORISER_NAME ? "from this payee's history" : "from the model"
+  end
+
+  # One line about a card slip's own suggestion.
+  def receipt_slip_suggestion_summary(receipt)
+    return "No category suggestion yet." unless receipt.suggested_category_id
+
+    "Category suggestion #{receipt_slip_suggestion_source(receipt)} (#{receipt.categoriser_model_name})."
+  end
+
   # The value of one side of a QR comparison row, formatted for its field.
   def receipt_qr_value(field, value, currency = nil)
     return tag.span("—", class: "text-ink-muted") if value.nil?

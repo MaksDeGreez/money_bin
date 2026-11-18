@@ -65,6 +65,16 @@ export default class extends Controller {
     if (row) this.takeSuggestion(row)
   }
 
+  // "Use" under a card slip's category: take the slip's own suggestion.
+  useSlipSuggestion(event) {
+    const field = event.target.closest("[data-slip-suggestion-id]")
+    const select = field && this.categorySelect(field)
+    if (!select || !field.dataset.slipSuggestionId) return
+
+    select.value = field.dataset.slipSuggestionId
+    select.dispatchEvent(new Event("change", { bubbles: true }))
+  }
+
   acceptSuggestions() {
     const threshold = Number(this.thresholdTarget.value)
     if (!Number.isFinite(threshold)) return
