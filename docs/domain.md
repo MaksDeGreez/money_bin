@@ -17,7 +17,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment`, the stored suggestion (`suggested_category_id`, `suggestion_probability`, `runner_up_category_id`, `runner_up_probability`, `suggestion_source`, `suggestion_model_version`, `suggested_at`), the category's provenance (`category_origin`, `category_origin_probability`, `category_origin_model_version`) |
 | `transaction_suggestion_runs` | One refresh of the stored transaction suggestions | `status`, `model_version`, `total_count`, `scored_count`, `skipped_count`, `error`, `started_at`, `finished_at` |
-| `bulk_acceptances`, `bulk_acceptance_items` | "Accept suggestions at or above N %" for a list filter, and one transaction of it as previewed | `filter`, `threshold_percent`, `status`, the counts; per item `transaction_id`, `lock_version`, `line_ids`, `category_id`, `probability`, `model_version`, `outcome` |
+| `bulk_acceptances`, `bulk_acceptance_items` | "Accept suggestions at or above N %" for a list filter, and one transaction of it as previewed | `filter`, `threshold_percent`, `status`, the counts; per item `transaction_id`, `lock_version`, `line_ids`, `category_id`, `probability`, `model_version`, `outcome` (`accepted`, `stale`, `changed`, `failed`) |
 | `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `categorised_at`, `categoriser_error`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
 | `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `categories_known`, `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `suggested_by`, `name_key`, `accepted_by_user` |
@@ -158,8 +158,8 @@ listed, the model gives a readable error and the database is the safety net for 
 | Filling a slip's suggestion never writes its `category_id` or `lock_version` | `Receipts::SuggestSlipCategory` (tested) |
 | Filling a line's suggestion never writes its category or amount, nor the transaction's `lock_version` | `Transactions::SuggestCategories` (tested) |
 | Categorising from the list writes only an uncategorised line, never over a newer version of its transaction | `Transactions::Categorise` (row lock and `lock_version`, tested) |
-| A suggestion's probabilities are in 0..1, its source is `model`, `history` or `mix`, a category's origin is `person`, `suggestion` or `bulk`, and a taken suggestion records its probability and artefact | Model + DB (`transaction_lines_*` checks) |
-| A bulk acceptance item is applied at most once and has one outcome (`accepted`, `stale`, `changed`) | Model (`BulkAcceptanceItem#apply!` under a row lock); DB for the values and the one item per transaction (unique index) |
+| A suggestion's probabilities are in 0..1, its source is `model`, `history` or `mix`, a category's origin is `person`, `suggestion` or `bulk` and needs a category, and a taken suggestion records its probability and artefact | Model + DB (`transaction_lines_*` checks) |
+| A bulk acceptance item is applied at most once and has one outcome (`accepted`, `stale`, `changed`, `failed`) | Model (`BulkAcceptanceItem#apply!` under a row lock); DB for the values and the one item per transaction (unique index) |
 | A receipt's `card_last4` is exactly four digits when present | Model + DB (`receipts_card_last4_format`) |
 | A receipt's `ingest_id` is `rcpt_` and six or more digits, and unique when present | Model + DB (`receipts_ingest_id_format`, partial unique index) |
 | A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
@@ -651,7 +651,9 @@ transaction's would. `Receipts::SuggestSlipCategory` fills it:
 
 1. **The payee's history** (`PayeeHistory`): the payee the merchant name matches by the payee normalisation
    (see Decisions), and the categories its booked transactions (not transfer legs) have lines in, each
-   transaction counted once per category. The label memory's rule decides: the category of a strict
+   transaction counted once per category, and only a person's labels (a category taken from a transaction
+   suggestion, `category_origin` `suggestion` or `bulk`, does not count: the history must not repeat the
+   model with a history's confidence). The label memory's rule decides: the category of a strict
    majority (a tie suggests nothing), with the confidence (agreeing + 1) / (transactions + 1.25), used only
    from 0.75 up ("consistent enough": one booking 0.89, two that agree 0.92, 3 of 4 0.76; 2 of 3 is 0.71 and
    goes to the model). `categoriser_model_name` becomes `payee-history`.
@@ -804,65 +806,77 @@ import) get a suggestion from the transaction categoriser (`docs/decisions/0006-
 "Serving"), and the transactions list (`/transactions`) is where a person takes or corrects them.
 
 **The list.** Newest first, paginated, filtered by the URL (`Transaction::Filter` over `TransactionsQuery`:
-dates, account, category or group, status, source, payee name, text, "uncategorised only", currency). Each row
-links to the transaction's page. The dashboard's "needs review" figure links to `status=needs_review`, its
-uncategorised spending to `uncategorised=1` with the period and currency.
+dates, account, category or group, status, source, payee name, text, "uncategorised only", "booked expenses
+only", currency). Each row links to the transaction's page. The dashboard's "needs review" figure links to
+`status=needs_review`, its uncategorised spending to `uncategorised=1&expense=1` with the period and currency
+(booked expenses, as the figure counts them).
 
 **Where suggestions live.** On the line: the best category and its probability, the runner-up and its
 probability, the source (`model`; `mix` when the payee's or the MCC's history weighed in; `history` when it
 decided), the artefact (`suggestion_model_version`: its fit date and file hash) and the time.
 `Transactions::SuggestCategories`, run by `TransactionSuggestionsJob` from "Refresh suggestions" (one run at a
 time, `TransactionSuggestionRun` records its progress and failure), sends every transaction with an
-uncategorised line whose suggestion is missing or from another artefact to the ML service in batches of 200,
-and writes the suggestion columns of the lines still uncategorised with `update_all`: never a category, an
-amount or a `lock_version`, so it cannot disturb a person's edit. `MlClient#categorise_transactions` sends
-transaction data only to an ML service on this machine (`ML_SERVICE_URL` on a loopback host); any other URL
-raises `MlClient::NotLocal` (`ml_not_local`) before anything is sent. A new artefact therefore refreshes every
-suggestion; the same artefact asks nothing again. A transaction with no text and no MCC is skipped. Lines a
-person categorised keep their last suggestion, for the record. Suggestions here are independent of
-`CATEGORISE_BACKEND`: that switch is about receipt labelling.
+uncategorised line whose suggestion is missing (never made, or its category deleted since) or from another
+artefact to the ML service in batches of 200, and writes the suggestion columns of the lines still
+uncategorised with `update_all`: never a category, an amount or a `lock_version`, so it cannot disturb a
+person's edit. It writes under the lines' row locks, taken in id order as categorising takes them, so the two
+wait for each other instead of deadlocking. A new artefact therefore refreshes every suggestion; the same
+artefact asks nothing again. A transaction with no text and no MCC is skipped. Lines a person categorised keep
+their last suggestion, for the record. `MlClient#categorise_transactions` sends transaction data only to an ML
+service on this machine (`ML_SERVICE_URL` on a loopback host); any other URL raises `MlClient::NotLocal`
+(`ml_not_local`) before anything is sent. Suggestions here are independent of `CATEGORISE_BACKEND`: that switch
+is about receipt labelling.
 
 **Taking one.** Under each transaction with uncategorised lines the list shows, per line, the suggestion with
 its probability and source, the runner-up, "Take", and the category picker with "Save" (a split transaction
-line by line; transfer legs have no lines and never appear). The keys: j / k (or the arrows) move between
-lines, t takes, c opens the picker; focus moves to the next waiting line. `Transactions::Categorise` does the
-write:
+line by line; transfer legs have no lines and never appear). A transaction booked from a receipt shows a link
+to its receipt instead: "Accept again" rebuilds its lines from the items, so it is categorised there. The keys:
+j / k move between lines (the arrows too, once a line has the focus), t takes, c opens the picker; focus moves
+to the next waiting line. `Transactions::Categorise` does the write:
 
 - only an uncategorised line is written: a category already set (by anyone) is never overwritten, the answer
   is "has a category by now";
 - the form carries the transaction's `lock_version` and the suggestion it showed (category and artefact);
-  under row locks on the transaction and its lines (a suggestion refresh, which writes the lines, waits) a
-  newer version saves nothing ("changed somewhere else"), and so does a suggestion refreshed since it was
-  shown ("Take" saves exactly the suggestion on screen, never a newer one); the row is shown as it is now;
+  under row locks on the transaction and its lines a newer version saves nothing ("changed somewhere
+  else"), and so does a suggestion refreshed since it was shown: "Take" saves exactly the suggestion on
+  screen, never a newer one, and a category picked by hand is refused too in that rare race. The row is then
+  shown as it is now. Enter in the picker submits through "Take" (the form's first button): a category
+  picked there wins;
+- a transaction booked from a receipt is refused (`on_receipt`), and a save the model's rules refuse is
+  `invalid`, never an exception;
 - the lines are saved through their transaction (nested autosave), so the line rules hold and the version
   moves;
 - **status:** `needs_review` becomes `confirmed` when no line is uncategorised any more and nothing else
   needs a look (a receipt whose items do not sum to its printed total keeps it); a draft stays a draft
   (categorising books nothing); a confirmed one stays confirmed (`Transaction#status_after_categorising`);
-- **provenance:** `category_origin` is `suggestion` when the chosen category is the stored suggestion (taken
+- **provenance:** `category_origin` is `suggestion` when the chosen category is the suggestion shown (taken
   with "Take" or picked by hand: it was on screen), `person` otherwise, and `bulk` from a bulk acceptance;
   a taken suggestion records its probability and artefact as stored on the line, verified under the lock
-  (required by a check). A retraining tells the
-  model's own accepted output from a person's labels by this (`docs/decisions/0006-transaction-categoriser.md`,
-  "Self-training"). Categories set elsewhere (receipts, manual entry, the import) have no origin.
+  (required by the model and a check; an origin needs a category). A retraining tells the model's own
+  accepted output from a person's labels by this (`docs/decisions/0006-transaction-categoriser.md`,
+  "Self-training"), and the payee history of slips counts only a person's labels. Categories set elsewhere
+  (receipts, manual entry, the import) have no origin.
 
 **The bulk action.** "Accept suggestions from N %" for the list's current filter:
 
-1. **Preview** (`BulkAcceptance.preview!`): a snapshot, one item per transaction of the filter with
-   uncategorised lines whose stored suggestion reaches N % (a transaction whose qualifying lines carry
-   different suggestions is left out): its `lock_version`, those lines, the suggestion (category,
-   probability, artefact). The page shows how many transactions, per category, and which artefacts. Nothing
-   is written to the ledger.
+1. **Preview** (`BulkAcceptance.preview!`): a snapshot, one item per transaction of the filter with an
+   uncategorised line whose stored suggestion reaches N %: its `lock_version`, the line, the suggestion
+   (category, probability, artefact). Split transactions are left out (the model scores a transaction as a
+   whole, so all its lines carry one suggestion; a person decides them line by line), and so are
+   transactions booked from a receipt. The page shows how many transactions, per category, and which
+   artefacts. Nothing is written to the ledger.
 2. **Confirmation** by a person (`confirm!`, once: a second click is told it is applied once). A preview
    nobody confirmed is never applied and can be dropped.
 3. **The job** (`BulkAcceptanceJob`) applies each item at most once: under the item's row lock, an item with
    an outcome is skipped, and the categorising (`Transactions::Categorise`, origin `bulk`) and the outcome are
    written in one database transaction. An item whose transaction was edited after the preview (a newer
-   `lock_version`) is `stale`, one whose lines have a category by now or carry another suggestion (a refresh
+   `lock_version`) is `stale`, one whose line has a category by now or carries another suggestion (a refresh
    by a new artefact; checked under the lines' row locks, so a refresh cannot slip in between) is `changed`:
-   both are skipped and counted, never overwritten. An item whose transaction was deleted goes with it. A second acceptance over
+   both are skipped and counted, never overwritten. One the ledger's rules refuse is `failed` (nothing
+   written) and the job goes on. An item whose transaction was deleted goes with it. A second acceptance over
    the same rows finds them stale or changed. The page follows the progress live; an unexpected error marks
-   it `failed`, and "Resume" carries on where it stopped.
+   the run `failed`, a run that has not moved for an hour (a worker killed mid-run) counts as lost, and
+   "Resume" carries on where either stopped.
 
 **Limits, accepted.** The probabilities are the model's own, not calibrated on the ledger; the selection
 JSON has the precision at each threshold on the validation slice. Suggestions refresh only on "Refresh
