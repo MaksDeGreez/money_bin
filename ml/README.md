@@ -243,24 +243,25 @@ rows.
 **Baselines.** `majority` (always the most frequent category) and `payee_mcc`
 (the payee's most frequent category, else the MCC's, else the majority).
 
-**Metrics** (one JSON per run, next to the model file):
+**Metrics** (one JSON per run, next to the model file; `metrics_version` 2):
 
 | Key | Meaning |
 | --- | --- |
 | `test.systems.<name>` | macro-F1 (the main metric), weighted F1, accuracy and top-3 accuracy, each with a 95% bootstrap interval over test rows (`ci95`); `coverage`: precision when only the most confident rows are kept, by coverage level and by confidence threshold |
 | `test_ci95_resampling_days` | the same intervals, resampling whole days instead of rows: rows of one day (and one payee) are not independent, so the row intervals are probably too narrow |
-| `model_minus_best_baseline_ci95` | the interval of the model's gain over the best baseline (paired resamples) |
-| `mcnemar_model_vs_best_baseline` | McNemar's test on top-1 correctness (so it compares accuracy): rows only the model got right, rows only the baseline got right, exact and corrected chi-square p-values |
+| `model_minus_best_baseline_ci95`, `..._resampling_days` | the interval of the model's gain over the best baseline (paired resamples), by rows and by days |
+| `mcnemar_model_vs_best_baseline` | McNemar's test on top-1 correctness (so it compares accuracy): rows only the model got right, rows only the baseline got right, exact and corrected chi-square p-values; it assumes independent rows, so its p-value is probably too small |
 | `segments` | the same headline metrics for test rows with and without bank fields, and with a payee seen or not seen in training |
 | `profile` | the share of rows with bank fields, an MCC, a payee, a comment, for training and test: how the two periods differ |
-| `per_class` | per category: training and test support, F1 of each system |
+| `per_class` | per category: training and test support, F1 of each system (null where the category is neither true nor that system's prediction) |
 | `rows`, `split`, `labels`, `tuning` | row counts (transfers, splits, ties, drops), the split dates, categories missing from training, the validation scores |
-| `export`, `reproducibility` | the manifest SHA-256, the seed, the git commit, Python and library versions, every parameter |
+| `export`, `reproducibility` | the manifest SHA-256, the taxonomy's SHA-256, the seed, the git commit, Python and library versions, every parameter |
 
 Macro-F1 is scikit-learn's default: the mean F1 over every category that is a
 true label or a top-1 prediction in the evaluated rows. At a coverage level,
 rows whose confidence ties with the last kept row are all kept, and the
-coverage actually reached is reported next to the target. The test
+coverage actually reached is reported next to the target: plot precision
+against `coverage`, not `target_coverage`. The test
 period differs from the training period (more bank feeds, new payees); read
 the `segments` and `profile` keys before quoting a headline number.
 

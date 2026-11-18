@@ -68,6 +68,9 @@ def test_the_metrics_name_the_data_and_the_run(trained: dict[str, Any]) -> None:
     by_day = metrics["test_ci95_resampling_days"]
     assert set(by_day) == {"majority", "payee_mcc", "model"}
     assert len(by_day["model"]["macro_f1"]) == 2
+    gain = metrics["model_minus_best_baseline_ci95_resampling_days"]
+    assert set(gain) == {"macro_f1", "weighted_f1", "accuracy", "top3_accuracy"}
+    assert metrics["metrics_version"] == 2
 
 
 def test_the_split_is_by_date_with_validation_inside_training(trained: dict[str, Any]) -> None:
@@ -256,7 +259,14 @@ def test_an_output_folder_inside_a_git_repository_is_refused(tmp_path: Path) -> 
 
 @pytest.mark.parametrize(
     ("options", "message"),
-    [({"c_grid": ()}, "every C"), ({"c_grid": (0.0,)}, "every C"), ({"resamples": 0}, "resamples")],
+    [
+        ({"c_grid": ()}, "every C"),
+        ({"c_grid": (0.0,)}, "every C"),
+        ({"resamples": 0}, "resamples"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**32}, "seed"),
+        ({"min_df": 0}, "min_df"),
+    ],
 )
 def test_bad_options_are_refused(tmp_path: Path, options: dict[str, Any], message: str) -> None:
     with pytest.raises(TrainingError, match=message):

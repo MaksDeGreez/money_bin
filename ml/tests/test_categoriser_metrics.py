@@ -14,10 +14,11 @@ from categoriser.features import amount_bucket, row_features
 from categoriser.metrics import (
     Encoded,
     coverage_curve,
-    day_block_intervals,
+    day_block_samples,
     difference,
     evaluate,
     headline,
+    intervals,
     mcnemar,
     per_class,
     per_class_f1,
@@ -214,18 +215,29 @@ def test_mcnemar_with_equal_wins_is_not_significant() -> None:
 
 
 def test_day_block_intervals_resample_whole_days() -> None:
-    rng = np.random.default_rng(2)
-    y_true = [str(v) for v in rng.integers(0, 3, size=120)]
-    ranked = [[t] if rng.random() < 0.7 else ["x"] for t in y_true]
-    encoded = Encoded(y_true, {"s": predictions(ranked)})
-    days = [i // 4 for i in range(120)]
+    # 20 days of 10 rows; a system is right on every row of half the days and wrong on the rest.
+    days = [i // 10 for i in range(200)]
+    y_true = ["a"] * 200
+    ranked = [["a"] if day % 2 == 0 else ["b"] for day in days]
+    encoded = Encoded(y_true, {"s": predictions(ranked), "same": predictions(ranked)})
 
-    first = day_block_intervals(encoded, days, resamples=100, seed=5)
-    again = day_block_intervals(encoded, days, resamples=100, seed=5)
+    by_day = day_block_samples(encoded, days, resamples=300, seed=5)
+    by_row = evaluate(encoded, resamples=300, seed=5)
 
-    assert first == again
-    low, high = first["s"]["accuracy"]
-    assert 0 <= low < 0.7 < high <= 1
+    assert intervals(by_day) == intervals(day_block_samples(encoded, days, resamples=300, seed=5))
+    day_low, day_high = intervals(by_day)["s"]["accuracy"]
+    row_low, row_high = by_row["systems"]["s"]["accuracy"]["ci95"]
+    assert day_high - day_low > 2 * (row_high - row_low)  # whole days move together
+    # The same days are drawn for every system: two identical systems never differ.
+    assert difference(by_day, "s", "same")["accuracy"] == [0.0, 0.0]
+
+
+def test_one_day_gives_an_interval_of_zero_width() -> None:
+    encoded = Encoded(["a", "b", "a"], {"s": predictions([["a"], ["a"], ["a"]])})
+
+    by_day = intervals(day_block_samples(encoded, [1, 1, 1], resamples=20, seed=0))
+
+    assert by_day["s"]["accuracy"] == [pytest.approx(2 / 3), pytest.approx(2 / 3)]
 
 
 def test_mcnemar() -> None:
@@ -284,3 +296,12 @@ def test_per_class_lists_support_and_f1() -> None:
     assert table[0]["test_support"] == 2
     assert table[0]["f1"]["s"] == pytest.approx(0.5)
     assert table[2]["test_support"] == 0
+    assert table[2]["f1"]["s"] == 0.0  # predicted, never true
+
+
+def test_per_class_f1_is_null_where_a_system_never_meets_the_category() -> None:
+    systems = {"x": predictions([["a"], ["c"]]), "y": predictions([["a"], ["a"]])}
+    table = {row["category"]: row for row in per_class(Encoded(["a", "a"], systems), {})}
+
+    assert table["c"]["f1"] == {"x": 0.0, "y": None}
+    assert table["a"]["f1"]["y"] == 1.0

@@ -177,13 +177,14 @@ def evaluate(
     return result
 
 
-def day_block_intervals(
+def day_block_samples(
     encoded: Encoded, days: Sequence[Any], *, resamples: int, seed: int
-) -> dict[str, dict[str, list[float]]]:
-    """Bootstrap intervals that resample whole days instead of rows.
+) -> dict[str, dict[str, np.ndarray]]:
+    """Bootstrap samples of the headline metrics that resample whole days instead of rows.
 
     Rows of the same day (and the same payee over nearby days) are not independent, so the row
-    bootstrap is likely too narrow; resampling days is a sensitivity check on it.
+    bootstrap is likely too narrow; resampling days is a sensitivity check on it. The same days are
+    drawn for every system, so `difference` works on these samples too.
     """
     groups: dict[Any, list[int]] = {}
     for i, day in enumerate(days):
@@ -206,6 +207,11 @@ def day_block_intervals(
             )
             for metric in HEADLINE:
                 samples[name][metric][i] = values[metric]
+    return samples
+
+
+def intervals(samples: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, list[float]]]:
+    """The 95% percentile interval of every system's samples, per headline metric."""
     return {
         name: {metric: _interval(values) for metric, values in boot.items()}
         for name, boot in samples.items()
@@ -218,15 +224,22 @@ def difference(samples: dict[str, dict[str, np.ndarray]], a: str, b: str) -> dic
 
 
 def per_class(encoded: Encoded, train_support: Mapping[str, int]) -> list[dict[str, Any]]:
-    """Support (training and test) and F1 of every category that is true or a top-1 prediction."""
+    """Support (training and test) and F1 of every category that is true or a top-1 prediction.
+
+    A system's F1 is null for a category that is neither a true label nor one of its own top-1
+    predictions: it is undefined there, and macro-F1 leaves it out too.
+    """
     n_labels = len(encoded.labels)
     f1s = {
         name: per_class_f1(encoded.true, encoded.top1[name], n_labels) for name in encoded.systems
     }
     support = np.bincount(encoded.true, minlength=n_labels)
+    predicted = {
+        name: np.bincount(encoded.top1[name], minlength=n_labels) > 0 for name in encoded.systems
+    }
     listed = support > 0
     for name in encoded.systems:
-        listed |= np.bincount(encoded.top1[name], minlength=n_labels) > 0
+        listed |= predicted[name]
     out = []
     for i, label in enumerate(encoded.labels):
         if not listed[i]:
@@ -236,7 +249,10 @@ def per_class(encoded: Encoded, train_support: Mapping[str, int]) -> list[dict[s
                 "category": label,
                 "train_support": int(train_support.get(label, 0)),
                 "test_support": int(support[i]),
-                "f1": {name: float(f1s[name][0][i]) for name in encoded.systems},
+                "f1": {
+                    name: float(f1s[name][0][i]) if support[i] or predicted[name][i] else None
+                    for name in encoded.systems
+                },
             }
         )
     return out

@@ -2,8 +2,9 @@
 
 The rows are ordered by date. The tail starts on the day of the first row of the last `fraction` of
 the rows, and that whole day belongs to the tail, so the tail holds at least `fraction` of the rows
-(more by at most the rest of that day). Every row of the head is dated strictly before every row of
-the tail.
+(more by at most the rest of that day). The one exception: when that day is the first day, the tail
+starts on the second day instead and may hold less. Every row of the head is dated strictly before
+every row of the tail; the share actually reached is recorded in the metrics.
 """
 
 from __future__ import annotations

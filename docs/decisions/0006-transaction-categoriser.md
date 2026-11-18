@@ -20,8 +20,8 @@ from this work go into a thesis, so the evaluation has to say exactly what it me
 
 The categoriser always runs on the owner's machine. Transaction data is never sent to a hosted model,
 for training or for a suggestion. The code is a package of the existing ML project
-(`ml/categoriser/`), with scikit-learn and joblib in their own dependency group that a plain `uv sync`
-installs, so `bin/setup` and CI need nothing new.
+(`ml/categoriser/`), with scikit-learn, SciPy, joblib and PyYAML in their own dependency group that a
+plain `uv sync` installs, so `bin/setup` and CI need nothing new.
 
 ### The rows
 
@@ -96,12 +96,15 @@ so every number names the data and the code it came from.
 - Macro-F1 is scikit-learn's default definition: the mean over every category that is a true label or
   a top-1 prediction, so a prediction of a category absent from the test rows costs its F1 of 0.
 - McNemar's test compares top-1 correctness, so it tests a difference in accuracy, while the best
-  baseline is chosen by validation macro-F1. The exact binomial p-value is the one to quote.
+  baseline is chosen by validation macro-F1. Of its two forms, the exact binomial p-value is the one to
+  quote, with the caveat below: the test assumes independent rows.
 - At a coverage level, rows that tie in confidence with the last kept row are all kept (a baseline's
   confidences tie a lot), and the coverage actually reached is reported, so the curve does not depend
   on the order of the rows.
 - Rows are not independent: the same payee recurs over nearby days. The row bootstrap is therefore
-  probably too narrow, and a second set of intervals resamples whole days as a sensitivity check.
+  probably too narrow, and McNemar's p-value probably too small. A second set of intervals resamples
+  whole days, for every system and for the model's gain over the best baseline, as a sensitivity
+  check; quote the wider of the two.
 
 ### Files and privacy
 
@@ -131,8 +134,8 @@ so every number names the data and the code it came from.
 
 ## Consequences
 
-- `ml/` gains scikit-learn, joblib and their dependencies (NumPy, SciPy); the HTTP service does not
-  import them yet.
+- `ml/` gains scikit-learn, SciPy, joblib, PyYAML and their dependencies (NumPy among them); the HTTP
+  service does not import them yet.
 - A trained model is a file on the owner's machine, named by the export's manifest hash and the time of
   the run. Serving it over HTTP and showing suggestions in the app are separate changes; they read the
   model file from the same private folder.

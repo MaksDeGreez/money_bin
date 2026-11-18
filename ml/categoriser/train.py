@@ -44,17 +44,18 @@ from categoriser.export import ExportError, load_export
 from categoriser.features import FEATURE_VERSION, build_model, features
 from categoriser.metrics import (
     Encoded,
-    day_block_intervals,
+    day_block_samples,
     difference,
     evaluate,
     headline,
+    intervals,
     mcnemar,
     per_class,
 )
 from categoriser.split import SplitError, split_by_date
 from categoriser.taxonomy import DEFAULT_TAXONOMY, TaxonomyError, load_taxonomy
 
-METRICS_VERSION = 1
+METRICS_VERSION = 2
 MODEL_NAME = "transaction-categoriser"
 DEFAULT_OUT = Path.home() / "Documents" / "money_bin_data" / "models"
 DEFAULT_SEED = 42
@@ -107,6 +108,10 @@ def run(
         raise TrainingError("every C must be above 0")
     if resamples < 1:
         raise TrainingError("resamples must be at least 1")
+    if not 0 <= seed < 2**32:
+        raise TrainingError("the seed must be between 0 and 2**32 - 1")
+    if min_df < 1:
+        raise TrainingError("min_df must be at least 1")
     _refuse_repository(out_dir)
 
     taxonomy = load_taxonomy(taxonomy_path)
@@ -161,7 +166,7 @@ def run(
     encoded = Encoded(y_test, systems)
     overall = evaluate(encoded, resamples=resamples, seed=seed)
     bootstrap = overall.pop("_bootstrap")
-    by_day = day_block_intervals(
+    by_day = day_block_samples(
         encoded, [row.occurred_on for row in test], resamples=resamples, seed=seed
     )
     correct = {name: encoded.top1[name] == encoded.true for name in encoded.systems}
@@ -227,8 +232,11 @@ def run(
         },
         "training_seconds": round(fit_seconds, 3),
         "test": overall,
-        "test_ci95_resampling_days": by_day,
+        "test_ci95_resampling_days": intervals(by_day),
         "model_minus_best_baseline_ci95": difference(bootstrap, "model", best_baseline),
+        "model_minus_best_baseline_ci95_resampling_days": difference(
+            by_day, "model", best_baseline
+        ),
         "mcnemar_model_vs_best_baseline": {
             "baseline": best_baseline,
             **_rename(mcnemar(correct["model"], correct[best_baseline])),
@@ -268,10 +276,11 @@ def _fit_model(rows: Sequence[Row], *, c: float, seed: int, min_df: int) -> Pipe
         raise TrainingError("the rows to fit hold fewer than two categories")
     try:
         return build_model(c=c, seed=seed, min_df=min_df).fit(features(rows), labels)
-    except ValueError:
+    except ValueError as error:
         # scikit-learn's message may quote data; say only what kind of problem it is.
         raise TrainingError(
-            "the model could not be fitted (for example, no text is left after --min-df)"
+            f"the model could not be fitted ({type(error).__name__}; for example, no text is "
+            "left after --min-df)"
         ) from None
 
 
