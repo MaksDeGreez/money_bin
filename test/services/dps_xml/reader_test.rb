@@ -116,10 +116,29 @@ module DpsXml
       assert_nil read(dps_xml(head: { "ORDERTIME" => nil })).document["issued_at"], "a date alone is no moment"
     end
 
-    test "an item without a name is skipped and counted" do
-      result = read(dps_xml(rows: [ dps_row(1, name: " "), dps_row(2) ]))
-      assert_equal 1, result.document["items"].size
-      assert_equal 1, result.notes[:item_without_name]
+    test "a row without a name makes the item list unknown, not shorter; it is counted" do
+      [ [ dps_row(1, name: " "), dps_row(2) ], [ dps_row(1, name: ""), dps_row(2, name: " ") ] ].each do |rows|
+        result = read(dps_xml(rows:))
+        assert_not result.items_known
+        assert_equal [], result.document["items"]
+        assert_operator result.notes[:item_without_name], :>=, 1
+        assert_equal "1250.40", result.document["total"], "the header is still ground truth"
+      end
+    end
+
+    test "a number too large for the document is left out and counted" do
+      result = read(dps_xml(total: "1" * 20, rows: [ dps_row(quantity: "1" * 12) ]))
+      assert_nil result.document["total"]
+      assert_nil result.document["items"].first["quantity"]
+      assert_equal({ dropped_total: 1, dropped_item_quantity: 1 }, result.notes)
+      assert_empty ReceiptGroundTruth::Document.problems(result.document)
+    end
+
+    test "a time inside the spring clock change does not exist and is left out, not moved" do
+      result = read(dps_xml(head: { "ORDERDATE" => "29032026", "ORDERTIME" => "033000" }))
+      assert_nil result.document["issued_at"]
+      assert_equal 1, result.notes[:dropped_issued_at]
+      assert_equal "2026-03-29T04:30:00+03:00", read(dps_xml(head: { "ORDERDATE" => "29032026", "ORDERTIME" => "043000" })).document["issued_at"]
     end
 
     test "no item lines is not an error: the result says the items are not known" do

@@ -60,8 +60,13 @@ provenance and check state).
 
 A file saved under the wrong number would quietly teach the evaluation wrong items. Every file is compared
 with the receipt's QR values where both have one (register number, receipt number, total, date and time
-to the minute in Kyiv time); a disagreement keeps the file out and names the receipt and the fields. A
-receipt without a QR value is imported and counted as unverified.
+to the minute in Kyiv time); a disagreement keeps the file out and names the receipt and the fields. The
+register number is shared by every receipt of a shop's register, so it proves nothing alone: a file must
+also match on the receipt's own fiscal number, or on the total and the time together. When the QR code has
+those values and the file does not, the file is kept out too, because the likeliest cause is a format the
+reader misreads, and an unchecked import is exactly what the check is for. A receipt whose QR code lacks
+them is imported and counted as unverified. The export repeats the check, so a record that later QR values
+contradict is marked rather than silently kept.
 
 ### A tolerant reader, one class per format variant
 
@@ -71,7 +76,8 @@ reader is built to be corrected cheaply:
 - the format knowledge sits in one small class per variant (`DpsXml::Check01`), chosen by looking at the
   document's root and structure; correcting it or adding a variant is a change to one class. A record
   remembers its variant's name and version, so a corrected variant reads the files again on the next run;
-- unknown elements are ignored; a file without item lines gives a record without item ground truth; a
+- unknown elements are ignored; a file without item lines gives a record without item ground truth, and so
+  does a file with an item row the reader cannot keep (a shorter list would pass for a complete one); a
   value that is not an exact decimal is left out and counted, never rounded; a file that is not a receipt
   or not well-formed XML is skipped and counted; one bad file never stops the others;
 - it is safe against hostile files: a size limit, no document type declaration (no entity expansion, no
@@ -100,5 +106,7 @@ use. These parts are guesses until a real file confirms them:
 - Ground truth from a person (`manual`) and from a file (`dps_xml`) sit side by side and can be compared.
 - After the owner's trial the reader will likely need a correction; the variant's version changes with it,
   and the next import replaces every unchecked record read by the old version.
-- Deleting a receipt deletes its ground truth. The receipt load deletes only pristine receipts that left the
-  ingest set; the import recreates a record from its file on the next run, but a person's check is lost.
+- Deleting a receipt deletes its ground truth. A receipt with ground truth no longer counts as pristine, so
+  the receipt load keeps it (and reports it) instead of deleting it or replacing its photos.
+- A record whose file is refused later (a disagreement, too few values) stays until a person deals with
+  it; the export marks it with the current check.

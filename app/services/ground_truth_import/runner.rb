@@ -6,12 +6,13 @@ module GroundTruthImport
   #   report = GroundTruthImport::Runner.call("/path/to/dps_xml", dry_run: false, output: $stdout)
   #
   # For each `rcpt_NNNNNN.xml` in the folder (other entries are counted and ignored; nothing is written
-  # there, and nothing is fetched from anywhere):
+  # there, the folder must be outside every git repository, and nothing is fetched from anywhere):
   # 1. DpsXml::Reader turns it into a ground-truth document; a file it refuses is counted with a warning;
   # 2. the receipt is found by `ingest_id`; a file whose receipt is not loaded is skipped with a warning;
   # 3. CrossCheck compares it with the receipt's QR ground truth; a disagreement means the wrong file was
-  #    saved under this number, so it is not imported (the warning names the fields, never the values). A
-  #    receipt without QR values is imported unverified;
+  #    saved under this number, so it is not imported (the warning names the fields, never the values), and
+  #    so is a file without the values to prove it is this receipt's. A receipt whose QR code cannot prove
+  #    it (no QR values) is imported unverified;
   # 4. the receipt's `dps_xml` ReceiptGroundTruth is created, left alone (same file digest and the same
   #    format variant), or replaced (the file or the variant changed), unless a person has already checked
   #    it: then the change is a counted conflict and the record stays.
@@ -49,6 +50,9 @@ module GroundTruthImport
       def resolve_root
         root = File.realpath(@dir.to_s)
         raise Error, "The ground-truth folder is not a folder." unless File.directory?(root)
+        if PrivateFolder.inside_git_repository?(root)
+          raise Error, "The ground-truth folder is inside a git repository; receipt files belong outside it."
+        end
 
         root
       rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR
@@ -90,11 +94,7 @@ module GroundTruthImport
         return report.count(:receipt_not_loaded, ingest_id, "skipped, no receipt with this ingest id is loaded") unless receipt
 
         check = CrossCheck.call(receipt, result.document)
-        if check.disagreeing.any?
-          return report.count(:mismatch, ingest_id,
-            "not imported, the file disagrees with the receipt's QR code on #{check.disagreeing.join(', ')} " \
-            "(another receipt's file saved under this number?)")
-        end
+        return refuse(receipt, ingest_id, check, report) unless check.stored?
 
         outcome = store(receipt, result, Digest::SHA256.hexdigest(bytes))
         if outcome == :conflict
@@ -102,6 +102,19 @@ module GroundTruthImport
         else
           report.count(outcome)
           report.count_stored(result, check)
+        end
+      end
+
+      # A file that does not prove it belongs to the receipt is not imported. A record stored from an earlier
+      # version of it stays (the import never deletes); the export marks it with its current check.
+      def refuse(receipt, ingest_id, check, report)
+        kept = receipt.ground_truths.dps_xml.exists? ? "; the record stored earlier is kept and the export marks it" : ""
+        if check.status == :disagrees
+          report.count(:mismatch, ingest_id, "not imported, the file disagrees with the receipt's QR code on " \
+            "#{check.disagreeing.join(', ')} (another receipt's file saved under this number?)#{kept}")
+        else
+          report.count(:unverifiable, ingest_id, "not imported, the file lacks the values to compare with the receipt's " \
+            "QR code (its fiscal number, or the total and the time)#{kept}")
         end
       end
 

@@ -6,8 +6,10 @@ require "json"
 #   GroundTruthExport.call("/path/outside/git", output: $stdout)  # => the number of records written
 #
 # Each line: `receipt_id`, `ingest_id`, `source`, `source_format`, `prefilled_by`, `checked_at`,
-# `check_outcome`, `items_known`, `schema_version` and `document` (money and quantities stay decimal
-# strings). The documents hold shop names and items, so the folder must be outside every git repository
+# `check_outcome`, `qr_check`, `items_known`, `schema_version` and `document` (money and quantities stay
+# decimal strings). `qr_check` is the cross-check with the receipt's QR values made at export time
+# (GroundTruthImport::CrossCheck: `agrees`, `disagrees`, `unverifiable` or `no_qr`), so a record that a later
+# QR value contradicts is marked, and the evaluation can leave it out. The documents hold shop names and items, so the folder must be outside every git repository
 # (the check the Python tools make: no `.git` in the folder or above it); it is created readable by the
 # owner only, and the file is written with mode 0600 through a temporary file. Only the count is printed.
 class GroundTruthExport
@@ -21,16 +23,6 @@ class GroundTruthExport
     new(out_dir, output:).call
   end
 
-  # Whether `path` (which may not exist yet) is inside a git working tree. `.git` is a folder in a normal
-  # checkout and a file in a linked worktree. Symbolic links are resolved first (its deepest existing
-  # folder through File.realpath), so a link from outside into a checkout is seen for what it is.
-  def self.inside_git_repository?(path)
-    expanded = Pathname(File.expand_path(path))
-    existing = expanded.ascend.find(&:exist?)
-    resolved = existing.realpath.join(expanded.relative_path_from(existing))
-    resolved.ascend.any? { |folder| folder.join(".git").exist? }
-  end
-
   def initialize(out_dir, output: $stdout)
     @out_dir = out_dir.to_s
     @output = output
@@ -38,7 +30,7 @@ class GroundTruthExport
 
   def call
     raise Error, "Usage: an output folder is needed" if @out_dir.blank?
-    raise Error, "The output folder is inside a git repository; choose one outside it." if self.class.inside_git_repository?(@out_dir)
+    raise Error, "The output folder is inside a git repository; choose one outside it." if PrivateFolder.inside_git_repository?(@out_dir)
 
     FileUtils.mkdir_p(@out_dir, mode: DIR_MODE)
     count = write(File.join(@out_dir, FILE_NAME))
@@ -47,10 +39,12 @@ class GroundTruthExport
   end
 
   private
+    # Through a new temporary file (a random name, created exclusively, never through a link), renamed over
+    # the old file at the end.
     def write(path)
-      temporary = "#{path}.tmp"
+      temporary = "#{path}.#{SecureRandom.hex(6)}.tmp"
       count = 0
-      File.open(temporary, File::WRONLY | File::CREAT | File::TRUNC, FILE_MODE) do |file|
+      File.open(temporary, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, FILE_MODE) do |file|
         file.chmod(FILE_MODE)
         records.each do |record|
           file.puts JSON.generate(line(record))
@@ -77,6 +71,8 @@ class GroundTruthExport
         "prefilled_by" => record.prefilled_by,
         "checked_at" => record.checked_at&.iso8601,
         "check_outcome" => record.check_outcome,
+        # Checked again now: QR values loaded or changed after the import show up here.
+        "qr_check" => GroundTruthImport::CrossCheck.call(record.receipt, record.document).status.to_s,
         "items_known" => record.items_known,
         "schema_version" => record.schema_version,
         "document" => record.document

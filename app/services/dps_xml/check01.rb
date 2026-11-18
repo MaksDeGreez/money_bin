@@ -1,7 +1,7 @@
 module DpsXml
   # The receipt document of a software cash register as the tax service publicly documents it (the
   # `check01.xsd` layout). **Implemented from the documentation and not yet confirmed against a real saved
-  # file**: docs/decisions/0009-receipt-ground-truth.md lists what is a guess.
+  # file**: docs/decisions/0010-receipt-ground-truth.md lists what is a guess.
   #
   #   <CHECK>
   #     <CHECKHEAD>   DOCTYPE (0: a sale document), DOCSUBTYPE (0: sale, 1: return), ORGNM (seller), POINTNM
@@ -16,7 +16,8 @@ module DpsXml
   #
   # Money is in hryvnias with decimals (the documented type), so `currency` is UAH: a cash register in
   # Ukraine reports in hryvnias. An item's `amount` is COST minus DISCOUNTSUM; a negative DISCOUNTSUM is a
-  # surcharge, which raises the amount and leaves `discount` at 0.00 (counted as `surcharge`). Elements it
+  # surcharge, which raises the amount and leaves `discount` at 0.00 (counted as `surcharge`). A row
+  # without a name makes the whole item list unknown (`items_known` false), not a shorter list. Elements it
   # does not use are ignored. It never reads CASHIER or any other person's name field beyond the seller.
   class Check01 < Format
     NAME = "dps_check01.v1"
@@ -33,6 +34,10 @@ module DpsXml
       head = child(root, "CHECKHEAD")
       is_return = sale_kind(head)
       rows = children(child(root, "CHECKBODY"), "ROW")
+      items = ordered(rows).map { |row| item(row) }
+      # A row that could not be kept (no name) would leave a list that looks complete and is not: the items
+      # are then not known at all, rather than known wrongly.
+      items_known = rows.any? && items.none?(&:nil?)
 
       document = ReceiptGroundTruth::Document.blank.merge(
         "kind" => "fiscal",
@@ -43,9 +48,9 @@ module DpsXml
         "total" => money(child(root, "CHECKTOTAL"), "SUM", "total"),
         "currency" => "UAH",
         "is_return" => is_return,
-        "items" => ordered(rows).filter_map { |row| item(row) }
+        "items" => items_known ? items : []
       )
-      result(document, items_known: rows.any?)
+      result(document, items_known:)
     end
 
     private

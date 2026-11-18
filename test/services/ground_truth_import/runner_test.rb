@@ -99,6 +99,55 @@ module GroundTruthImport
       assert_not_includes output, "A-1025"
     end
 
+    test "every QR field is compared: a different register number alone keeps the file out" do
+      write_dps_file(MARKET, dps_xml(head: { "CASHREGISTERNUM" => "4000000002" }))
+
+      report = import
+
+      assert_equal 1, report[:mismatch]
+      assert_match(/QR code on fiscal_number \(/, report.warnings.sole)
+      assert_nil record
+    end
+
+    test "a file without identifying values is not imported when the QR code has them" do
+      write_dps_file(MARKET, dps_xml(head: { "ORDERTAXNUM" => nil, "ORDERTIME" => nil }))
+
+      report = import
+
+      assert_equal 1, report[:unverifiable]
+      assert_match(/\Arcpt_000041: not imported, the file lacks the values to compare/, report.warnings.sole)
+      assert_nil record
+    end
+
+    test "agreeing on the register number alone is not enough" do
+      write_dps_file(MARKET, dps_xml(head: { "ORDERTAXNUM" => nil, "ORDERTIME" => nil }, total: nil))
+
+      assert_equal 1, import[:unverifiable]
+      assert_nil record
+    end
+
+    test "a receipt whose QR code has only the register number is imported unverified" do
+      market.update_columns(qr_receipt_number: nil, qr_total: nil)
+      write_dps_file(MARKET, dps_xml)
+
+      report = import
+
+      assert_equal 1, report[:created]
+      assert_equal 1, report.stored(:unverified)
+    end
+
+    test "a file that now disagrees leaves the earlier record and says so" do
+      write_dps_file(MARKET, dps_xml)
+      import
+      market.update_columns(qr_total: BigDecimal("1.00"))
+
+      report = import
+
+      assert_equal 1, report[:mismatch]
+      assert_match(/the record stored earlier is kept and the export marks it\z/, report.warnings.sole)
+      assert record
+    end
+
     test "the time is compared to the minute in Kyiv time, and a missing value on either side is not compared" do
       write_dps_file(MARKET, dps_xml(head: { "ORDERTIME" => "184059", "CASHREGISTERNUM" => nil }))
       market.update_columns(qr_receipt_number: nil)
@@ -258,6 +307,11 @@ module GroundTruthImport
 
       assert_includes log.string, "rcpt_000777", "the logger works outside the import"
       [ "Invented", "960.00", "dish soap" ].each { |value| assert_not_includes log.string, value }
+    end
+
+    test "the folder must be outside every git repository" do
+      error = assert_raises(Error) { import(dir: Rails.root.join("test").to_s) }
+      assert_equal "The ground-truth folder is inside a git repository; receipt files belong outside it.", error.message
     end
 
     test "the folder must exist" do

@@ -4,7 +4,7 @@ module DpsXml
   # implements `.match?(document)` and `#read` (=> Result); see Reader.
   #
   # Values are never rounded: a number that is not an exact decimal with at most 2 places (money) or 3 (a
-  # quantity) is left out and counted in `notes` as `dropped_<field>`. A decimal comma counts as a point.
+  # quantity), or that is too large for the document, is left out and counted in `notes` as `dropped_<field>`. A decimal comma counts as a point.
   class Format
     DECIMAL = /\A[+-]?\d+(?:[.,]\d+)?\z/
     KYIV = "Europe/Kyiv"
@@ -64,7 +64,9 @@ module DpsXml
       def decimal_string(value, places, field)
         return nil if value.nil?
 
-        ReceiptGroundTruth::Document.decimal_string(value, places) || note(:"dropped_#{field}")
+        text = ReceiptGroundTruth::Document.decimal_string(value, places)
+        pattern = places == ReceiptItem::QUANTITY_DECIMAL_PLACES ? ReceiptGroundTruth::Document::QUANTITY : ReceiptGroundTruth::Document::MONEY
+        text&.match?(pattern) ? text : note(:"dropped_#{field}")
       end
 
       def money(node, name, field)
@@ -84,7 +86,12 @@ module DpsXml
         hours, minutes, seconds = clock.captures.map(&:to_i)
         return note(:"dropped_#{field}") unless Date.valid_date?(yyyy, mm, dd) && hours < 24 && minutes < 60 && seconds < 60
 
-        ActiveSupport::TimeZone[KYIV].local(yyyy, mm, dd, hours, minutes, seconds).iso8601
+        # A time inside the spring clock change does not exist; `local` would move it an hour on.
+        time = ActiveSupport::TimeZone[KYIV].local(yyyy, mm, dd, hours, minutes, seconds)
+        return note(:"dropped_#{field}") unless [ time.year, time.month, time.day, time.hour, time.min, time.sec ] ==
+          [ yyyy, mm, dd, hours, minutes, seconds ]
+
+        time.iso8601
       end
 
       # Counts `kind` and returns nil, so a dropped value reads `return note(...)`.

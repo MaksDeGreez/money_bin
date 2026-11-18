@@ -4,26 +4,37 @@ module GroundTruthImport
   # the date and time to the minute in Kyiv time (the QR code carries no seconds).
   #
   #   check = CrossCheck.call(receipt, document)
-  #   check.compared     # => ["fiscal_number", "total", ...]  what could be compared
-  #   check.disagreeing  # => ["total"]                         where the two differ
+  #   check.status       # => :agrees, :disagrees, :unverifiable or :no_qr
+  #   check.disagreeing  # => ["total"]  where the two differ (field names only)
+  #
+  # Agreeing on the register's number alone proves little: every receipt of that register shares it. So a
+  # file agrees only when nothing differs and it matches on identifying evidence: the receipt's own fiscal
+  # number, or the total together with the time. When the QR code has that evidence but the file does not
+  # (a value left out, a tag the reader does not know), the file is `unverifiable`. When the QR code itself
+  # lacks it (no QR code, or one read only in part), the file cannot be checked: `no_qr`.
   #
   # A disagreement means the file saved under this receipt's number belongs to another receipt. Nothing
   # here returns or prints a value.
   class CrossCheck
-    Outcome = Data.define(:compared, :disagreeing) do
-      def agrees?
-        compared.any? && disagreeing.empty?
-      end
-
-      def unverified?
-        compared.empty?
-      end
-    end
-
     FIELDS = {
       "fiscal_number" => :qr_fiscal_number, "receipt_number" => :qr_receipt_number,
       "total" => :qr_total, "issued_at" => :qr_issued_at
     }.freeze
+    # Each set of fields identifies one receipt when all of them agree.
+    EVIDENCE = [ %w[receipt_number], %w[total issued_at] ].freeze
+
+    Outcome = Data.define(:compared, :disagreeing, :qr_has_evidence) do
+      def status
+        return :disagrees if disagreeing.any?
+        return :agrees if EVIDENCE.any? { |fields| (fields - compared).empty? }
+
+        qr_has_evidence ? :unverifiable : :no_qr
+      end
+
+      def stored?
+        %i[agrees no_qr].include?(status)
+      end
+    end
 
     def self.call(receipt, document)
       compared = []
@@ -36,7 +47,8 @@ module GroundTruthImport
         compared << field
         disagreeing << field unless same?(field, file_value, qr_value)
       end
-      Outcome.new(compared:, disagreeing:)
+      qr_has_evidence = EVIDENCE.any? { |fields| fields.all? { |field| !receipt[FIELDS.fetch(field)].nil? } }
+      Outcome.new(compared:, disagreeing:, qr_has_evidence:)
     end
 
     def self.same?(field, file_value, qr_value)
