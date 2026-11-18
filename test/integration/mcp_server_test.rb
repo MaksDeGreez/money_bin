@@ -26,22 +26,22 @@ class McpServerTest < ActionDispatch::IntegrationTest
     },
     "list_categories" => {
       happy: -> { {} },
-      error: -> { [ { group: "groceries" }, "group" ] },
+      error: -> { [ { group: "groceries" }, "`/group`" ] },
       rest: -> { [ "/api/v1/categories", {}, {} ] }
     },
     "list_accounts" => {
       happy: -> { {} },
-      error: -> { [ { currency: "UAH" }, "currency" ] },
+      error: -> { [ { currency: "UAH" }, "`/currency`" ] },
       rest: -> { [ "/api/v1/accounts", {}, {} ] }
     },
     "recent_receipts" => {
       happy: -> { { limit: 2 } },
-      error: -> { [ { limit: 0 }, "limit" ] },
+      error: -> { [ { cursor: "bm90LWEtY3Vyc29y" }, "'cursor'" ] },
       rest: -> { [ "/api/v1/receipts", { limit: 2, status: "extracted" }, { limit: 2, status: "extracted" } ] }
     },
     "get_receipt" => {
       happy: -> { { id: receipts(:market_receipt).id } },
-      error: -> { [ { id: "first" }, "id" ] },
+      error: -> { [ { id: "first" }, "`/id`" ] },
       rest: -> { [ "/api/v1/receipts/#{receipts(:market_receipt).id}", {}, { id: receipts(:market_receipt).id } ] }
     }
   }.freeze
@@ -188,6 +188,21 @@ class McpServerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a tool refuses to run without the authenticated token in its server context" do
+    assert_raises(McpTools::Base::Unauthenticated) { McpTools::ListAccounts.call(server_context: {}) }
+    assert_raises(McpTools::Base::Unauthenticated) { McpTools::ListAccounts.call(server_context: { api_token: plain_token(:agent_read) }) }
+  end
+
+  test "a failure before the SDK is a 500 with no detail" do
+    with_singleton_method(ApiToken, :find_active_by_plain_token, ->(*) { raise ActiveRecord::ConnectionNotEstablished, "secret detail" }) do
+      mcp_request("tools/list")
+    end
+
+    assert_response :internal_server_error
+    assert_equal "internal_error", json.dig("error", "code")
+    assert_not_includes response.body, "secret detail"
+  end
+
   test "an unauthenticated request never reaches the server, not even initialize" do
     with_singleton_method(McpServer, :build, ->(**) { flunk "the server was built for an unauthenticated request" }) do
       mcp_initialize(token: nil)
@@ -204,7 +219,8 @@ class McpServerTest < ActionDispatch::IntegrationTest
   end
 
   test "another Host is refused before authentication, so a rebound domain reaches nothing" do
-    [ "evil.example:3100", "localhost.evil.example", "127.0.0.1.nip.io:3100", "www.example.com" ].each do |name|
+    [ "evil.example:3100", "localhost.evil.example", "127.0.0.1.nip.io:3100", "www.example.com", "localhost.", "0.0.0.0:3100",
+      "localhost:3100:evil.example", "127.0.0.1:3100, evil.example", "[::1]junk", "localhost:", "user@localhost", "" ].each do |name|
       with_singleton_method(ApiToken, :find_active_by_plain_token, ->(*) { flunk "the token was checked for #{name}" }) do
         mcp_request("tools/list", headers: { "Host" => name })
       end
@@ -221,6 +237,14 @@ class McpServerTest < ActionDispatch::IntegrationTest
 
     with_app_host("money.home.arpa") do
       mcp_request("tools/list")
+      assert_response :success
+    end
+
+    with_app_host("money.home.arpa:8443") do
+      mcp_request("tools/list")
+      assert_response :forbidden, "an APP_HOST with a port matches only that port"
+
+      mcp_request("tools/list", headers: { "Host" => "money.home.arpa:8443" })
       assert_response :success
     end
   end
@@ -271,6 +295,19 @@ class McpServerTest < ActionDispatch::IntegrationTest
 
     post "/mcp", params: "jsonrpc=2.0", headers: mcp_headers(:agent_read).merge("Content-Type" => "application/x-www-form-urlencoded")
     assert_response :unsupported_media_type
+  end
+
+  test "the stateless lifecycle of protocol 2026-07-28 (no initialize, the version on every request) works behind the same gates" do
+    params = { name: "list_accounts", arguments: {},
+      _meta: { "io.modelcontextprotocol/protocolVersion" => "2026-07-28", "io.modelcontextprotocol/clientCapabilities" => {} } }
+    headers = { "MCP-Protocol-Version" => "2026-07-28", "Mcp-Method" => "tools/call", "Mcp-Name" => "list_accounts" }
+
+    body = mcp_request("tools/call", params, headers:)
+    assert_response :success
+    assert_equal accounts(:card_uah).id, body.dig("result", "structuredContent", "accounts").find { |account| account["name"] == "Everyday card" }["id"]
+
+    mcp_request("tools/call", params, token: nil, headers:)
+    assert_response :unauthorized
   end
 
   test "a format suffix is not routed" do

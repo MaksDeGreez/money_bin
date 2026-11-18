@@ -4,7 +4,8 @@
 #
 # 1. Host and Origin (against DNS rebinding and cross-site requests). The Host header must name this
 #    machine (McpServer.allowed_hosts: localhost, 127.0.0.1, ::1, and APP_HOST when set), so a web page
-#    cannot reach the server through a domain of its own that resolves to 127.0.0.1. A request with an
+#    cannot reach the server through a domain of its own that resolves to 127.0.0.1; a Host header that is
+#    not a plain name or [IPv6] with an optional port is refused too. A request with an
 #    Origin header (one sent by a browser) must come from this app's own origin; MCP clients such as
 #    Claude Desktop's bridge, the inspector's CLI or curl send none. Anything else is a 403 that says
 #    nothing about the tools.
@@ -16,14 +17,24 @@
 #    and no session to end (DELETE), so every other method is a 405 with `Allow: POST`.
 #
 # The transport then answers with one JSON object per POST, and protocol errors (a wrong Accept or
-# Content-Type, malformed JSON, an unknown method) in JSON-RPC's own error shape.
+# Content-Type, malformed JSON, an unknown method) in JSON-RPC's own error shape. A failure anywhere else
+# (the database down while the token is checked, say) is a 500 with no detail, in every environment: the
+# exception goes to the Rails log, never to the client, not even as development's debug page.
 class McpController < ActionController::API
   include ApiTokenAuthentication
+
+  # A Host header value: a name or an IPv4 address, or an IPv6 address in brackets, and an optional port.
+  HOST_FORMAT = /\A(?:\[(?<ipv6>[0-9a-f:.]+)\]|(?<name>[a-z0-9.-]+))(?::[0-9]{1,5})?\z/
 
   wrap_parameters false
 
   before_action :check_host_and_origin
   before_action :authenticate_api_token
+
+  rescue_from StandardError do |error|
+    MCP.configuration.exception_reporter.call(error, {})
+    render_api_error :internal_server_error, "internal_error", "The MCP server could not answer; the details are in the app's log."
+  end
 
   def handle
     unless request.post?
@@ -46,16 +57,21 @@ class McpController < ActionController::API
       host = request.get_header("HTTP_HOST").to_s.downcase
       origin = request.get_header("HTTP_ORIGIN")
 
-      if !McpServer.allowed_hosts.include?(hostname(host))
+      if !allowed_host?(host)
         render_api_error :forbidden, "forbidden_host", "The MCP server answers only to requests for this machine (localhost)."
       elsif origin && !same_origin?(origin, host)
         render_api_error :forbidden, "forbidden_origin", "The MCP server does not answer requests sent by other web pages."
       end
     end
 
-    # "localhost" from "localhost:3100", "::1" from "[::1]:3100".
-    def hostname(host)
-      host.start_with?("[") ? host[/\A\[([^\]]*)\]/, 1].to_s : host.split(":").first.to_s
+    # Whether the (down-cased) Host header names an allowed host, with any port ("localhost:3100", "[::1]")
+    # or with the exact port of an allowed "host:port" entry.
+    def allowed_host?(host)
+      match = HOST_FORMAT.match(host)
+      return false if match.nil?
+
+      allowed = McpServer.allowed_hosts
+      allowed.include?(match[:ipv6] || match[:name]) || allowed.include?(host)
     end
 
     # Whether the Origin (scheme://host[:port]) names the same host and port as the Host header. A default

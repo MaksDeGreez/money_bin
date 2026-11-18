@@ -196,7 +196,7 @@ objects as the read API, so both always give the same numbers. The design is in
 | `get_receipt` | one receipt with its items |
 
 Each result has a short text and `structuredContent` with the exact values (the read API's JSON: money
-as decimal strings next to their currency, dates as `YYYY-MM-DD`). Expenses are negative, drafts and
+as decimal strings next to their currency, dates as `YYYY-MM-DD`, times in ISO 8601 with the Kyiv offset). Expenses are negative, drafts and
 transfers between own accounts are not counted as spending, and two currencies are never added together.
 There are no write tools and no receipt photos.
 
@@ -377,7 +377,7 @@ for development can never point the tests at development data; a real environmen
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
 | `MLX_OCR_MODEL`  | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
-| `APP_HOST`       | (unset)                         | production only: one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1` |
+| `APP_HOST`       | (unset)                         | one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1`: for pages in production only, for the MCP server in every environment |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |
 
 Databases and Redis numbers. The names and numbers are chosen so this app can share PostgreSQL and Redis

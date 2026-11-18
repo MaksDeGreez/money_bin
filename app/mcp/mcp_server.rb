@@ -58,8 +58,9 @@ module McpServer
     )
   end
 
-  # The names the MCP endpoint answers to: the loopback names, plus APP_HOST when the owner serves the app
-  # under another name (as config.hosts allows in production). Compared without the port.
+  # The names the MCP endpoint answers to: the loopback names (with any port), plus APP_HOST when the owner
+  # serves the app under another name (as config.hosts allows in production), in every environment. An
+  # APP_HOST written with a port ("money.home.arpa:8443") matches only that port.
   def allowed_hosts
     [ "localhost", "127.0.0.1", "::1", ENV["APP_HOST"].presence&.downcase ].compact
   end

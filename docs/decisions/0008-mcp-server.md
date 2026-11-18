@@ -70,9 +70,10 @@ owner's browser can send requests to `localhost`, and a domain of the attacker's
 it authenticates anything:
 
 - the **Host** header must name this machine: `localhost`, `127.0.0.1` or `::1` (any port), or `APP_HOST`
-  when the owner sets it (as `config.hosts` allows in production). A rebound domain carries its own name in
-  Host and is refused. In development Rails would let any IP address through `config.hosts`; the MCP
-  endpoint is stricter;
+  when the owner sets it (as `config.hosts` allows in production; for `/mcp` in every environment, and with
+  a port only that port). A rebound domain carries its own name in Host and is refused, and so is a value
+  that is not a plain name or a bracketed IPv6 address with an optional port. In development Rails would
+  let any IP address through `config.hosts`; the MCP endpoint is stricter;
 - a request with an **Origin** header (one a browser sent) must come from the app's own origin (same host
   and port as the Host header; the scheme is not compared, since only one server listens on a port). MCP
   clients such as `mcp-remote`, the inspector's command line and curl send no Origin and are not affected.
@@ -105,7 +106,9 @@ specification's MUST.
 - **Errors**: a bad argument or an unknown id is a tool result with `isError: true` and a message that names
   the argument and what is allowed, so the model can correct its call. A failure inside a tool is the
   SDK's JSON-RPC internal error, whose message names only the tool; the exception goes to the Rails log
-  (`config/initializers/mcp.rb`), never to the client.
+  (`config/initializers/mcp.rb`), never to the client. A failure before the SDK (the database down while
+  the token is checked) is a 500 `internal_error` with no detail from McpController, in development too,
+  where Rails would otherwise send its debug page.
 - **Results** carry a short text and `structuredContent`. The structured content is exactly the REST
   endpoint's JSON, so money is a decimal string with the currency next to it, dates are ISO 8601, and a
   model can compute with values instead of parsing prose. Each tool's `outputSchema` is generated from the

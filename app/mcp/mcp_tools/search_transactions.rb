@@ -24,7 +24,7 @@ module McpTools
         to: DATE_SCHEMA.merge(description: "Only transactions on or before this day, YYYY-MM-DD; not before from."),
         account_id: ID_SCHEMA.merge(description: "Only this account (an id from list_accounts)."),
         category: {
-          type: %w[string integer],
+          type: %w[string integer], minLength: 1, maxLength: 100, minimum: 1, maximum: QueryArguments::MAX_ID,
           description: "Only transactions with a line in this category, or in any category of this group: a slug from " \
             "list_categories (\"groceries\" is the whole group, \"groceries/groceries\" one category) or its numeric id."
         },

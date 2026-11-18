@@ -20,7 +20,7 @@ module QueryArguments
 
   # A database id: a positive integer that fits a bigint (PostgreSQL raises on a larger one).
   ID_FORMAT = /\A[1-9][0-9]{0,17}\z/
-  MAX_ID = 2**63 - 1
+  MAX_ID = KeysetCursor::MAX_ID
   DATE_FORMAT = /\A\d{4}-\d{2}-\d{2}\z/
   TEXT_MAX_LENGTH = 200
 
