@@ -135,7 +135,9 @@ module GroundTruthImport
             ReceiptGroundTruth.create!(receipt:, source: :dps_xml, **attributes)
             :created
           elsif record.source_sha256 == digest && record.source_format == result.format &&
-              record.schema_version == ReceiptGroundTruth::SCHEMA_VERSION
+              record.current_document == result.document
+            # The same file read by the same variant: left as stored, in the schema version it was written in
+            # (a version 1 record reads as this document; a checked one must not turn into a conflict).
             :unchanged
           elsif record.checked?
             :conflict

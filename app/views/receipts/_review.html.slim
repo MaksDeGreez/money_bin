@@ -1,6 +1,9 @@
 / The review form of a receipt (docs/domain.md, "Review"): the header fields with the QR ground truth next to
-/ them, the items (or, for a card slip, one category), live totals, and Save / Accept. Receipts::Review
-/ stores it; `review` is set after a refused save, and its form_receipt then holds the typed values.
+/ them, the items (or, for a card slip, one category), live totals, and Save / Save as ground truth / Accept.
+/ Receipts::Review stores it; `review` is set after a refused save, and its form_receipt then holds the typed
+/ values. "Save as ground truth" asks before it replaces a record that exists (review.confirmation_needed?).
+/ Where the receipt has a tax-service record, "Fill the form from the tax-service record" copies it into the
+/ form as unsaved edits (receipt_review_controller.js) and sets filled_from, which pre-fill is recorded as.
 /
 / Live refreshes (Receipts::LiveUpdate) must not overwrite typed work: form_guard_controller.js skips them
 / while the form has unsaved changes, and the server refuses a save whose lock_version is stale.
@@ -17,6 +20,10 @@ ruby:
   qr = review_qr_fields(form_receipt)
   currency = form_receipt.currency
   field_errors = form_receipt.errors.attribute_names.excluding(:base).any? || items.any? { |item| item.errors.any? }
+  dps_record = receipt.ground_truths.find(&:dps_xml?)
+  manual_record = receipt.ground_truths.find(&:manual?)
+  confirmation = review.ground_truth if review&.confirmation_needed?
+  fill = (ground_truth_fill_data(dps_record) if dps_record && editable && !receipt.reviewed?)
 section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
   = render "receipts/ocr_state", receipt: receipt
   = form_with model: form_receipt, scope: :receipt, url: receipt_path(receipt, filter.to_params), method: :patch,
@@ -24,10 +31,14 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
     data: { controller: "form-guard receipt-review money-totals",
       form_guard_dirty_value: review.present?, form_guard_errors_value: review.present?,
       money_totals_qr_total_value: (form_receipt.qr_total && JsonFormat.money(form_receipt.qr_total)),
+      receipt_review_fill_value: fill&.to_json, receipt_review_line_items_outlet: "##{dom_id(receipt, :items)}",
       action: "input->money-totals#update line-items:changed->money-totals#update receipt-review:kind->money-totals#update" } do |f|
     = f.hidden_field :lock_version, value: version
     - if transaction
       = hidden_field_tag "receipt[transaction_lock_version]", transaction_version
+    = hidden_field_tag "receipt[filled_from]", form_receipt.filled_from, id: nil, data: { receipt_review_target: "filledFrom" }
+    - if confirmation
+      = hidden_field_tag "receipt[replace_ground_truth]", confirmation.token, id: nil
 
     - if form_receipt.errors[:base].any? || field_errors
       = render "ui/callout", tone: :danger do
@@ -38,6 +49,32 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
             p Some fields need a fix: they are marked below. Nothing was saved.
           - if review&.conflict?
             p = link_to "Open the current version in a new tab", receipt_path(receipt, filter.to_params), target: "_blank", rel: "noopener", data: { turbo_prefetch: false }
+
+    - if confirmation
+      = render "ui/callout", tone: :signal do
+        .space-y-3.text-sm role="alert"
+          p
+            strong This receipt already has ground truth
+            =< "(saved #{l(confirmation.record.updated_at.in_time_zone, format: '%Y-%m-%d %H:%M')})."
+            |  Saving replaces it. Nothing was saved yet.
+          p = ground_truth_change_summary(confirmation)
+          .flex.flex-wrap.items-center.gap-2
+            = f.button nil, name: "intent", value: "ground_truth", variant: :primary, size: :sm, data: { form_guard_focus: true } do
+              = ui_icon "replace"
+              span Replace the ground truth
+            span.text-ink-muted or keep editing.
+
+    - if fill
+      = render "ui/callout" do
+        .flex.flex-wrap.items-center.justify-between.gap-3.text-sm
+          p
+            | A tax-service record exists for this receipt
+            = dps_record.checked? ? (dps_record.check_matches? ? " (checked: matches the print)." : " (checked: differs from the print).") : "."
+            |  Fill the form from it instead of typing the items.
+          = ui_button variant: :secondary, size: :sm, data: { action: "receipt-review#fillFromRecord" } do
+            = ui_icon "file-input"
+            span Fill the form from the tax-service record
+        p.mt-2.text-xs.text-ink-muted role="status" data-receipt-review-target="fillStatus"
 
     = render "ui/callout", tone: :signal, hidden: true, data: { form_guard_target: "notice" } do
       p.text-sm role="status"
@@ -124,7 +161,7 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
             span = "Remove its #{pluralize(stored_items, 'item')} when saving: a card slip has no items."
 
     / The items, edited in place (line_items_controller.js adds and removes rows).
-    section.review-section hidden=slip data-receipt-review-target="itemsOnly" data-controller="line-items" data-action="keydown->line-items#keydown" aria-labelledby=dom_id(receipt, :items_heading)
+    section.review-section id=dom_id(receipt, :items) hidden=slip data-receipt-review-target="itemsOnly" data-controller="line-items" data-action="keydown->line-items#keydown" aria-labelledby=dom_id(receipt, :items_heading)
       .flex.flex-wrap.items-end.justify-between.gap-3
         h2.text-base id=dom_id(receipt, :items_heading) Items
         - if items.any?(&:suggested_category_id)
@@ -168,12 +205,21 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
       ]
       figures << { label: "QR total", value: receipt_money(form_receipt.qr_total, currency), target: "qrTotal" } if form_receipt.qr_total
     = render "ui/totals_footer", figures:,
-      note: "Enter in the last row adds a row. Enter in an empty category takes its suggestion. ⌘ works for Ctrl." do
+      note: "Enter in the last row adds a row. Enter in an empty category takes its suggestion. ⌘ works for Ctrl. " \
+        "Save as ground truth never books anything." do
+      label.form-check-label.text-sm
+        = check_box_tag "receipt[without_categories]", "1", review&.without_categories?, class: "form-check", id: dom_id(receipt, :without_categories)
+        span Save without categories
       - if receipt.extracted?
         = f.button nil, name: "intent", value: "save", variant: :secondary, disabled: !editable,
           data: { form_guard_target: "save", turbo_submits_with: "Saving…" } do
           span Save
           = ui_kbd "Ctrl", "S", class: "hidden sm:inline-flex"
+      = f.button nil, name: "intent", value: "ground_truth", variant: :soft, disabled: !editable,
+        title: (manual_record ? "Replaces the ground truth saved #{l(manual_record.updated_at.in_time_zone, format: '%Y-%m-%d %H:%M')} (you see what changes first)" : nil),
+        data: { form_guard_target: "groundTruth", turbo_submits_with: "Saving…" } do
+        span = manual_record ? "Save as ground truth again" : "Save as ground truth"
+        = ui_kbd "Ctrl", "Shift", "S", class: "hidden sm:inline-flex"
       = f.button nil, name: "intent", value: "accept", variant: :primary, disabled: !editable,
         data: { form_guard_target: "accept", turbo_submits_with: "Booking…" } do
         span = receipt.reviewed? ? "Accept again" : "Accept"

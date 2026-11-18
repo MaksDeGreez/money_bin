@@ -7,6 +7,7 @@ Rails.application.config.filter_parameters += [
   :passw, :email, :secret, :token, :_key, :crypt, :salt, :certificate, :otp, :ssn, :cvv, :cvc
 ]
 
-# What a person types into the receipt review form and manual entry (merchants, items, amounts, card digits)
-# stays out of the request log: the forms post it as `receipt[...]` and `manual_expense[...]`.
-Rails.application.config.filter_parameters += [ /\Areceipt\z/, /\Amanual_expense\z/ ]
+# What a person types into the receipt review form, manual entry and the check of a tax-service record
+# (merchants, items, amounts, card digits, a note) stays out of the request log: the forms post it as
+# `receipt[...]`, `manual_expense[...]` and `ground_truth_check[...]`.
+Rails.application.config.filter_parameters += [ /\Areceipt\z/, /\Amanual_expense\z/, /\Aground_truth_check\z/ ]

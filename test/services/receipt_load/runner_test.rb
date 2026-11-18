@@ -203,7 +203,8 @@ module ReceiptLoad
       write_ingest([ ingest_line(1, colours: [ 1 ]), ingest_line(2) ])
       load_receipts
       [ loaded(1), loaded(2) ].each do |receipt|
-        receipt.ground_truths.create!(source: :manual, schema_version: 1, items_known: false,
+        receipt.ground_truths.create!(source: :manual, schema_version: 2, items_known: false,
+          prefilled_by: ReceiptGroundTruth::PREFILLED_BY_HAND,
           document: ReceiptGroundTruth::Document.blank)
       end
 

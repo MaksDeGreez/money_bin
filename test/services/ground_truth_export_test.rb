@@ -20,10 +20,12 @@ class GroundTruthExportTest < ActiveSupport::TestCase
 
     market, corner = lines
     assert_equal({ "receipt_id" => receipts(:market_receipt).id, "ingest_id" => "rcpt_000041", "source" => "dps_xml",
-                   "source_format" => "dps_check01.v1", "prefilled_by" => nil, "checked_at" => "2026-10-05T10:00:00+03:00",
-                   "check_outcome" => "matches", "qr_check" => "agrees", "items_known" => true,
-                   "schema_version" => 1 },
-      market.except("document"))
+                   "source_format" => "dps_check01.v1", "prefilled_by" => nil, "prefill_kind" => nil,
+                   "prefilled_model_version" => nil, "prefilled_prompt_version" => nil, "categories_prefilled_by" => nil,
+                   "checked_at" => "2026-10-05T10:00:00+03:00", "check_outcome" => "matches", "qr_check" => "agrees",
+                   "items_known" => true, "categories_known" => false, "schema_version" => 2, "stored_schema_version" => 1 },
+      market.except("document", "saved_at"))
+    assert_equal receipt_ground_truths(:market_dps).updated_at.to_i, Time.iso8601(market["saved_at"]).to_i
     assert_equal "1250.40", market["document"]["total"]
     assert_equal "960.00", market["document"]["items"][1]["amount"]
     assert_equal({ "ingest_id" => nil, "source" => "manual", "prefilled_by" => "stub-ocr", "checked_at" => nil, "qr_check" => "no_qr" },
@@ -34,6 +36,38 @@ class GroundTruthExportTest < ActiveSupport::TestCase
     assert_equal 0o700, File.stat(File.join(@root, "out")).mode & 0o777
     assert_equal [ GroundTruthExport::FILE_NAME ], Dir.children(File.join(@root, "out")), "no temporary file is left"
     assert_equal "Ground-truth export: 2 records written to ground_truth.jsonl\n", @output.string
+  end
+
+  test "one shape: a version 1 record is written as version 2, its categories null and not known" do
+    export
+    lines.each do |line|
+      assert_equal 2, line["schema_version"]
+      assert_equal ReceiptGroundTruth::Document::KEYS.sort, line["document"].keys.sort
+      assert line["document"]["items"].all? { |item| ReceiptGroundTruth::Document::ITEM_KEYS.sort == item.keys.sort }
+      assert_empty ReceiptGroundTruth::Document.problems(line["document"], items_known: line["items_known"],
+        categories_known: line["categories_known"])
+    end
+    assert_not receipt_ground_truths(:market_dps).reload.document.key?("category_slug"), "the stored record is not rewritten"
+  end
+
+  test "a manual record carries its categories, what pre-filled it and which categoriser suggested" do
+    ReceiptGroundTruth.manual.delete_all
+    document = ReceiptGroundTruth::Document.blank.merge("kind" => "fiscal", "total" => "60.00",
+      "items" => [ { "name" => "Invented water", "quantity" => "2.000", "unit_price" => "30.00", "amount" => "60.00",
+                     "discount" => "0.00", "category_slug" => "groceries/groceries" } ])
+    receipts(:corner_receipt).ground_truths.create!(source: :manual, schema_version: 2, items_known: true, categories_known: true,
+      prefilled_by: "stub-ocr", prefilled_model_version: "0.1.0", prefilled_prompt_version: "abc123",
+      categories_prefilled_by: "invented-categoriser", document:)
+
+    export
+    corner = lines.find { |line| line["source"] == "manual" }
+    assert_equal({ "prefilled_by" => "stub-ocr", "prefill_kind" => "model", "prefilled_model_version" => "0.1.0",
+                   "prefilled_prompt_version" => "abc123", "categories_prefilled_by" => "invented-categoriser",
+                   "categories_known" => true, "stored_schema_version" => 2 },
+      corner.slice("prefilled_by", "prefill_kind", "prefilled_model_version", "prefilled_prompt_version",
+        "categories_prefilled_by", "categories_known", "stored_schema_version"))
+    assert_equal "groceries/groceries", corner["document"]["items"].first["category_slug"]
+    assert_equal "60.00", corner["document"]["items"].first["amount"], "money stays a decimal string"
   end
 
   test "a record that the receipt's QR values now contradict is marked" do

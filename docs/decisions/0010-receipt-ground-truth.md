@@ -1,7 +1,8 @@
 # 0010. Receipt ground truth: saved tax-service files, a store of its own, a tolerant reader
 
-Status: accepted, with the ground-truth store, the import of saved receipt files and the export. The
-reader's format is implemented from public documentation and not yet confirmed against a real file.
+Status: accepted, with the ground-truth store, the import of saved receipt files, the export, and manual
+ground truth with categories from the review form (labelling). The reader's format is implemented from
+public documentation and not yet confirmed against a real file.
 
 ## Context
 
@@ -32,13 +33,13 @@ and receipt ids only, and the export refuses a folder inside a git repository.
 
 Rejected: calling the documented interface (suspended); calling the page's own endpoint or driving a
 browser from code (scripting around the suspension); typing the items in by hand for every receipt (that
-is the later "save as gold" path, for receipts without a saved file).
+is the manual path below, for receipts without a saved file).
 
 ### A store of its own: one record per receipt and source
 
 `receipt_ground_truths` holds, per receipt and source, a JSON document in the shape of the OCR contract's
 receipt, money and quantities as decimal strings, with a schema version. Two writers are planned: this
-import (`dps_xml`) and, later, a "save as gold" action in the review form (`manual`), whose record
+import (`dps_xml`) and "Save as ground truth" in the review form (`manual`), whose record
 remembers which model pre-filled the form (`prefilled_by`), because a person correcting a model's answer
 leans towards it, so that record cannot test that model. Whether the source gave item lines at all is a
 column of its own (`items_known`), because "no items on the receipt" and "no item lines from the source"
@@ -100,12 +101,59 @@ use. These parts are guesses until a real file confirms them:
 - the encodings (UTF-8 or Windows-1251 declared in the prolog, a byte-order mark tolerated) and the decimal
   separator (a comma is accepted).
 
+### Manual ground truth: a snapshot from the review form, with categories
+
+The owner labels receipts in the review form they already use for booking: correct, then "Save as ground
+truth". The record is a snapshot of the receipt as stored after that save (the form is saved first, in the
+same database transaction), so it holds exactly what the person saw saved, and nothing that happens to the
+receipt or the ledger later reaches it. Labelling and booking stay apart: saving ground truth never books or
+moves a status, and booking never writes ground truth. A booked receipt is snapshotted only as it stands
+(changing it is "Accept again"). Replacing a record asks first, with a short count of what changes; the
+confirmation is bound to the exact old and new content, so it cannot approve differences the person did not
+see.
+
+The record remembers what pre-filled the form (`prefilled_by`: a model's name, `source:hand`,
+`source:dps_xml`), derived from the receipt: the model and prompt version that `Receipts::ApplyOcr` wrote
+(a new column, `ocr_prompt_version`, because "Enter by hand" replaces `ocr_raw` while keeping a failed
+receipt's earlier items), or `filled_from` when the person filled the form from the tax-service record. A
+new OCR answer replaces fields and items and clears `filled_from`, so the record names whatever answer the
+form really held; a form open during a re-read is refused as stale. The rule is the conservative one: any
+version or prompt of a model counts as that model, and a form a model filled stays that model's even if the
+person retyped everything.
+
+Rejected: deriving `prefilled_by` from `ocr_raw` alone (lost on "Enter by hand"); a per-receipt history of
+every answer the person ever saw (memory cannot be tracked anyway, and the stale-form refusal already
+prevents the case that matters); storing ground truth when booking (a booked receipt is not necessarily
+read right, and a labelled one need not be booked).
+
+### Categories in the document, as slugs, in schema version 2
+
+The item categoriser is evaluated against the categories a person chose, so the document carries them:
+`category_slug` on each item and, for a card slip, on the receipt, the key the ML service's contract uses.
+Slugs, not ids or names: a slug is stable across a rename and readable offline. `categories_known` is a
+column, as `items_known` is: a person may save without categories, and then none is stored rather than a
+half-finished set. The same pre-fill rule applies to the categoriser: `categories_prefilled_by` records
+`receipts.categoriser_model_name` when suggestions were on the form (`source:unknown` when their source is
+not recorded), so the evaluation can leave the record out for that categoriser.
+
+Imported records have no categories. Both schema versions stay readable instead of rewriting stored rows:
+a checked imported record is a person's judgement about that content, and the shape change adds nothing to
+it. Readers go through one upgrade function, every writer writes version 2, and the export writes one shape
+(version 2) with the stored version alongside. The import treats an unchanged file over a version 1 record as
+unchanged, so a checked record never becomes a conflict through the version change.
+
+Rejected: a data migration rewriting every record to version 2 (it would touch checked records and add
+nothing); categories in a separate table (the evaluation reads a receipt as a whole, as for items).
+
 ## Consequences
 
 - Item-level scores become possible for the receipts with a saved file, with exact answers that no model
   helped make. The set is small (about fifty receipts) and chosen by a person, so the report says how it was
   chosen.
-- Ground truth from a person (`manual`) and from a file (`dps_xml`) sit side by side and can be compared.
+- Ground truth from a person (`manual`) and from a file (`dps_xml`) sit side by side and can be compared,
+  except where the person filled the form from the file (`prefilled_by` says so).
+- Labelling is a review-form workflow: a receipt list filter for what is left, "Next receipt to label", and
+  a keyboard shortcut. The categoriser can be evaluated once enough items are labelled with categories.
 - After the owner's trial the reader will likely need a correction; the variant's version changes with it,
   and the next import replaces every unchecked record read by the old version.
 - Deleting a receipt deletes its ground truth. A receipt with ground truth no longer counts as pristine, so

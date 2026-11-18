@@ -24,13 +24,13 @@ module DpsXml
       assert_equal(
         { "kind" => "fiscal", "merchant" => "Invented Trading LLC", "fiscal_number" => "4000000001",
           "receipt_number" => "A-1024", "issued_at" => "2026-10-03T18:40:12+03:00", "total" => "1250.40",
-          "currency" => "UAH", "card_last4" => nil, "is_return" => false },
+          "currency" => "UAH", "card_last4" => nil, "is_return" => false, "category_slug" => nil },
         result.document.except("items")
       )
       assert_equal(
-        [ { "name" => "Invented rye bread", "quantity" => "2.000", "unit_price" => "20.20", "amount" => "40.40", "discount" => "0.00" },
-          { "name" => "Invented hard cheese 1 kg", "quantity" => "1.000", "unit_price" => "1010.00", "amount" => "960.00", "discount" => "50.00" },
-          { "name" => "Invented dish soap", "quantity" => "1.000", "unit_price" => "250.00", "amount" => "250.00", "discount" => "0.00" } ],
+        [ { "name" => "Invented rye bread", "quantity" => "2.000", "unit_price" => "20.20", "amount" => "40.40", "discount" => "0.00", "category_slug" => nil },
+          { "name" => "Invented hard cheese 1 kg", "quantity" => "1.000", "unit_price" => "1010.00", "amount" => "960.00", "discount" => "50.00", "category_slug" => nil },
+          { "name" => "Invented dish soap", "quantity" => "1.000", "unit_price" => "250.00", "amount" => "250.00", "discount" => "0.00", "category_slug" => nil } ],
         result.document["items"]
       )
       assert_empty ReceiptGroundTruth::Document.problems(result.document)

@@ -1,0 +1,94 @@
+/ A tax-service record next to the receipt's current fields and items, for a person to compare with the
+/ photo: header fields and items (paired by their place in the list), the differences marked, then the
+/ check (docs/domain.md, "Checking an imported record"). Categories are left out: the file has none.
+/   = render "receipts/ground_truth_check", receipt: @receipt, record: dps_record, filter: @filter
+ruby:
+  document = record.current_document
+  # The receipt as stored: after a refused save the page's receipt holds the typed values.
+  stored = Receipt.includes(items: :category).find(receipt.id)
+  current = ReceiptGroundTruth::Snapshot.document(stored, categories: false)
+  diff = ReceiptGroundTruth::Diff.new(document, current, ignore: %w[category_slug is_return])
+  header_keys = ReceiptGroundTruth::Diff::HEADER_KEYS - %w[category_slug is_return]
+  item_keys = %w[name quantity unit_price discount amount]
+.space-y-4
+  h3.text-sm Compare the tax-service record with the print
+  p.text-sm.text-ink-muted
+    = diff.any? ? "Marked: where the record and this receipt's saved values differ (#{pluralize(diff.fields.size, 'field')}, #{pluralize(diff.items.count { |row| !row.same? }, 'item')})." : "The record and this receipt's saved values agree."
+  .data-grid-wrapper
+    table.data-grid
+      caption.sr-only Header of the tax-service record and of this receipt
+      thead
+        tr
+          th Field
+          th Tax-service record
+          th This receipt
+          th
+            span.sr-only Difference
+      tbody
+        - header_keys.each do |key|
+          - differs = diff.fields.include?(key)
+          tr
+            td.whitespace-nowrap = ReceiptsHelper::GROUND_TRUTH_FIELD_LABELS.fetch(key)
+            td = ground_truth_value(key, document[key])
+            td = ground_truth_value(key, current[key])
+            td.w-0
+              - if differs
+                = ui_badge("Differs", tone: :danger)
+  - if record.items_known?
+    .data-grid-wrapper
+      table.data-grid
+        caption.sr-only Items of the tax-service record, each with this receipt's item in the same place
+        thead
+          tr
+            th.data-grid-num #
+            th Name
+            th.data-grid-num Qty
+            th.data-grid-num Unit price
+            th.data-grid-num Discount
+            th.data-grid-num Amount
+            th
+              span.sr-only Difference
+        tbody
+          - diff.items.each_with_index do |row, index|
+            tr
+              td.data-grid-num = index + 1
+              - if row.old
+                - item_keys.each do |key|
+                  td class=(key == "name" ? nil : "data-grid-num") = ground_truth_value(key, row.old[key])
+              - else
+                td.text-ink-muted colspan="5" Not in the record
+              td.w-0.whitespace-nowrap
+                - if row.added?
+                  = ui_badge("Only on the receipt", tone: :signal)
+                - elsif row.removed?
+                  = ui_badge("Only in the record", tone: :signal)
+                - elsif row.changed?
+                  = ui_badge("Differs: #{row.keys.map { |key| ReceiptsHelper::GROUND_TRUTH_ITEM_LABELS.fetch(key) }.join(', ')}", tone: :danger)
+            - if row.new && !row.same?
+              tr.data-grid-sub
+                td
+                  span.sr-only This receipt
+                - item_keys.each do |key|
+                  td class=(key == "name" ? "text-ink-muted" : "data-grid-num text-ink-muted") = ground_truth_value(key, row.new[key])
+                td
+  - else
+    p.text-sm.text-ink-muted The record has no item lines (the file gave none, or one the reader could not keep).
+
+  = form_with url: receipt_ground_truth_check_path(receipt, filter.to_params), method: :post, class: "space-y-3",
+    scope: :ground_truth_check, aria: { label: "Check the tax-service record" } do |f|
+    / The content this page shows: a record replaced since is not checked by this form.
+    = f.hidden_field :version, value: record.content_version
+    .field.max-w-xl
+      = f.label :note, "Note (optional)"
+      = f.text_field :note, value: record.check_note, autocomplete: "off", placeholder: "What differs, or anything worth knowing"
+    .flex.flex-wrap.items-center.gap-2
+      = f.button nil, name: "outcome", value: "matches", variant: :secondary do
+        = ui_icon "check"
+        span Matches the print
+      = f.button nil, name: "outcome", value: "differs", variant: :secondary do
+        = ui_icon "x"
+        span Differs from the print
+  - if record.checked?
+    = ui_button_to receipt_ground_truth_check_path(receipt, filter.to_params), method: :delete, variant: :ghost, size: :sm do
+      = ui_icon "rotate-ccw"
+      span Forget the check

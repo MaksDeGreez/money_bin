@@ -16,11 +16,15 @@ Rails.application.routes.draw do
 
   # Receipts: the list, one receipt with its review form, the upload, and OCR requests. Photos are served by
   # the app behind sign-in (Receipts::PhotosController), never by Rails' own Active Storage routes, which are
-  # not drawn. PATCH saves the review form (and accepts it, with intent=accept).
+  # not drawn. PATCH saves the review form (and accepts it, with intent=accept, or saves it as ground truth,
+  # with intent=ground_truth).
   resources :receipts, only: %i[ index show new create update ] do
     post :read, on: :member
     post :enter_by_hand, on: :member
     post :read_all, on: :collection
+    # A person's check of the receipt's tax-service record against the print (POST records or replaces it,
+    # DELETE forgets it).
+    resource :ground_truth_check, only: %i[ create destroy ], module: :receipts
     get "photos/:id/:size", to: "receipts/photos#show", as: :photo, constraints: { id: /\d+/, size: /thumb|page|full/ }, format: false
   end
 

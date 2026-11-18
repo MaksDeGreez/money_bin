@@ -1,0 +1,54 @@
+/ The receipt's ground truth (docs/domain.md, "Receipt ground truth"): which sources exist, when each was
+/ saved, what pre-filled a person's record, and for a tax-service record its items and header next to the
+/ receipt's current values, the differences marked, with "Matches the print" / "Differs from the print"
+/ (Receipts::GroundTruthChecksController). Outside the review form: the check is its own small form.
+/   = render "receipts/ground_truth", receipt: @receipt, filter: @filter
+ruby:
+  records = receipt.ground_truths.to_a.index_by(&:source)
+  manual = records["manual"]
+  dps = records["dps_xml"]
+section.review-section id="ground-truth" aria-labelledby="ground-truth-heading"
+  h2.text-base#ground-truth-heading Ground truth
+  dl.data-table
+    .data-row
+      dt.data-row-title By hand
+      dd.data-row-value
+        - if manual
+          p.text-sm
+            | Saved
+            =< receipt_time(manual.updated_at)
+            | . Pre-filled by
+            =< ground_truth_prefill_label(manual)
+            | .
+          p.text-sm.text-ink-muted
+            = "#{pluralize(manual.items.size, 'item')}; "
+            - if manual.categories_known?
+              = "categories known (#{ground_truth_categoriser_label(manual)} on the form)."
+            - else
+              | saved without categories.
+        - else
+          p.text-sm.text-ink-muted Not labelled yet. Correct the form, then "Save as ground truth".
+    .data-row
+      dt.data-row-title Tax-service record
+      dd.data-row-value
+        - if dps
+          p.text-sm
+            | Imported
+            =< receipt_time(dps.updated_at)
+            = ", #{dps.items_known? ? pluralize(dps.items.size, 'item') : 'no item lines'}."
+          p.mt-1.flex.flex-wrap.items-center.gap-2.text-sm
+            = ground_truth_badges([ dps ])
+            - if dps.checked?
+              span
+                = dps.check_matches? ? "Matches the print" : "Differs from the print"
+                | , checked
+                =< receipt_time(dps.checked_at)
+              - if dps.check_note
+                span.text-ink-muted = "“#{dps.check_note}”"
+            - else
+              span.text-ink-muted Not checked against the print yet.
+        - else
+          p.text-sm.text-ink-muted None. Saved receipt files are imported with receipts:import_ground_truth_xml.
+
+  - if dps
+    = render "receipts/ground_truth_check", receipt:, record: dps, filter:

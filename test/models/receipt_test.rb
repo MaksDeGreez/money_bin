@@ -336,7 +336,8 @@ class ReceiptTest < ActiveSupport::TestCase
 
   test "a receipt with ground truth is not pristine: the receipt load keeps it" do
     receipt = receipts(:new_receipt)
-    receipt.ground_truths.create!(source: :manual, schema_version: 1, items_known: false,
+    receipt.ground_truths.create!(source: :manual, schema_version: 2, items_known: false,
+      prefilled_by: ReceiptGroundTruth::PREFILLED_BY_HAND,
       document: ReceiptGroundTruth::Document.blank)
     assert_not receipt.pristine?
   end

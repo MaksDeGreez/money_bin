@@ -7,8 +7,10 @@ module Receipts
   # The receipt becomes `extracted`, so the review form opens on it. It gets no items it did not have: an
   # unread receipt starts empty, and a failed one keeps the items of an earlier successful read, if any.
   # `ocr_raw` records that a person started it, `{ "entered_by_hand" => { "started_at", "previous_error" } }`
-  # (the OCR failure it replaces, if any). `ocr_model_name` and `ocr_model_version` stay as they are: nil for a
-  # receipt no model read, and for a failed one with items, the model that read those items. None is invented.
+  # (the OCR failure it replaces, if any). `ocr_model_name`, `ocr_model_version` and `ocr_prompt_version` stay as
+  # they are: nil for a receipt no model read, and for a failed one with items, the model that read those items.
+  # None is invented. They say what pre-filled the form when the receipt is saved as ground truth
+  # (ReceiptGroundTruth::Prefill), so a failed receipt's kept items still name their model.
   #
   # A waiting OCR request is withdrawn (`ocr_requested_at` cleared) under the same row lock that
   # ReceiptOcrJob takes when it starts, so a queued job later finds an `extracted` receipt with no request and

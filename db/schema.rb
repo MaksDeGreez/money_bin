@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -110,15 +110,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_150000) do
     t.text "check_note"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.boolean "categories_known", default: false, null: false
+    t.string "prefilled_model_version"
+    t.string "prefilled_prompt_version"
+    t.string "categories_prefilled_by"
     t.index ["receipt_id", "source"], name: "index_receipt_ground_truths_on_receipt_id_and_source", unique: true
     t.index ["source"], name: "index_receipt_ground_truths_on_source"
     t.check_constraint "(checked_at IS NULL) = (check_outcome IS NULL) AND (check_note IS NULL OR checked_at IS NOT NULL)", name: "receipt_ground_truths_check_consistent"
+    t.check_constraint "categories_known OR NOT jsonb_path_exists(document, '$.\"items\"[*].\"category_slug\"?(@ != null)'::jsonpath) AND NOT jsonb_path_exists(document, '$.\"category_slug\"?(@ != null)'::jsonpath)", name: "receipt_ground_truths_unknown_categories_null"
     t.check_constraint "check_outcome::text = ANY (ARRAY['matches'::character varying, 'differs'::character varying]::text[])", name: "receipt_ground_truths_check_outcome_allowed"
     t.check_constraint "items_known OR (document -> 'items'::text) = '[]'::jsonb", name: "receipt_ground_truths_unknown_items_empty"
     t.check_constraint "jsonb_typeof(document) = 'object'::text AND document ? 'items'::text AND jsonb_typeof(document -> 'items'::text) = 'array'::text", name: "receipt_ground_truths_document_shape"
     t.check_constraint "schema_version > 0", name: "receipt_ground_truths_schema_version_positive"
-    t.check_constraint "source::text <> 'dps_xml'::text OR source_sha256 IS NOT NULL AND source_format IS NOT NULL AND prefilled_by IS NULL", name: "receipt_ground_truths_imported_fields"
-    t.check_constraint "source::text <> 'manual'::text OR source_sha256 IS NULL AND source_format IS NULL", name: "receipt_ground_truths_manual_fields"
+    t.check_constraint "schema_version >= 2 OR NOT categories_known", name: "receipt_ground_truths_categories_need_version_2"
+    t.check_constraint "source::text <> 'dps_xml'::text OR source_sha256 IS NOT NULL AND source_format IS NOT NULL AND prefilled_by IS NULL AND prefilled_model_version IS NULL AND prefilled_prompt_version IS NULL AND categories_prefilled_by IS NULL AND NOT categories_known", name: "receipt_ground_truths_imported_fields"
+    t.check_constraint "source::text <> 'manual'::text OR source_sha256 IS NULL AND source_format IS NULL AND prefilled_by IS NOT NULL", name: "receipt_ground_truths_manual_fields"
     t.check_constraint "source::text = ANY (ARRAY['dps_xml'::character varying, 'manual'::character varying]::text[])", name: "receipt_ground_truths_source_allowed"
     t.check_constraint "source_sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipt_ground_truths_source_sha256_format"
   end
@@ -176,6 +182,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_150000) do
     t.bigint "category_id"
     t.bigint "suggested_category_id"
     t.float "suggested_category_confidence"
+    t.string "ocr_prompt_version"
+    t.string "filled_from"
+    t.string "categoriser_model_name"
     t.index "COALESCE(issued_at, (created_at AT TIME ZONE 'UTC'::text)) DESC, id DESC", name: "index_receipts_on_sort_time_and_id"
     t.index ["batch"], name: "index_receipts_on_batch"
     t.index ["category_id"], name: "index_receipts_on_category_id"
@@ -187,6 +196,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_150000) do
     t.index ["transaction_id"], name: "index_receipts_on_transaction_id", unique: true
     t.check_constraint "card_last4::text ~ '^[0-9]{4}$'::text", name: "receipts_card_last4_format"
     t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "receipts_currency_format"
+    t.check_constraint "filled_from IS NULL OR filled_from::text = 'dps_xml'::text", name: "receipts_filled_from_allowed"
     t.check_constraint "ingest_id::text ~ '^rcpt_[0-9]{6,}$'::text", name: "receipts_ingest_id_format"
     t.check_constraint "kind::text = ANY (ARRAY['fiscal'::character varying, 'card_slip'::character varying]::text[])", name: "receipts_kind_allowed"
     t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipts_sha256_format"

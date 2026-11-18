@@ -17,6 +17,11 @@ tr id=dom_id(receipt)
       = ui_badge "QR", tone: :accent, title: "Has tax-service QR data"
     - else
       span.text-ink-muted aria-label="No tax-service QR data" —
+  td.whitespace-nowrap
+    - if receipt.ground_truths.any?
+      = ground_truth_badges(receipt.ground_truths)
+    - else
+      span.text-ink-muted aria-label="No ground truth" —
   td = receipt.merchant_name
   td.whitespace-nowrap = receipt_time(receipt.issued_at)
   td.data-grid-num = receipt_money(receipt.total, receipt.currency)
