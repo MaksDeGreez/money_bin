@@ -7,20 +7,23 @@ Per receipt (a prediction line whose status is not `skipped`; a receipt the back
   `receipt_number`): exact match with the receipt's QR fields (`evaluation.ocr_fields`), over the
   receipts whose QR code has the field.
 - **merchant**: `text.normalise_merchant` of both sides equal, over receipts whose ground truth has
-  a merchant (pre-fill rule applies).
+  a merchant that does not normalise to nothing (pre-fill rule applies).
 - **kind**: the predicted `kind` (`fiscal`, `card_slip`, or `none` for a missing or failed answer)
-  against the ground truth's kind, else `fiscal` for a receipt with a tax QR code; accuracy and the
-  confusion counts.
+  against the ground truth's kind, else `fiscal` for a receipt with a tax QR code and no
+  ground-truth kind; a receipt whose kind record is pre-filled by the run's model is left out,
+  not given the QR stand-in. Accuracy and the confusion counts.
 - **items**: `matching.match_items` against the ground-truth items. With `tp` matched pairs, `pred`
   predicted and `ref` reference items: precision `tp / pred`, recall `tp / ref`, F1
   `2 tp / (pred + ref)`. Micro values sum `tp`, `pred` and `ref` over receipts; macro F1 is the mean
-  of per-receipt F1 over receipts with item ground truth (a receipt with no item on either side,
-  such as a card slip read right, has F1 1). For each of the variants `main`, `strict`, `lenient`.
+  of per-receipt F1 over receipts with item ground truth (a receipt with no item on either side has
+  F1 1 when the backend answered, such as a card slip read right, and 0 when it failed). For each
+  of the variants `main`, `strict`, `lenient`.
 - **character error rate** of the names of `main`-matched items: the sum of edit distances over the
   sum of reference name lengths, on normalised names (`cer_normalised`) and on names with only
   Unicode NFC and collapsed spaces (`cer_plain`, where case and look-alike letters count).
 - **items sum to the total**: the predicted item amounts add up exactly (as decimals) to the QR
-  total, else to the ground truth's total; over receipts with such a total.
+  total, else to the ground truth's total; over receipts with such a total, card slips (by
+  `GroundTruth.reference_kind`) left out: they have no items.
 - **parse failures** over attempted receipts; errors and repairs as counts; seconds per receipt
   over answered and unparsable receipts (mean, median, 90th percentile).
 
@@ -72,14 +75,20 @@ class ReceiptOutcome:
 
 
 def _item_ratios(
-    prefix: str, predicted: list[dict[str, Any]], reference: list[dict[str, Any]]
+    prefix: str,
+    predicted: list[dict[str, Any]],
+    reference: list[dict[str, Any]],
+    *,
+    answered: bool,
 ) -> dict[str, tuple[float, float]]:
     matching = match_items(predicted, reference)
     n_pred, n_ref = len(predicted), len(reference)
     ratios: dict[str, tuple[float, float]] = {}
     for variant in VARIANTS:
         tp = len(matching.matched(variant))
-        f1 = 1.0 if n_pred + n_ref == 0 else 2 * tp / (n_pred + n_ref)
+        # Nothing to find: right when the backend answered (and found nothing), wrong if it failed.
+        empty = 1.0 if answered else 0.0
+        f1 = empty if n_pred + n_ref == 0 else 2 * tp / (n_pred + n_ref)
         ratios[f"{prefix}.{variant}.precision"] = (tp, n_pred)
         ratios[f"{prefix}.{variant}.recall"] = (tp, n_ref)
         ratios[f"{prefix}.{variant}.f1_micro"] = (2 * tp, n_pred + n_ref)
@@ -135,21 +144,25 @@ def score_receipt(
 
     merchant = truth.field(info.receipt_id, run, "merchant")
     outcome.excluded_prefilled["merchant"] = merchant.excluded_prefilled
-    if merchant.record is not None:
-        hit = receipt is not None and normalise_merchant(
-            receipt.get("merchant")
-        ) == normalise_merchant(merchant.record.document["merchant"])
+    reference_merchant = (
+        normalise_merchant(merchant.record.document["merchant"]) if merchant.record else ""
+    )
+    if reference_merchant:  # a name of legal-form words only says nothing
+        hit = receipt is not None and normalise_merchant(receipt.get("merchant")) == (
+            reference_merchant
+        )
         ratios["merchant"] = (float(hit), 1)
     else:
         ratios["merchant"] = (0, 0)
 
     kind = truth.field(info.receipt_id, run, "kind")
     outcome.excluded_prefilled["kind"] = kind.excluded_prefilled
-    kind_truth = (
-        str(kind.record.document["kind"])
-        if kind.record is not None
-        else ("fiscal" if info.qr_fields else None)
-    )
+    if kind.record is not None:
+        kind_truth: str | None = str(kind.record.document["kind"])
+    elif kind.excluded_prefilled:
+        kind_truth = None  # left out, not replaced: the QR stand-in is for receipts without one
+    else:
+        kind_truth = "fiscal" if info.qr_fields else None
     predicted_kind = receipt.get("kind") if receipt is not None else None
     predicted_kind = predicted_kind if predicted_kind in KINDS else "none"
     if kind_truth in KINDS:
@@ -164,10 +177,19 @@ def score_receipt(
         if prefix == "items":
             outcome.excluded_prefilled["items"] = chosen.excluded_prefilled
         if chosen.record is not None:
-            ratios.update(_item_ratios(prefix, predicted_items, chosen.record.items))
+            ratios.update(
+                _item_ratios(
+                    prefix,
+                    predicted_items,
+                    chosen.record.items,
+                    answered=record["status"] == "ok",
+                )
+            )
 
     total = qr["total"]
-    if total is None:
+    if outcome.kind_segment == "card_slip":
+        total = None  # a card slip has no items to add up
+    elif total is None:
         total_truth = truth.field(info.receipt_id, run, "total")
         if total_truth.record is not None:
             total = decimal_or_none(total_truth.record.document["total"])

@@ -123,32 +123,56 @@ def test_a_split_item_matches_at_most_once() -> None:
 def test_a_merged_item_matches_one_of_two() -> None:
     reference = [it("Bread white", "20.00"), it("Bread black", "25.00")]
     predicted = [it("Bread white", "45.00")]
-    # Name 1.0 with the first; amount 1 - 25/45 = 0.444: score 0.778, a main match, not strict.
+    # Name 1.0 with the first; amount 1 - 25/45 = 0.444: score 0.5 + 0.222 = 0.722, below 0.8.
+    assert counts(predicted, reference) == {"strict": 0, "main": 0, "lenient": 1}
+    predicted = [it("Bread white", "24.00")]
+    # Amount 1 - 4/24 = 0.833: score 0.917, a main match with the first item only.
     assert counts(predicted, reference) == {"strict": 0, "main": 1, "lenient": 1}
 
 
-def test_amounts_decide_between_near_identical_names() -> None:
+def test_amounts_tell_apart_equal_names() -> None:
+    reference = [it("Yogurt 2%", "30.00"), it("Yogurt 2%", "45.00")]
+    predicted = [it("Yogurt 2%", "45.00"), it("Yogurt 2%", "30.00")]
+    matching = match_items(predicted, reference)
+    assert [(p.predicted, p.reference) for p in matching.matched("strict")] == [(0, 1), (1, 0)]
+    assert [(p.predicted, p.reference) for p in matching.matched("main")] == [(0, 1), (1, 0)]
+
+
+def test_near_identical_names_with_swapped_amounts() -> None:
     reference = [it("Yogurt 2%", "30.00"), it("Yogurt 3%", "35.00")]
     predicted = [it("Yogurt 3%", "30.00"), it("Yogurt 2%", "35.00")]
-    # Names point one way, amounts the other: the higher total score pairs them by name
-    # (0.6 + 0.4 * 0.857 = 0.943 each) rather than by amount (0.6 * 0.875 + 0.4 = 0.925 each).
+    # By name: 0.5 + 0.5 * (1 - 5/35) = 0.929 each. By amount: 0.5 * 0.875 + 0.5 = 0.9375 each.
+    # Both give two main pairs; the higher total pairs them by amount, which also makes them
+    # strict (the names are 0.875 alike, above 0.6).
     matching = match_items(predicted, reference)
-    assert sorted((p.predicted, p.reference) for p in matching.pairs) == [(0, 1), (1, 0)]
-    assert len(matching.matched("strict")) == 0
-    assert len(matching.matched("main")) == 2
+    assert [(p.predicted, p.reference) for p in matching.matched("main")] == [(0, 0), (1, 1)]
+    assert counts(predicted, reference) == {"strict": 2, "main": 2, "lenient": 2}
+
+
+def test_an_extra_prediction_never_takes_a_match_away() -> None:
+    reference = [it("abcdefghij", "10.00"), it("abcdefxxxx", "9.00")]
+    right = [it("abcdefghij", "10.00")]
+    assert counts(right, reference) == {"strict": 1, "main": 1, "lenient": 1}
+    # The junk line is 10/11 like the first item and 0.6 like nothing else: it may pair up for
+    # lenient (the first prediction then takes the second item, name 0.6), never for main.
+    junk = [*right, it("abcdefghijk", "20.00")]
+    assert counts(junk, reference) == {"strict": 1, "main": 1, "lenient": 2}
 
 
 def test_a_wrong_amount_with_a_good_name_is_lenient_only() -> None:
     reference = [it("Cheese", "100.00")]
     assert counts([it("Cheese", "10.00")], reference) == {"strict": 0, "main": 0, "lenient": 1}
+    # 40% off the larger amount is the limit for an exact name: 1 - 40/100 = 0.6, score 0.8.
+    assert counts([it("Cheese", "60.00")], reference)["main"] == 1
+    assert counts([it("Cheese", "59.99")], reference)["main"] == 0
 
 
 def test_the_thresholds_are_inclusive() -> None:
-    # Name 0.6 exactly (2 of 5 letters differ) with an exact amount: 0.6 * 0.6 + 0.4 = 0.76.
+    # Name 0.6 exactly (2 of 5 letters differ) with an exact amount: 0.5 * 0.6 + 0.5 = 0.8.
     reference = [it("abcde", "10.00")]
-    matching = match_items([it("abcxy", "10.00")], reference)
-    assert matching.pairs[0].name == pytest.approx(0.6)
-    assert matching.pairs[0].score == pytest.approx(MATCH_THRESHOLD)
+    (pair,) = match_items([it("abcxy", "10.00")], reference).matched("main")
+    assert pair.name == pytest.approx(0.6)
+    assert pair.score == pytest.approx(MATCH_THRESHOLD)
     assert counts([it("abcxy", "10.00")], reference) == {"strict": 1, "main": 1, "lenient": 1}
     assert counts([it("abxyz", "10.00")], reference) == {"strict": 0, "main": 0, "lenient": 0}
 
