@@ -1,0 +1,29 @@
+/ How far the receipts have come (ReceiptCountsQuery): every receipt, whatever its date or currency.
+- rows = dashboard_receipt_rows(counts)
+section.chart-card aria-labelledby="chart-receipts-title"
+  .chart-card-header
+    div
+      h2#chart-receipts-title.text-lg Receipts
+      p.text-sm.text-ink-muted Every stored receipt: read by OCR, reviewed into the ledger, failed, with ground truth.
+    = ui_link_button "All receipts", receipts_path, variant: :ghost, size: :sm, data: { turbo_prefetch: false }
+  - if counts.total.zero?
+    = render "ui/callout" do
+      p.text-sm
+        | No receipts yet.
+        =< link_to "Upload the first one", new_receipt_path
+  - else
+    = bar_chart dashboard_receipt_series(rows), id: "chart-receipts", height: "sm", discrete: true, legend: false
+    details.chart-figures
+      summary Figures as a table
+      .data-grid-wrapper
+        table.data-grid
+          caption.sr-only Receipts by stage
+          thead
+            tr
+              th scope="col" Stage
+              th.data-grid-num scope="col" Receipts
+          tbody
+            - rows.each do |label, count|
+              tr
+                th scope="row" = label
+                td.data-grid-num = number_with_delimiter(count, delimiter: " ")

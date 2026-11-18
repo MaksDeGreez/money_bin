@@ -1,0 +1,29 @@
+/ Spending and income by month: every month of the period, zero where nothing was booked.
+- months = dashboard.months
+section.chart-card.chart-card-wide aria-labelledby="chart-months-title"
+  .chart-card-header
+    div
+      h2#chart-months-title.text-lg Spending by month
+      p.text-sm.text-ink-muted = "Spent and earned per calendar month, #{dashboard.currency}."
+  = column_chart dashboard_month_series(dashboard), id: "chart-months", height: "lg", discrete: true, legend: "bottom"
+  details.chart-figures
+    summary Figures as a table
+    .data-grid-wrapper
+      table.data-grid
+        caption.sr-only = "Spending and income by month, #{dashboard.currency}"
+        thead
+          tr
+            th scope="col" Month
+            th.data-grid-num scope="col" Spent
+            th.data-grid-num scope="col" Income
+        tbody
+          - months.each do |row|
+            tr
+              th scope="row" = dashboard_month(row.month)
+              td.data-grid-num = dashboard_money(row.spent)
+              td.data-grid-num = dashboard_money(row.income)
+        tfoot
+          tr.data-grid-group
+            th scope="row" Total
+            td.data-grid-num = dashboard_money(dashboard.spent)
+            td.data-grid-num = dashboard_money(dashboard.income)

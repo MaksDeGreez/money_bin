@@ -1,8 +1,9 @@
-/ A row of links, each picking one value of a filter, with how many rows have it. The current one is
-/ marked with aria-current.
+/ A row of links, each picking one value of a filter, with how many rows have it (a tab without `count`
+/ shows none). The current one is marked with aria-current.
 /   = render "ui/count_tabs", label: "Status", tabs: [ { label: "All", count: 12, url: receipts_path, current: true }, ... ]
 nav.count-tabs aria-label=local_assigns.fetch(:label, "Filter")
   - tabs.each do |tab|
     = link_to tab[:url], class: "count-tab", "aria-current": (tab[:current] ? "page" : nil)
       span = tab[:label]
-      span.count-tab-number = number_with_delimiter(tab[:count], delimiter: " ")
+      - if tab.key?(:count)
+        span.count-tab-number = number_with_delimiter(tab[:count], delimiter: " ")

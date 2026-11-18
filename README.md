@@ -29,8 +29,8 @@ hosted model reads receipts under a zero-data-retention rule in
 
 ## Status
 
-Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
-owner signs in, sees the receipts, uploads new ones and has them read by OCR, corrects them in a review form and
+Phase 1: the skeleton and the data model. The Rails app boots with a dashboard and the UI helpers, the
+owner signs in, sees the ledger at a glance, sees the receipts, uploads new ones and has them read by OCR, corrects them in a review form and
 accepts them into the ledger, enters an expense by hand, AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
 with a local vision model (`OCR_BACKEND=mlx`, Apple silicon) or a hosted one through OpenRouter
@@ -355,6 +355,36 @@ It runs locally only. The model file holds payee names, so it and the metrics JS
 the repository (the command refuses one inside a git repository); the console prints counts and metrics
 only. Details: [`ml/README.md`](ml/README.md); reasons:
 [`docs/decisions/0006-transaction-categoriser.md`](docs/decisions/0006-transaction-categoriser.md).
+
+## The dashboard
+
+The home page (`/`, signed in) shows the ledger at a glance for one period and one currency:
+
+- headline figures: this month so far next to the whole previous month and the same month a year before,
+  what was spent and earned in the period, the uncategorised spending (the Uncategorised category and
+  the lines with no category), and what still needs a look (booked
+  transactions marked "needs review", and receipts waiting for review, linked to the receipts list);
+- **spending by month**: spent and earned per calendar month, every month of the period (zero where
+  nothing was booked);
+- **spending by category**: the ten largest categories, the rest summed as "Other"; a switch shows groups
+  instead;
+- **top payees**: the ten payees that took the most, with their number of transactions (the table also
+  has the other payees and the spending with no payee, which add up to the total);
+- **receipts**: how many are stored, read by OCR, waiting for review, accepted into the ledger, failed,
+  and how many have ground truth (all receipts, whatever their date).
+
+The period is the last 12 full months and the current one, or a calendar year (whole months either way); the currency is UAH by
+default, with the others that have figures in the period. Both are in the URL (`/?period=2025&currency=USD&by=group`).
+
+Every money figure comes from the same query objects as the REST API and the MCP server
+(`SpendingSummaryQuery`, `TopPayeesQuery`), so the page cannot disagree with `GET /api/v1/summary` for the
+same range: booked transactions only, transfers between own accounts left out, split transactions counted
+by their lines, and two currencies never added together. Spending is shown as a positive figure. Each
+chart has the same figures as a table under it ("Figures as a table"), and an empty ledger, a currency
+with no figures or an empty period says so instead of drawing an empty chart.
+
+The charts are Chartkick (Chart.js) under the app's Content Security Policy, themed from the design
+tokens in both light and dark: [`docs/decisions/0013-dashboard-charts.md`](docs/decisions/0013-dashboard-charts.md).
 
 ## Receipts in the app
 

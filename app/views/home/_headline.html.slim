@@ -1,0 +1,27 @@
+/ The headline figures: this month so far next to the whole previous month and the same month a year before
+/ (amounts only: a percentage of a month in progress against a whole month misleads), the period's totals,
+/ and what still needs a person.
+- comparison = dashboard.comparison
+- currency = dashboard.currency
+.stat-tiles.mt-6
+  .stat-tile
+    p.stat-label = "Spent in #{dashboard_month(comparison.month)} so far"
+    p.stat-value = dashboard_money(comparison.spent, currency)
+    p.stat-note = "#{dashboard_month(comparison.previous_month)}: #{dashboard_money(comparison.previous_spent, currency)}"
+    p.stat-note = "#{dashboard_month(comparison.year_ago_month)}: #{dashboard_money(comparison.year_ago_spent, currency)}"
+  .stat-tile
+    p.stat-label = "Spent in #{dashboard_period_label(dashboard.period)}"
+    p.stat-value = dashboard_money(dashboard.spent, currency)
+    p.stat-note = "Income: #{dashboard_money(dashboard.income, currency)}"
+  .stat-tile
+    - uncategorised, uncategorised_transactions = dashboard.uncategorised
+    p.stat-label Uncategorised spending
+    p.stat-value = dashboard_money(uncategorised, currency)
+    p.stat-note = "#{dashboard_transactions(uncategorised_transactions)} in #{dashboard_period_label(dashboard.period)}"
+  .stat-tile
+    p.stat-label Needs a look
+    p.stat-value = dashboard_transactions(dashboard.needs_review_count)
+    p.stat-note marked “needs review”, all time
+    p.stat-note
+      - to_review = dashboard.receipts.by_status.fetch("extracted")
+      = link_to pluralize(number_with_delimiter(to_review, delimiter: " "), "receipt") + " to review", receipts_path(status: "extracted"), data: { turbo_prefetch: false }

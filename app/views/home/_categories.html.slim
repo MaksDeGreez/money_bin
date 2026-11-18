@@ -1,0 +1,42 @@
+/ Spending by category or by group: the largest ones, then the rest as "Other".
+- slices = dashboard.slices
+- noun = dashboard.grouping
+section.chart-card aria-labelledby="chart-categories-title"
+  .chart-card-header
+    div
+      h2#chart-categories-title.text-lg = "Spending by #{noun}"
+      p.text-sm.text-ink-muted = "The #{Dashboard::TOP_CATEGORIES} largest, the rest as Other, #{dashboard.currency}."
+    = render "ui/count_tabs", label: "Show categories or groups",
+      tabs: Dashboard::GROUPINGS.map { |grouping| { label: grouping == "group" ? "Groups" : "Categories", url: root_path(dashboard.to_params(by: grouping)), current: dashboard.grouping == grouping } }
+  - if slices.empty?
+    = render "ui/callout" do
+      p.text-sm Nothing was spent in this period.
+  - else
+    = bar_chart dashboard_slice_series(dashboard), id: "chart-categories", height: "lg", discrete: true, legend: false
+    details.chart-figures
+      summary Figures as a table
+      .data-grid-wrapper
+        table.data-grid
+          caption.sr-only = "Spending by #{noun}, #{dashboard.currency}"
+          thead
+            tr
+              th scope="col" = noun.capitalize
+              - if noun == "category"
+                th scope="col" Group
+                th.data-grid-num scope="col" Transactions
+              th.data-grid-num scope="col" Spent
+          tbody
+            - slices.each do |slice|
+              tr
+                th scope="row" = dashboard_slice_label(slice, noun)
+                - if noun == "category"
+                  td = slice.group&.name
+                  td.data-grid-num = slice.transactions && number_with_delimiter(slice.transactions, delimiter: " ")
+                td.data-grid-num = dashboard_money(slice.spent)
+          tfoot
+            tr.data-grid-group
+              th scope="row" Total
+              - if noun == "category"
+                td
+                td
+              td.data-grid-num = dashboard_money(dashboard.spent)

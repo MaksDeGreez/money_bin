@@ -1,0 +1,43 @@
+/ The payees that took the most, with how many transactions each (TopPayeesQuery).
+- payees = dashboard.payees
+section.chart-card aria-labelledby="chart-payees-title"
+  .chart-card-header
+    div
+      h2#chart-payees-title.text-lg Top payees
+      p.text-sm.text-ink-muted = "The #{Dashboard::TOP_PAYEES} that took the most, #{dashboard.currency}."
+  - if payees.nil? || payees.payees.empty?
+    = render "ui/callout" do
+      p.text-sm No spending in this period has a payee.
+  - else
+    = bar_chart dashboard_payee_series(payees, dashboard.currency), id: "chart-payees", height: "lg", discrete: true, legend: false
+    details.chart-figures
+      summary Figures as a table
+      .data-grid-wrapper
+        table.data-grid
+          caption.sr-only = "Top payees, #{dashboard.currency}"
+          thead
+            tr
+              th scope="col" Payee
+              th.data-grid-num scope="col" Transactions
+              th.data-grid-num scope="col" Spent
+          tbody
+            - payees.payees.each do |row|
+              tr
+                th scope="row" = row.payee.name
+                td.data-grid-num = number_with_delimiter(row.transactions, delimiter: " ")
+                td.data-grid-num = dashboard_money(Dashboard.as_spent(row.amount))
+            - if payees.other.payees.positive?
+              tr.data-grid-sub
+                th scope="row" = "Other payees (#{number_with_delimiter(payees.other.payees, delimiter: ' ')})"
+                td.data-grid-num = number_with_delimiter(payees.other.transactions, delimiter: " ")
+                td.data-grid-num = dashboard_money(Dashboard.as_spent(payees.other.amount))
+            - if payees.without_payee.transactions.positive?
+              tr.data-grid-sub
+                th scope="row" No payee
+                td.data-grid-num = number_with_delimiter(payees.without_payee.transactions, delimiter: " ")
+                td.data-grid-num = dashboard_money(Dashboard.as_spent(payees.without_payee.amount))
+          tfoot
+            tr.data-grid-group
+              th scope="row" Total
+              td.data-grid-num = number_with_delimiter(payees.transactions, delimiter: " ")
+              td.data-grid-num = dashboard_money(Dashboard.as_spent(payees.total))
