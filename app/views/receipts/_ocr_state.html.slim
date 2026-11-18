@@ -2,7 +2,22 @@
 / A request older than a day counts as lost, so the button comes back (Receipt#ocr_request_waiting?).
 / "Enter by hand" (Receipts::EnterByHand) opens the review form on an unread or failed receipt.
 - waiting = receipt.ocr_request_waiting?
-- if receipt.processing? && !receipt.ocr_stuck?
+- if receipt.in_ocr_batch?
+  / Waiting in an OCR batch (docs/domain.md, "OCR in a batch"): no read one at a time meanwhile.
+  = render "ui/callout", tone: :signal do
+    .space-y-3
+      p.text-sm
+        | Waiting in
+        =< link_to "batch ##{receipt.ocr_batch_id}", ocr_batch_path(receipt.ocr_batch_id)
+        |  since
+        =< receipt_time(receipt.ocr_batch.created_at)
+        | . Results usually take minutes and at most a day; this page updates when they arrive.
+        - if receipt.failed? && (error = receipt.ocr_error)
+          =<> "Its earlier read failed:"
+          = error["message"]
+      = render "receipts/enter_by_hand_button", receipt:,
+        confirm: "Enter this receipt by hand? It leaves the batch, and the batch's result for it is not used."
+- elsif receipt.processing? && !receipt.ocr_stuck?
   = render "ui/callout", tone: :signal do
     p.flex.items-center.gap-2.text-sm
       = ui_icon "loader", class: "animate-spin motion-reduce:animate-none"

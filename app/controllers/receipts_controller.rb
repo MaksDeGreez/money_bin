@@ -111,6 +111,8 @@ class ReceiptsController < ApplicationController
       flash[:notice] = "Queued to read again. This page updates when it is done."
     elsif @receipt.reviewed?
       flash[:alert] = "This receipt is accepted into the ledger, so it is not read again."
+    elsif @receipt.reload.in_ocr_batch?
+      flash[:alert] = "Not queued: the receipt is waiting in an OCR batch."
     else
       flash[:alert] = "Not queued: the receipt is #{@receipt.reload.status}#{' and already queued' if @receipt.ocr_pending?}."
     end

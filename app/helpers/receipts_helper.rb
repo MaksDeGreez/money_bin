@@ -27,8 +27,12 @@ module ReceiptsHelper
     STATUS_LABELS.fetch(status.to_s)
   end
 
+  # The status, and "In a batch" while the receipt waits in an OCR batch.
   def receipt_status_badge(receipt)
-    ui_badge receipt_status_label(receipt.status), tone: STATUS_TONES.fetch(receipt.status)
+    badge = ui_badge receipt_status_label(receipt.status), tone: STATUS_TONES.fetch(receipt.status)
+    return badge unless receipt.in_ocr_batch?
+
+    safe_join([ badge, ui_badge("In a batch", tone: :signal, class: "ml-1", title: "Waiting in OCR batch ##{receipt.ocr_batch_id}") ])
   end
 
   def receipt_kind_label(receipt)

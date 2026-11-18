@@ -1,0 +1,50 @@
+- content_for :title, "Read in a batch · Money Bin"
+/ The confirmation before "Read in a batch" (OcrBatchesController#new): how many receipts and batches, the
+/ estimated cost, the wait, and what the provider keeps. Sending is a POST with the same filter.
+= render "ui/page_header", title: "Read in a batch",
+  description: "Send the unread receipts of this filter to be read together, at about half the price of reading them one at a time."
+
+= render "ocr_batches/mode", capability: @capability
+
+- if !@capability.available
+  p.mt-6 = link_to "Back to the receipts", receipts_path(@filter.to_params)
+- elsif @count.zero?
+  .mt-6
+    = render "ui/callout" do
+      p.text-sm
+        | No receipt in this filter is waiting to be read.
+        =< link_to "Back to the receipts", receipts_path(@filter.to_params)
+- else
+  dl.data-table.mt-6
+    .data-row
+      dt Receipts
+      dd = "#{pluralize(@count, 'receipt')} (#{pluralize(@images, 'photo')}): the unread ones of this filter, and the failed ones with no items to lose"
+    .data-row
+      dt Batches
+      dd = "#{pluralize(@batches_needed, 'batch')} of at most #{@capability.max_receipts.clamp(1, 100)} receipts, sent one after the other (more if the photos are large)"
+    .data-row
+      dt Estimated cost
+      dd
+        - if @estimate
+          = ocr_batch_estimate(@estimate.cost_usd)
+          span.text-ink-muted =< "(at most #{ocr_batch_usd(@estimate.cost_usd_max.round(2, BigDecimal::ROUND_UP))} if every answer were as long as allowed). #{@estimate.basis}"
+        - else
+          span.text-ink-muted = "Not available: #{@estimate_error}"
+    .data-row
+      dt How long
+      dd Usually minutes; up to a day. The receipts stay as they are until their results arrive, then update by themselves.
+    .data-row
+      dt What the provider keeps
+      dd
+        | The photos and the prompt go to #{@capability.providers.to_sentence} through OpenRouter, which keep them and the
+        |  answers until the batch is deleted (at most #{@capability.retention_days} days). The app deletes each batch as
+        |  soon as its results are stored. Nothing else is sent: no file names, no ids, nothing from the ledger.
+  = render "ui/callout", class: "mt-6" do
+    p.text-sm
+      | While a receipt waits in a batch it is not read one at a time, and opening it does not queue OCR. You can still
+      |  enter it by hand; the batch's result for it is then not used.
+  .mt-6.flex.items-center.gap-3
+    = ui_button_to ocr_batches_path(@filter.to_params), variant: :primary do
+      = ui_icon "layers"
+      span = "Send #{pluralize(@count, 'receipt')}"
+    = ui_link_button "Cancel", receipts_path(@filter.to_params), variant: :ghost

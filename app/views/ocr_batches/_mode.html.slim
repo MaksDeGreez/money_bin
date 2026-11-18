@@ -1,0 +1,14 @@
+/ Whether batch mode can be used now, as the ML service says (OcrBatches::Availability), and what it gives up.
+- if capability.available
+  = render "ui/callout", tone: :signal, class: "mt-6" do
+    p.text-sm
+      strong Batch mode is on.
+      =< "Model #{capability.model_name}, providers #{capability.providers.to_sentence}."
+      |  A batch is not zero-retention: OpenRouter and the provider keep the photos and the answers until the batch
+      |  is deleted, at most #{capability.retention_days} days. The app deletes each batch as soon as its results are stored.
+- else
+  = render "ui/callout", class: "mt-6" do
+    p.text-sm
+      strong Batch mode is not available.
+      =< capability.message
+      code.ml-1.text-xs = "(#{capability.code})"

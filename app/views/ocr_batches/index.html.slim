@@ -1,0 +1,51 @@
+- content_for :title, "OCR batches · Money Bin"
+/ Live: OcrBatches::LiveUpdate refreshes this page (morph, scroll kept) whenever a batch moves on.
+= turbo_stream_from OcrBatches::LiveUpdate::STREAM
+
+= render "ui/page_header", title: "OCR batches",
+  description: "Receipts sent to be read together by a hosted model's batch mode, at about half the price. Results take minutes to a day." do
+  = ui_link_button "Receipts", receipts_path, variant: :ghost
+
+= render "ocr_batches/mode", capability: @capability
+
+- if @batches.empty?
+  .mt-6
+    = render "ui/callout" do
+      p.text-sm
+        | No batches yet. "Read in a batch" on the
+        =< link_to "receipts list", receipts_path
+        |  sends the unread receipts of a filter.
+- else
+  .data-grid-wrapper.mt-6
+    table.data-grid
+      thead
+        tr
+          th Batch
+          th State
+          th.data-grid-num Receipts
+          th Provider
+          th.data-grid-num Estimated
+          th.data-grid-num Cost
+          th Sent
+          th Last checked
+          th Finished
+      tbody
+        - @batches.each do |batch|
+          tr id=dom_id(batch)
+            td.whitespace-nowrap = link_to "Batch ##{batch.id}", ocr_batch_path(batch), class: "data-grid-link font-medium"
+            td
+              = ocr_batch_state_badge(batch)
+              - if batch.error_message.present?
+                .mt-1.text-xs.text-ink-muted = batch.error_message
+              - elsif batch.check_error_message.present?
+                .mt-1.text-xs.text-ink-muted = "Last check: #{batch.check_error_message}"
+            td.data-grid-num
+              = link_to batch.receipts_count, receipts_path(ocr_batch: batch.id), class: "data-grid-link", title: "These receipts in the list"
+            td = batch.provider
+            td.data-grid-num = ocr_batch_estimate(batch.estimated_cost_usd)
+            td.data-grid-num = ocr_batch_usd(batch.cost_usd)
+            td.whitespace-nowrap = receipt_time(batch.submitted_at)
+            td.whitespace-nowrap = receipt_time(batch.last_checked_at)
+            td.whitespace-nowrap = receipt_time(batch.finished_at)
+  .mt-4
+    = render "ui/pagination", pagination: @pagination, url: ->(page) { ocr_batches_path(page:) }
