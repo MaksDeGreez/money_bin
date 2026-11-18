@@ -313,11 +313,12 @@ class ReceiptTest < ActiveSupport::TestCase
   test "index filters by kind and by tax QR" do
     assert_equal [ receipts(:market_receipt) ], Receipt.fiscal.to_a
     assert_equal [ receipts(:corner_receipt) ], Receipt.card_slip.to_a
-    assert_equal [ receipts(:new_receipt) ], Receipt.kind_unknown.to_a
-    assert_equal [ receipts(:market_receipt) ], Receipt.with_tax_qr.to_a
+    assert_equal [ receipts(:new_receipt), receipts(:failed_receipt) ].sort_by(&:id), Receipt.kind_unknown.order(:id).to_a
+    assert_equal [ receipts(:market_receipt), receipts(:failed_receipt) ].sort_by(&:id), Receipt.with_tax_qr.order(:id).to_a
 
     receipts(:new_receipt).update_column(:qr_receipt_number, "1")
-    assert_equal [ receipts(:market_receipt), receipts(:new_receipt) ].sort_by(&:id), Receipt.with_tax_qr.order(:id).to_a
+    assert_equal [ receipts(:market_receipt), receipts(:new_receipt), receipts(:failed_receipt) ].sort_by(&:id),
+      Receipt.with_tax_qr.order(:id).to_a
     assert_equal [ receipts(:corner_receipt) ], Receipt.without_tax_qr.to_a
     assert_equal Receipt.count, Receipt.with_tax_qr.count + Receipt.without_tax_qr.count
   end
@@ -440,6 +441,39 @@ class ReceiptTest < ActiveSupport::TestCase
   test "the database allows one receipt per transaction" do
     assert_violates("index_receipts_on_transaction_id", ActiveRecord::RecordNotUnique) do
       receipts(:corner_receipt).update_column(:transaction_id, transactions(:market_split).id)
+    end
+  end
+
+  test "newest first: uploaded in the app by upload time, then by ingest number as a number" do
+    Receipt.where(ingest_id: nil).update_all(created_at: 1.year.ago)
+    receipts(:new_receipt).update_columns(created_at: 1.day.ago)
+    receipts(:corner_receipt).update_columns(ingest_id: "rcpt_1000000")
+
+    order = Receipt.newest_first.map(&:id)
+
+    assert_equal [ :new_receipt, :corner_receipt, :failed_receipt, :market_receipt ].map { |name| receipts(name).id }, order
+  end
+
+  test "ocr_error is the stored failure reason, or nil" do
+    assert_equal "unsupported_media_type", receipts(:failed_receipt).ocr_error["code"]
+    assert_nil receipts(:market_receipt).ocr_error
+    assert_nil receipts(:new_receipt).ocr_error
+    assert_nil Receipt.new(ocr_raw: { "error" => "text" }).ocr_error
+  end
+
+  test "ocr_readable is uploaded and failed; ocr_pending? is a waiting request" do
+    assert_equal [ receipts(:new_receipt), receipts(:failed_receipt) ].map(&:id).sort, Receipt.ocr_readable.pluck(:id).sort
+    assert_not receipts(:new_receipt).ocr_pending?
+    receipts(:new_receipt).ocr_requested_at = Time.current
+    assert receipts(:new_receipt).ocr_pending?
+  end
+
+  test "the photos are in upload order and have JPEG variants for the pages" do
+    receipt = Receipt.create!(images: [ image_upload(png_bytes(red: 1)), image_upload(png_bytes(red: 2)) ])
+
+    assert_equal receipt.images.attachments.map(&:id).sort, receipt.ordered_images.map(&:id)
+    %i[thumb page full].each do |name|
+      assert_equal "jpeg", receipt.ordered_images.first.variant(name).variation.format.to_s, name
     end
   end
 end

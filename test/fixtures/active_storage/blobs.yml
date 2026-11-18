@@ -27,3 +27,12 @@ new_photo:
   service_name: test
   byte_size: 2048
   checksum: 1B2M2Y8AsgTpgAmY7PhCfg==
+
+failed_photo:
+  key: fixture-failed-photo
+  filename: failed.jpg
+  content_type: image/jpeg
+  metadata: '{"identified":true}'
+  service_name: test
+  byte_size: 2048
+  checksum: 1B2M2Y8AsgTpgAmY7PhCfg==

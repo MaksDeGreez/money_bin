@@ -12,3 +12,8 @@ new_photo:
   name: images
   record: new_receipt (Receipt)
   blob: new_photo
+
+failed_photo:
+  name: images
+  record: failed_receipt (Receipt)
+  blob: failed_photo
