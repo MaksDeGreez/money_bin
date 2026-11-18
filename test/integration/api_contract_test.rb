@@ -18,7 +18,8 @@ class ApiContractTest < ActionDispatch::IntegrationTest
   EXAMPLES = {
     "GET /api/v1/status 200" => -> { [ "/api/v1/status", {}, :agent_read ] },
     "GET /api/v1/status 401" => -> { [ "/api/v1/status", {}, nil ] },
-    "GET /api/v1/transactions 200" => -> { [ "/api/v1/transactions", { limit: 2 }, :agent_read ] },
+    "GET /api/v1/status 422" => -> { [ "/api/v1/status", { x: "1" }, :agent_read ] },
+    "GET /api/v1/transactions 200" => -> { [ "/api/v1/transactions", { limit: 5 }, :agent_read ] },
     "GET /api/v1/transactions 401" => -> { [ "/api/v1/transactions", {}, nil ] },
     "GET /api/v1/transactions 422" => -> { [ "/api/v1/transactions", { status: "nope" }, :agent_read ] },
     "GET /api/v1/transactions/{id} 200" => -> { [ "/api/v1/transactions/#{transactions(:coffee).id}", {}, :agent_read ] },
@@ -76,6 +77,8 @@ class ApiContractTest < ActionDispatch::IntegrationTest
       assert_equal false, schema["additionalProperties"], "#{path} must set additionalProperties: false"
       assert_equal schema.fetch("properties", {}).keys.sort, Array(schema["required"]).sort,
         "#{path} must list every property in required (a value that may be empty is nullable, not optional)"
+      # OpenapiTestHelper#refute_discriminator_key relies on this.
+      assert_not schema.fetch("properties", {}).key?("discriminator"), "#{path} must not have a property named discriminator"
     end
   end
 
@@ -114,15 +117,53 @@ class ApiContractTest < ActionDispatch::IntegrationTest
 
     broken = [
       body.merge("extra" => 1),
+      body.merge("discriminator" => 1),
       body.except("status"),
       body.merge("amount" => -85.0),
       body.merge("lines" => body["lines"].map { |line| line.merge("category" => line["category"].merge("parent" => nil)) })
     ]
     broken.each do |bad|
       with_singleton_method(self, :response_data, -> { [ 200, response.headers, JSON.generate(bad) ] }) do
-        assert_raises(Committee::InvalidResponse) { assert_api_conform(200) }
+        assert_raises(Committee::InvalidResponse, Minitest::Assertion) { assert_api_conform(200) }
       end
     end
+  end
+
+  test "a query parameter the document does not declare fails the request check" do
+    request_example("GET /api/v1/transactions 200")
+
+    with_singleton_method(request, :query_parameters, -> { { "limit" => "5", "undeclared" => "1" } }) do
+      env = request.env.merge("action_dispatch.request.query_parameters" => { "limit" => "5", "undeclared" => "1" })
+      with_singleton_method(self, :request_object, -> { ActionDispatch::Request.new(env) }) do
+        assert_raises(Committee::InvalidRequest) { assert_request_schema_confirm }
+      end
+    end
+  end
+
+  test "every API route is JSON only: a format suffix is not routed" do
+    api_get "/api/v1/transactions.xml"
+    assert_response :not_found
+
+    api_get "/api/v1/transactions.json"
+    assert_response :not_found
+  end
+
+  test "a request body is refused, so a filter sent there is never ignored" do
+    EXAMPLES.keys.grep(/ 200\z/).each do |key|
+      path, _params, _token = instance_exec(&EXAMPLES.fetch(key))
+      get path, headers: bearer(plain_token(:agent_read)).merge("Content-Type" => "application/json"),
+        env: { "RAW_POST_DATA" => { status: "draft" }.to_json }
+
+      assert_invalid_parameter("status")
+    end
+  end
+
+  test "a repeated parameter is refused, not narrowed to its last value" do
+    get "/api/v1/transactions?status=invalid&status=confirmed", headers: bearer(plain_token(:agent_read))
+    assert_invalid_parameter("status")
+
+    get "/api/v1/receipts?limit=1;limit=2", headers: bearer(plain_token(:agent_read))
+    assert_invalid_parameter("limit")
   end
 
   test "a signed-in browser session authenticates no endpoint" do

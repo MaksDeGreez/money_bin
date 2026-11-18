@@ -22,7 +22,9 @@ info:
     `{"error": {"code": "...", "message": "..."}}`.
 
     Query parameters: an unknown parameter, a malformed value, or an id that names nothing is a 422
-    `invalid_parameter` whose message names the parameter. Nothing is ignored silently.
+    `invalid_parameter` whose message names the parameter. Nothing is ignored silently: a request body is
+    refused the same way (every endpoint reads only the query string), and a format suffix such as `.xml` is
+    not routed.
 
     Lists are read a page at a time: pass `next_cursor` from one page as `cursor` to get the next, until it is
     null. A cursor is opaque; keep the same filters while following it.
@@ -46,6 +48,8 @@ paths:
                 $ref: "#/components/schemas/Status"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
 
   /api/v1/transactions:
     get:
@@ -727,12 +731,20 @@ components:
     ReceiptSummary:
       type: object
       additionalProperties: false
-      required: [id, status, merchant, issued_at, issued_on, total, currency, transaction_id, items_count]
+      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, items_count]
       properties:
         id:
           type: integer
         status:
           $ref: "#/components/schemas/ReceiptStatus"
+        kind:
+          type: string
+          nullable: true
+          enum: [fiscal, card_slip, null]
+          description: A cash register receipt (`fiscal`) or a card terminal slip (`card_slip`); null when not known yet.
+        incomplete:
+          type: boolean
+          description: A torn or cut-off receipt whose total or date cannot be read.
         merchant:
           type: string
           nullable: true
@@ -787,13 +799,21 @@ components:
     Receipt:
       type: object
       additionalProperties: false
-      required: [id, status, merchant, issued_at, issued_on, total, currency, transaction_id, items_count, items_total,
+      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, items_count, items_total,
         items]
       properties:
         id:
           type: integer
         status:
           $ref: "#/components/schemas/ReceiptStatus"
+        kind:
+          type: string
+          nullable: true
+          enum: [fiscal, card_slip, null]
+          description: A cash register receipt (`fiscal`) or a card terminal slip (`card_slip`); null when not known yet.
+        incomplete:
+          type: boolean
+          description: A torn or cut-off receipt whose total or date cannot be read.
         merchant:
           type: string
           nullable: true

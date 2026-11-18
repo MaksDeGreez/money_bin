@@ -39,9 +39,12 @@ module KeysetCursor
     raise Invalid
   end
 
-  # A row id read back from a cursor: a positive Integer, nothing else.
+  # The largest bigint; a larger id would make PostgreSQL raise instead of finding nothing.
+  MAX_ID = 2**63 - 1
+
+  # A row id read back from a cursor: a positive Integer that fits a bigint, nothing else.
   def self.id(value)
-    raise Invalid unless value.is_a?(Integer) && value.positive?
+    raise Invalid unless value.is_a?(Integer) && value.between?(1, MAX_ID)
 
     value
   end

@@ -15,7 +15,8 @@ Rails.application.routes.draw do
   end
 
   # The REST API for AI agents and scripts: personal API tokens only (Api::BaseController).
-  namespace :api, defaults: { format: :json } do
+  # JSON only: `format: false` drops the `.:format` suffix, so `/api/v1/transactions.xml` is not routed.
+  namespace :api, defaults: { format: :json }, format: false do
     namespace :v1 do
       resource :status, only: :show, controller: :status
       resources :transactions, only: %i[ index show ]

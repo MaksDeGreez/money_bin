@@ -21,6 +21,9 @@ module Api
   class BaseController < ActionController::API
     include QueryParameters
 
+    # The API reads no request bodies yet (Api::QueryParameters refuses one), so nothing is wrapped.
+    wrap_parameters false
+
     REALM = "Money Bin".freeze
 
     before_action :authenticate_api_token

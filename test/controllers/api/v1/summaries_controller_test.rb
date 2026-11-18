@@ -53,6 +53,14 @@ module Api
       end
 
       test "transfer legs leak into no figure" do
+        # Legs have no lines (a model rule); lines written past the model leave the summary's transfer
+        # condition as the only thing that keeps them out.
+        now = Time.current
+        %i[withdrawal_out withdrawal_in savings_out savings_in].each do |leg|
+          TransactionLine.insert!({ transaction_id: transactions(leg).id, category_id: categories(:groceries).id,
+            amount: transactions(leg).amount, created_at: now, updated_at: now })
+        end
+
         api_get api_v1_summary_path, params: { from: "2026-10-06", to: "2026-10-07" }
 
         assert_api_conform(200)

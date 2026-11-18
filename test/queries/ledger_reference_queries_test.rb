@@ -31,6 +31,8 @@ class LedgerReferenceQueriesTest < ActiveSupport::TestCase
 
     assert_match(/\A[A-Za-z0-9_-]+\z/, cursor)
     assert_equal [ "2026-10-03", 42 ], KeysetCursor.decode(cursor, size: 2)
+    assert_equal KeysetCursor::MAX_ID, KeysetCursor.id(2**63 - 1)
+    [ 0, -1, 2**63, "1", 1.0 ].each { |id| assert_raises(KeysetCursor::Invalid, id.inspect) { KeysetCursor.id(id) } }
     [ nil, 42, "", "a" * (KeysetCursor::MAX_LENGTH + 1), "has space", "@@@", KeysetCursor.encode(1, 2, 3),
       Base64.urlsafe_encode64("not json", padding: false), Base64.urlsafe_encode64('{"a":1}', padding: false) ].each do |value|
       assert_raises(KeysetCursor::Invalid, value.inspect) { KeysetCursor.decode(value, size: 2) }

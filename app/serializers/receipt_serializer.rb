@@ -1,5 +1,6 @@
 # The JSON of receipts (docs/openapi.yaml, ReceiptSummary and Receipt). Photos are never in it: the API
-# does not serve them.
+# does not serve them. Nor does it carry the card digits, the QR code and its ground truth, or the ingest id:
+# an agent reading the ledger needs none of them, and the card digits are the most sensitive of all.
 #
 # A new receipt column is one line in `common` (and one property in both schemas of docs/openapi.yaml).
 module ReceiptSerializer
@@ -24,6 +25,8 @@ module ReceiptSerializer
     {
       id: receipt.id,
       status: receipt.status,
+      kind: receipt.kind,
+      incomplete: receipt.incomplete,
       merchant: receipt.merchant_name,
       issued_at: JsonFormat.time(receipt.issued_at),
       issued_on: JsonFormat.date(receipt.issued_at&.in_time_zone&.to_date),

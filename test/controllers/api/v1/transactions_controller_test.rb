@@ -137,7 +137,8 @@ module Api
           { limit: "201" } => "limit",
           { limit: "ten" } => "limit",
           { cursor: "garbage!" } => "cursor",
-          { cursor: KeysetCursor.encode("2026-10-01") } => "cursor"
+          { cursor: KeysetCursor.encode("2026-10-01") } => "cursor",
+          { cursor: KeysetCursor.encode("2026-10-01", 2**63) } => "cursor"
         }
         invalid.each do |params, parameter|
           api_get api_v1_transactions_path, params: params

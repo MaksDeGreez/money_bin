@@ -13,7 +13,8 @@ module Api
         assert_api_conform(200)
         assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:market_receipt) ].map(&:id), json["receipts"].pluck("id")
         assert_equal({
-          "id" => receipts(:market_receipt).id, "status" => "reviewed", "merchant" => "Example Market",
+          "id" => receipts(:market_receipt).id, "status" => "reviewed", "kind" => "fiscal", "incomplete" => false,
+          "merchant" => "Example Market",
           "issued_at" => "2026-10-03T18:40:00+03:00", "issued_on" => "2026-10-03", "total" => "1250.40", "currency" => "UAH",
           "transaction_id" => transactions(:market_split).id, "items_count" => 3
         }, json["receipts"].last)
@@ -76,6 +77,9 @@ module Api
         assert_invalid_parameter("status")
 
         api_get api_v1_receipts_path, params: { cursor: KeysetCursor.encode("2026-10-03", 1) }
+        assert_invalid_parameter("cursor")
+
+        api_get api_v1_receipts_path, params: { cursor: KeysetCursor.encode("2026-10-03T00:00:00Z", 2**63) }
         assert_invalid_parameter("cursor")
 
         api_get api_v1_receipt_path(receipts(:market_receipt)), params: { with: "images" }

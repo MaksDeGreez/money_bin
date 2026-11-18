@@ -67,11 +67,28 @@ class SpendingSummaryQueryTest < ActiveSupport::TestCase
     assert_equal BigDecimal("-1000.40"), category_amount(uah.expenses, :groceries)
   end
 
+  # Transfer legs have no lines (a model rule), which alone would keep them out of the line sums. The lines
+  # written here past the model make the summary's own transfer condition the only thing that keeps them out.
+  def give_transfer_legs_lines
+    now = Time.current
+    %i[withdrawal_out withdrawal_in savings_out savings_in].each do |leg|
+      TransactionLine.insert!({ transaction_id: transactions(leg).id, category_id: categories(:groceries).id,
+        amount: transactions(leg).amount, created_at: now, updated_at: now })
+    end
+  end
+
   test "a transfer leg is left out, also when it is the only row of its currency" do
+    give_transfer_legs_lines
+
     summary = summarise
+    uah = currency(summary, "UAH")
 
     # savings_in (+1000 USD) is a transfer leg: USD has nothing else in October.
     assert_nil currency(summary, "USD")
+    assert_equal BigDecimal("-2225.40"), uah.expenses.total
+    assert_equal BigDecimal("50000.00"), uah.incomes.total
+    assert_equal 4, uah.expenses.transactions
+    assert_equal BigDecimal("-1000.40"), category_amount(uah.expenses, :groceries)
   end
 
   test "two currencies are never added together" do

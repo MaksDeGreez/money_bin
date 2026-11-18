@@ -21,14 +21,39 @@ module Api
     TEXT_MAX_LENGTH = 200
 
     private
-      # Refuses every query parameter not listed in `known`.
+      # Refuses every query parameter not listed in `known`, and a request body: these endpoints read only
+      # the query string, and a filter sent in a JSON or form body would otherwise be ignored.
       def only_known_parameters(*known)
+        if request.raw_post.present?
+          raise InvalidParameter.new(body_parameter_name, "was sent in the request body; send it in the query string")
+        end
+
         known = known.map(&:to_s)
         unknown = request.query_parameters.keys - known
-        return if unknown.empty?
+        if unknown.any?
+          expected = known.empty? ? "this endpoint takes no parameters" : "known parameters: #{known.join(', ')}"
+          raise InvalidParameter.new(unknown.first, "is not known here (#{expected})")
+        end
 
-        expected = known.empty? ? "this endpoint takes no parameters" : "known parameters: #{known.join(', ')}"
-        raise InvalidParameter.new(unknown.first, "is not known here (#{expected})")
+        repeated = query_parameter_names.tally.find { |_name, count| count > 1 }&.first
+        raise InvalidParameter.new(repeated, "must be given once") if repeated
+      end
+
+      # The first parameter named in a request body, for the error message: Rails does not parse the body of
+      # every GET, so a JSON body is read here. "body" when no name can be read.
+      def body_parameter_name
+        names = request.request_parameters.keys
+        names = Array((JSON.parse(request.raw_post) rescue nil).try(:keys)) if names.empty?
+        names.first || "body"
+      end
+
+      # The parameter names as they appear in the query string, repeats included. Rails keeps only the last
+      # of `status=draft&status=confirmed`, so a repeat can only be seen here.
+      def query_parameter_names
+        request.query_string.split(/[&;]/).filter_map do |pair|
+          name = pair.split("=", 2).first
+          Rack::Utils.unescape(name).sub(/\[.*/m, "") if name.present?
+        end
       end
 
       # The parameter as a non-empty String, or nil when it is absent. An array or hash value
