@@ -25,7 +25,8 @@
 # optimistic locking: the form carries it, so a save from a page rendered before OCR read the receipt again
 # or another tab saved it is refused. Every writer of the reviewable data writes the receipt row, so the
 # version moves: Receipts::ApplyOcr, Receipts::Review, Receipts::EnterByHand, Receipts::Accept, and the
-# unlink when its transaction is destroyed.
+# unlink when its transaction is destroyed. Rails' `update_all` moves it too (Receipts::RequestOcr's claim),
+# and attaching photos touches the row; `update_columns` (the OCR job's status changes) does not.
 #
 # QR ground truth: `qr_issued_at`, `qr_total`, `qr_fiscal_number` and `qr_receipt_number` are what the
 # tax-service QR code on a fiscal receipt says. They are kept apart from the OCR columns of the same names

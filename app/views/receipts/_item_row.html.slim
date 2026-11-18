@@ -9,13 +9,13 @@
     = row.hidden_field :_destroy, value: (item.marked_for_destruction? ? "1" : "0"), data: { line_items_destroy: true }
     .line-cell.line-cell-name
       = row.text_field :name, "aria-label": "Name, #{label}", placeholder: "Name", autocomplete: "off", class: "form-control-compact"
-    .line-cell.line-cell-num
+    .line-cell.line-cell-num.line-cell-qty
       = row.money_field :quantity, places: ReceiptItem::QUANTITY_DECIMAL_PLACES, "aria-label": "Quantity, #{label}", placeholder: "Qty", class: "form-control-compact"
-    .line-cell.line-cell-num
+    .line-cell.line-cell-num.line-cell-price
       = row.money_field :unit_price, "aria-label": "Unit price, #{label}", placeholder: "Price", class: "form-control-compact"
-    .line-cell.line-cell-num
+    .line-cell.line-cell-num.line-cell-discount
       = row.money_field :discount, "aria-label": "Discount, #{label}", placeholder: "Discount", class: "form-control-compact"
-    .line-cell.line-cell-num
+    .line-cell.line-cell-num.line-cell-amount
       = row.money_field :amount, "aria-label": "Amount, #{label}", placeholder: "Amount", class: "form-control-compact", data: { money_totals_amount: true }
     .line-cell.line-cell-category
       = row.category_select :category_id, category_choices, "aria-label": "Category, #{label}", suggestion: item.suggested_category, class: "combobox-compact"

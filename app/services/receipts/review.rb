@@ -76,8 +76,8 @@ module Receipts
     def call
       saved = Receipt.transaction do
         @receipt.lock!
-        next refuse_detached(CONFLICT, conflict: true) if stale?
         next refuse_detached(not_editable_message) if not_editable_message
+        next refuse_detached(CONFLICT, conflict: true) if stale?
 
         assign
         next false unless valid?

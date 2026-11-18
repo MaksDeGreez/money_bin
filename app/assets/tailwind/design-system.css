@@ -357,11 +357,25 @@
   .line-row-simple > .line-cell-remove { grid-area: 1 / 3 / 2 / 4; }
   .line-row-simple > .line-cell-category { grid-area: 2 / 1 / 3 / 4; }
 
+  /* Medium: two lines in reading order. Name, quantity, unit price; then discount, amount, category, remove. */
+  @container (min-width: 28rem) {
+    .line-row-receipt { grid-template-columns: 5.5rem 6.5rem minmax(0, 1fr) 4.5rem 6rem 2.25rem; }
+    .line-row-receipt > .line-cell-name { grid-area: 1 / 1 / 2 / 4; }
+    .line-row-receipt > .line-cell-qty { grid-area: 1 / 4 / 2 / 5; }
+    .line-row-receipt > .line-cell-price { grid-area: 1 / 5 / 2 / 7; }
+    .line-row-receipt > .line-cell-discount { grid-area: 2 / 1 / 3 / 2; }
+    .line-row-receipt > .line-cell-amount { grid-area: 2 / 2 / 3 / 3; }
+    .line-row-receipt > .line-cell-category { grid-area: 2 / 3 / 3 / 6; }
+    .line-row-receipt > .line-cell-remove { grid-area: 2 / 6 / 3 / 7; }
+  }
+
   @container (min-width: 46rem) {
     .line-editor-head.line-row-receipt { display: grid; }
     .line-row-receipt { grid-template-columns: minmax(7rem, 1fr) 4.5rem 6rem 5.5rem 6.5rem minmax(9rem, 13rem) 2.25rem; }
-    .line-row-receipt > .line-cell-name, .line-row-receipt > .line-cell-remove,
-    .line-row-receipt > .line-cell-num, .line-row-receipt > .line-cell-category { grid-area: auto; }
+    .line-row-receipt > .line-cell-name, .line-row-receipt > .line-cell-remove, .line-row-receipt > .line-cell-num,
+    .line-row-receipt > .line-cell-num.line-cell-qty, .line-row-receipt > .line-cell-num.line-cell-price,
+    .line-row-receipt > .line-cell-num.line-cell-discount, .line-row-receipt > .line-cell-num.line-cell-amount,
+    .line-row-receipt > .line-cell-category { grid-area: auto; }
   }
 
   @container (min-width: 34rem) {
