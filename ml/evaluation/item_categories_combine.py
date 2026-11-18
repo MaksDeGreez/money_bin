@@ -13,14 +13,18 @@ evaluation scores a combination exactly like a single method.
 
 - `cascade` (`--thresholds T1,...`, one per run but the last): the first run whose best score
   reaches its threshold decides the item, for example the label memory when it is confident, else
-  the model. The scores are that run's.
+  the model. The item gets that run's candidates, in that run's order.
 - `average` (`--weights W1,...`, equal by default): a weighted average of the score matrices.
 - `learned`: a multinomial logistic regression on the runs' score matrices side by side, plus one
-  "no candidates" column per run, fitted with cross-validation grouped by receipt (`--folds`):
-  all items of a receipt are in the same fold, so no item is ever scored by a model fitted on items
-  of its own receipt (items of one receipt share a shop and often a category, and would flatter
-  it). The usable labelled items get out-of-fold probabilities; every other item gets those of a
-  model fitted on all usable labelled items.
+  "no candidates" column per run, cross-validated by receipt and forward in time (`--folds`): the
+  receipts with usable labels, in time order (`issued_at`, as the runner orders them), are cut into
+  `folds + 1` consecutive blocks, and each block after the first is scored by a model fitted on
+  the blocks before it only. So no item is scored by a model fitted on items of its own receipt
+  (items of one receipt share a shop and often a category, and would flatter it), nor on a later
+  receipt: with the label memory or labelled examples, a later receipt's scores already contain
+  earlier receipts' labels, and random folds would let a held-out label in through them. The first
+  block, which has nothing earlier to learn from, gets the plain average of the runs instead; the
+  rest get a model fitted on every usable label (they are not scored).
 
 The pre-fill rule: an item whose labels were chosen with one of the combined categorisers'
 suggestions on screen (the ground truth's `categories_prefilled_by` names a run's model or, for
@@ -38,6 +42,7 @@ run's accuracy where they disagree, and each pair's agreement. Item names never 
 import argparse
 import hashlib
 import json
+import math
 import sys
 import warnings
 from collections.abc import Sequence
@@ -52,11 +57,8 @@ import numpy as np
 from app.decimals import exact_sum
 from evaluation.common import UsageError, inside_git_repository, read_jsonl, write_private_json
 from evaluation.item_categories_calibrate import UNKNOWN_CATEGORISER
-from evaluation.item_categories_run import (
-    MEMORY_CATEGORISER,
-    TASK,
-    read_ground_truth,
-)
+from evaluation.item_categories_run import TASK, read_ground_truth, run_categorisers
+from evaluation.item_categories_run import _time_order as receipt_time_order
 from evaluation.item_scores import Scored
 from evaluation.item_scores import summary as score_summary
 from evaluation.ocr_run import _open_private, git_commit, make_run_dir
@@ -86,12 +88,7 @@ class InputRun:
     @property
     def categorisers(self) -> set[str]:
         """The names the app would record for this run's suggestions (`categories_prefilled_by`)."""
-        names = {str(self.summary.get("model_name") or "")} - {""}
-        names.update(self.summary.get("categorisers") or [])
-        memory = self.summary.get("memory") or {}
-        if memory.get("enabled"):
-            names.add(memory.get("categoriser_name") or MEMORY_CATEGORISER)
-        return names
+        return set(run_categorisers(self.summary))
 
 
 def _number(value: Any) -> float | None:
@@ -215,17 +212,15 @@ def learned(
     matrices: Sequence[np.ndarray],
     labels: Sequence[str],
     truth: Sequence[str | None],
-    groups: Sequence[str],
+    order: Sequence[int],
     usable: Sequence[bool],
     *,
     folds: int,
     c: float,
     names: Sequence[str],
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Out-of-fold probabilities for the usable labelled items (folds grouped by receipt), and a
-    full fit's for the rest."""
-    from sklearn.model_selection import GroupKFold
-
+    """Forward-in-time, receipt-blocked probabilities for the usable labelled items, and a full
+    fit's for the rest. `order[i]` is the time rank of item i's receipt (0: the earliest)."""
     code = {label: i for i, label in enumerate(labels)}
     fit_rows = np.array([i for i, ok in enumerate(usable) if ok and truth[i] in code], dtype=int)
     if len(fit_rows) < MIN_LEARNED_ITEMS:
@@ -233,18 +228,21 @@ def learned(
             f"a learned combination needs at least {MIN_LEARNED_ITEMS} usable labelled items "
             f"(there are {len(fit_rows)})"
         )
-    receipts = sorted({groups[i] for i in fit_rows})
-    if len(receipts) < 2:
+    ranks = sorted({order[i] for i in fit_rows})
+    if len(ranks) < 2:
         raise UsageError("a learned combination needs labelled items of two receipts or more")
     x = features(matrices)
     y = np.array([code.get(label, -1) if label is not None else -1 for label in truth])
-    n_splits = min(folds, len(receipts))
+    blocks = [list(block) for block in np.array_split(ranks, min(folds, len(ranks) - 1) + 1)]
     result = np.zeros((len(truth), len(labels)))
-    fit_groups = [groups[i] for i in fit_rows]
-    for train, test in GroupKFold(n_splits=n_splits).split(fit_rows, groups=fit_groups):
-        train_rows, test_rows = fit_rows[train], fit_rows[test]
-        # The rule this exists for: no receipt on both sides of a fold.
-        assert not {groups[i] for i in train_rows} & {groups[i] for i in test_rows}
+    rank_of = np.array(order)
+    warm_up = fit_rows[np.isin(rank_of[fit_rows], blocks[0])]
+    result[warm_up] = average(matrices, None)[warm_up]
+    for block in blocks[1:]:
+        train_rows = fit_rows[rank_of[fit_rows] < block[0]]
+        test_rows = fit_rows[np.isin(rank_of[fit_rows], block)]
+        # The rule this exists for: every receipt fitted on is earlier than every one scored.
+        assert rank_of[train_rows].max() < rank_of[test_rows].min()
         result[test_rows], _ = _fit_predict(
             x[train_rows], y[train_rows], x[test_rows], len(labels), c
         )
@@ -252,11 +250,12 @@ def learned(
     full, model = _fit_predict(x[fit_rows], y[fit_rows], x, len(labels), c)
     result[others] = full[others]
     info: dict[str, Any] = {
-        "folds": n_splits,
-        "grouped_by": "receipt",
+        "folds": len(blocks) - 1,
+        "split": "receipt blocks in time order; each scored by a fit on the earlier blocks",
         "c": c,
         "fitted_items": len(fit_rows),
-        "fitted_receipts": len(receipts),
+        "fitted_receipts": len(ranks),
+        "warm_up_items": len(warm_up),
         "full_fit_items": len(others),
     }
     if model is not None:
@@ -346,9 +345,12 @@ def _floats(text: str | None, option: str) -> list[float] | None:
     if text is None:
         return None
     try:
-        return [float(part) for part in text.split(",")]
+        values = [float(part) for part in text.split(",")]
     except ValueError:
         raise UsageError(f"{option} takes numbers separated by commas") from None
+    if not all(math.isfinite(value) for value in values):
+        raise UsageError(f"{option} takes finite numbers")
+    return values
 
 
 def _method_parameters(args: argparse.Namespace) -> dict[str, Any]:
@@ -400,8 +402,15 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         | {t for t in truth if t is not None}
     )
     matrices = [score_matrix([one.candidates[key] for key in keys], labels) for one in inputs]
-    groups = [receipt_id for receipt_id, _ in keys]
+    time_rank = {
+        receipt.ingest_id: rank
+        for rank, receipt in enumerate(sorted(receipts, key=receipt_time_order))
+    }
+    unknown = sorted({receipt_id for receipt_id, _ in keys} - set(time_rank))
+    time_rank.update({receipt_id: len(time_rank) + i for i, receipt_id in enumerate(unknown)})
+    order = [time_rank[receipt_id] for receipt_id, _ in keys]
     info: dict[str, Any] = {}
+    deciders: list[int] | None = None
     if args.method == "cascade":
         combined, deciders = cascade(matrices, parameters["thresholds"])
         info["decided_by"] = {name: deciders.count(i) for i, name in enumerate(names)}
@@ -409,18 +418,24 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         combined = average(matrices, parameters["weights"])
     else:
         combined, info = learned(
-            matrices, labels, truth, groups, usable, folds=args.folds, c=args.c, names=names
+            matrices, labels, truth, order, usable, folds=args.folds, c=args.c, names=names
         )
 
+    # Each run's best category as the run itself ranked it (ties keep the run's order).
     tops = [
-        [(top_three(m[row], labels) or [(None, 0.0)])[0][0] for row in range(len(keys))]
-        for m in matrices
+        [one.candidates[key][0][0] if one.candidates[key] else None for key in keys]
+        for one in inputs
     ]
     lines = []
     scored_items = []
     combined_top: list[str | None] = []
     for row, key in enumerate(keys):
-        best = top_three(combined[row], labels)
+        if deciders is not None:
+            # The deciding run's own candidates, in its own order.
+            chosen = inputs[deciders[row]].candidates[key]
+            best = [(slug, score) for slug, score in chosen if score > 0][:3]
+        else:
+            best = top_three(combined[row], labels)
         combined_top.append(best[0][0] if best else None)
         seconds = [one.seconds[key] for one in inputs]
         costs = [one.costs[key] for one in inputs]

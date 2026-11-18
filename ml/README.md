@@ -700,9 +700,18 @@ trial: `docs/decisions/0016-decision-model-categoriser.md`.
   unasked answer, an option not offered, a missing or extra probability, a
   value outside 0..1 and probabilities that do not add up to 1 (within 0.02)
   are errors (502 `decisions_bad_answer` / `decisions_answer_missing`); never
-  dropped or guessed. A refusal fails the receipt (422 `decisions_refused`):
-  the service promises a candidate for every item. Each item is asked once:
-  answers vary slightly between calls, and a run keeps the first.
+  dropped or guessed. They are 5xx, so the app retries them: an answer varies
+  between calls, and a retry costs about $0.0001. A refusal fails the receipt
+  (422 `decisions_refused`; with `two-stage`, a refused second question for the
+  most likely group does too, while one for the second group only drops that
+  group): the service promises a candidate for every item. A question too long
+  for the normal input mode on its own is refused before sending (422
+  `decisions_request_too_large`). Each item is asked once: answers vary
+  slightly between calls, and a run keeps the first.
+- **Prompt versions**: the prompt version names the strategy, the context and
+  whether examples were shown, and `verify` has its own; a calibration
+  (matched on the prompt version) fitted on one mode never applies to another.
+  `/categorise` answers never carry examples.
 
 On the invented sanity set (98 items in 21 receipts, the first 43 as above;
 `typesafe/jev-1.14`, 37 categories, 2026-11-18; no shop name, as for every
@@ -780,13 +789,17 @@ list), seconds per call and per model item, and for a hosted backend the cost
 
 **Decision models.** `--backend decisions` (with `--model typesafe/jev-1.14`
 or `DECISIONS_MODEL`) adds `--strategy flat|two-stage`, `--no-receipt-context`,
-`--max-questions N`, `--examples K` (up to K similar items labelled in EARLIER
+`--max-questions N`, `--examples K` (up to K, at most 5, similar items labelled in EARLIER
 receipts, from the label memory's store: `LabelMemory.similar`, character
 trigram similarity of the name keys) and `--verify RUN_DIR` (instead of
 categorising, ask one yes/no question per candidate of that run's items; the
 yes-probability becomes the score, so a local model's answer gets a confidence
 from an independent model). `run.json` then has a `decisions` block (strategy,
-context, examples, the verified run, the zero-retention endpoints used). The
+context, examples, the verified run and how many of its items had no
+candidates, the zero-retention endpoints used), `categorisers` (every
+categoriser that shaped the answers, for the pre-fill rule) and the answers'
+`prompt_versions` (`prompt_version` is null when they differ, as in a run with
+examples, whose first receipt has none to show; such a run is not calibrated). The
 key comes from the environment: `uv run --env-file ../.env ...`.
 `item_sanity` takes the same options, plus `--verify` to check its own
 candidates, and reports the top-score distribution, the reliability table, the
@@ -802,13 +815,20 @@ combined run folder in the same format (`source: combined`):
   per-category scores;
 - `--method learned [--folds 5] [--c 1.0]`: a multinomial logistic regression
   on the runs' per-category scores side by side (plus a "no candidates" column
-  per run), cross-validated with folds grouped by receipt, so no item is scored
-  by a model fitted on items of its own receipt; labelled items get
-  out-of-fold probabilities, the others a fit on every usable label.
+  per run), cross-validated by receipt and forward in time: the receipts with
+  usable labels, in time order, are cut into `folds + 1` consecutive blocks,
+  and each block after the first is scored by a fit on the blocks before it
+  only. No item is scored by a model fitted on its own receipt, nor on a later
+  one: with the label memory or examples, a later receipt's scores already
+  contain earlier labels, so random folds would let a held-out label back in.
+  The first block gets the plain average (`warm_up_items`); unscored items a fit
+  on every usable label.
 
 Items whose labels were chosen with one of the combined categorisers on screen
-(`categories_prefilled_by` names a run's model, or the label memory for a run
-with `--memory`, or is `source:unknown`) are neither fitted on nor counted;
+(`categories_prefilled_by` names one of a run's `categorisers`: its model, the
+label memory when it answered first or supplied examples, and for a `--verify`
+run the categorisers of the run it checked; or is `source:unknown`) are neither
+fitted on nor counted (`item_categories_calibrate` applies the same list);
 `run.json` lists the combined `categorisers` so a scorer applies the same rule,
 and reports `agreement` (how often all runs agree on the best category and how
 precise that is, the combined accuracy where they disagree, each pair's
@@ -844,8 +864,8 @@ uv run python -m evaluation.item_categories_combine --ground-truth $GT --out $RU
   --run $RUNS/<run 1> --run $RUNS/<run 2, flat> --method cascade --thresholds 0.95
 ```
 
-Each run and combination is then scored by the evaluation harness with the same
-table: macro-F1, top-3, the share auto-accepted at 95% precision, calibration,
+Each run and combination is then scored by the evaluation harness (in progress
+in its own pull request) with the same table: macro-F1, top-3, the share auto-accepted at 95% precision, calibration,
 seconds and dollars per 1,000 items.
 
 `item_categories_calibrate` fits on the model items of a run that have a label

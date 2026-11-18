@@ -483,6 +483,13 @@ def read_catalogue(
     A moving alias (`~vendor/model-latest`) has no entry of its own in the
     zero-retention list, so it never has an endpoint here.
     """
+    if decisions and model.startswith("~"):
+        # A moving alias may start answering from another model at any time: a run must name
+        # the model it measured.
+        raise BackendConfigError(
+            "openrouter_moving_alias",
+            f"{setting} {model!r} is a moving alias; name a concrete model.",
+        )
     models = _get_json(transport, ALL_MODELS_URL if decisions else MODELS_URL, timeout)
     entry = next(
         (
@@ -851,8 +858,8 @@ class OpenRouterClient:
         )
         calls.append(call)
         embedded = _embedded_error(document, None)
-        if embedded is not None and call.provider is None:
-            # An error reported with HTTP 200 before any provider answered.
+        if embedded is not None and call.provider is None and "answers" not in document:
+            # An error reported with HTTP 200 before any provider answered (no answers at all).
             raise embedded
         self._verify_provider(call, catalogue)
         if embedded is not None:

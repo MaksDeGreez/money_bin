@@ -350,3 +350,100 @@ def test_through_the_api_the_merchant_never_leaves() -> None:
     assert all(
         MERCHANT not in json.dumps(post["body"], ensure_ascii=False) for post in transport.posts
     )
+
+
+def test_each_mode_has_its_own_prompt_version() -> None:
+    categoriser, _ = make()
+    plain = categoriser.categorise(CategoriseInput(OPTIONS, TEXTS)).prompt_version
+    examples = ((("Молоко 1л", "groceries/groceries"),), (), ())
+    with_examples = categoriser.categorise(
+        CategoriseInput(OPTIONS, TEXTS, None, examples)
+    ).prompt_version
+    verified = categoriser.verify(
+        CategoriseInput(OPTIONS, TEXTS), [["groceries/groceries"], [], []]
+    ).prompt_version
+    assert plain == categoriser.prompt_version == prompt_version("flat", True)
+    assert len({plain, with_examples, verified}) == 3
+
+
+def test_two_stage_options_fall_back_to_slugs_when_names_repeat_in_a_group() -> None:
+    twins = (
+        CategoryOption("a-group/one", "Same", "first", "A"),
+        CategoryOption("a-group/two", "Same", "second", "A"),
+        CategoryOption("b-group/three", "Three", "", "B"),
+    )
+    options = Options.of(twins)
+    assert options.within_criteria("A") == {"a-group/one": "first", "a-group/two": "second"}
+
+    def respond(body: Mapping[str, Any]) -> dict[str, Any]:
+        answers = {}
+        for key, question in body["questions"].items():
+            best = "A" if key == "line_1" else "a-group/two"
+            answers[key] = even_answer(question, best)
+        return answers
+
+    categoriser, _ = make(respond, decisions_strategy="two-stage")
+    result = categoriser.categorise(CategoriseInput(twins, TEXTS[:1]))
+    assert result.candidates[0][0].slug == "a-group/two"
+
+
+def two_stage_refusing(refused_key: str) -> Any:
+    def respond(body: Mapping[str, Any]) -> dict[str, Any]:
+        answers = {}
+        for key, question in body["questions"].items():
+            if key == refused_key:
+                answers[key] = {"type": "refusal"}
+            elif key == "line_1":
+                probabilities = {o: 0.0 for o in question["criteria"]}
+                probabilities.update(
+                    {"Household & shopping": 0.6, "Eating out": 0.3, "Groceries": 0.1}
+                )
+                answers[key] = {
+                    "type": "choice",
+                    "choice": "Household & shopping",
+                    "probabilities": probabilities,
+                }
+            else:
+                answers[key] = even_answer(question)
+        return answers
+
+    return respond
+
+
+def test_a_refused_second_question_of_the_most_likely_group_fails_the_receipt() -> None:
+    categoriser, _ = make(two_stage_refusing("line_1_g1"), decisions_strategy="two-stage")
+    with pytest.raises(BackendError) as raised:
+        categoriser.categorise(CategoriseInput(OPTIONS, TEXTS[:1]))
+    assert raised.value.code == "decisions_refused"
+
+    # A refusal for a less likely group only drops that group's categories.
+    other, _ = make(two_stage_refusing("line_1_g2"), decisions_strategy="two-stage")
+    result = other.categorise(CategoriseInput(OPTIONS, TEXTS[:1]))
+    assert all(not c.slug.startswith("eating-out/") for c in result.candidates[0])
+
+
+def test_a_question_too_large_alone_is_refused_before_sending() -> None:
+    huge = [
+        CategoryOption(f"group-{i}/category-{i}", f"Category {i}", "x" * 500, f"Group {i}")
+        for i in range(60)
+    ]
+    categoriser, transport = make()
+    with pytest.raises(BackendError) as raised:
+        categoriser.categorise(CategoriseInput(tuple(huge), TEXTS[:1]))
+    assert raised.value.code == "decisions_request_too_large"
+    assert raised.value.status_code == 422
+    assert transport.posts == []
+
+
+def test_flat_leaves_out_zero_scores_but_keeps_one_candidate() -> None:
+    def respond(body: Mapping[str, Any]) -> dict[str, Any]:
+        answers = {}
+        for key, question in body["questions"].items():
+            probabilities = {o: 0.0 for o in question["criteria"]}
+            probabilities["Groceries"] = 1.0
+            answers[key] = {"type": "choice", "choice": "Groceries", "probabilities": probabilities}
+        return answers
+
+    categoriser, _ = make(respond)
+    result = categoriser.categorise(CategoriseInput(OPTIONS, TEXTS[:1]))
+    assert [(c.slug, c.score) for c in result.candidates[0]] == [("groceries/groceries", 1.0)]

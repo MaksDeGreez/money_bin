@@ -84,6 +84,8 @@ SOURCE_PREFERENCE = {"manual": 0, "dps_xml": 1}
 # What a receipt records as its categoriser when the label memory filled its suggestions
 # (`categories_prefilled_by` in the ground truth; LabelMemory::CATEGORISER_NAME in the app).
 MEMORY_CATEGORISER = "label-memory"
+# The most labelled examples per item shown to a decision model.
+MAX_EXAMPLES = 5
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,10 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     decisions.add_argument("--no-receipt-context", action="store_true", help="send each item alone")
     decisions.add_argument("--max-questions", type=int, help="questions per request")
     decisions.add_argument(
-        "--examples", type=int, default=0, help="similar items of earlier receipts as examples"
+        "--examples",
+        type=int,
+        default=0,
+        help=f"similar items of earlier receipts as examples (at most {MAX_EXAMPLES})",
     )
     decisions.add_argument("--verify", type=Path, help="check the candidates of this run folder")
     args = parser.parse_args(argv)
@@ -147,8 +152,10 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             "--strategy, --no-receipt-context, --max-questions, --examples and "
             "--verify need --backend decisions"
         )
-    if args.examples < 0 or (args.max_questions is not None and args.max_questions < 1):
-        parser.error("--examples must be 0 or more and --max-questions 1 or more")
+    if not 0 <= args.examples <= MAX_EXAMPLES or (
+        args.max_questions is not None and args.max_questions < 1
+    ):
+        parser.error(f"--examples must be 0 to {MAX_EXAMPLES} and --max-questions 1 or more")
     return args
 
 
@@ -256,6 +263,27 @@ def read_proposals(run_dir: Path) -> dict[tuple[str, int], list[str]]:
     return proposals
 
 
+def read_categorisers(run_dir: Path) -> list[str]:
+    """The categorisers a run's suggestions came from (`categorisers` in its `run.json`, or its
+    model and, with the memory on, the label memory)."""
+    path = run_dir.expanduser() / "run.json"
+    try:
+        summary = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise UsageError(f"--verify: no readable run.json in {run_dir.name}") from None
+    return run_categorisers(summary)
+
+
+def run_categorisers(summary: dict[str, Any]) -> list[str]:
+    """Every categoriser a run's `run.json` names, for the pre-fill rule."""
+    names = {name for name in summary.get("categorisers") or [] if isinstance(name, str)}
+    if isinstance(summary.get("model_name"), str):
+        names.add(summary["model_name"])
+    if (summary.get("memory") or {}).get("enabled"):
+        names.add(MEMORY_CATEGORISER)
+    return sorted(names - {""})
+
+
 @dataclass(frozen=True)
 class DecisionOptions:
     """What `--backend decisions` adds: labelled examples and the run to verify."""
@@ -333,6 +361,7 @@ def run_receipt(
                 answer, calibration, categoriser.name, categoriser.model_name
             )
             call["score_kind"] = answer.score_kind
+            call["prompt_version"] = answer.prompt_version
             call["calibrated"] = calibrated
         seconds = time.perf_counter() - started
         call.update(seconds=seconds, error=error, diagnostics=diagnostics)
@@ -392,6 +421,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         if args.max_questions is not None:
             overrides["decisions_max_questions"] = args.max_questions
     proposals = read_proposals(args.verify) if args.verify else None
+    verified_categorisers = read_categorisers(args.verify) if args.verify else []
     try:
         settings = Settings(**overrides)
     except ValidationError as error:
@@ -407,6 +437,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     started_at = datetime.now(UTC)
     counts: Counter[str] = Counter()
     kinds: Counter[str] = Counter()
+    prompt_versions: Counter[str] = Counter()
     calibrated_calls: list[bool] = []
     receipt_seconds: list[float] = []
     calls: list[dict[str, Any]] = []
@@ -437,6 +468,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
                     counts["receipts_failed"] += call["error"] is not None
                     if call["error"] is None:
                         kinds[call["score_kind"]] += 1
+                        prompt_versions[str(call["prompt_version"])] += 1
                         calibrated_calls.append(call["calibrated"])
                 status = call.get("error") or "ok"
                 print(f"{number}/{len(receipts)} {status}", file=out)
@@ -458,13 +490,15 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         "backend": categoriser.name,
         "model_name": categoriser.model_name,
         "model_version": categoriser.model_version,
+        # A decision model's prompt version names its mode (verify, examples): the answers' own.
         "prompt_version": (
-            categoriser.prompt_version
+            (next(iter(prompt_versions)) if len(prompt_versions) == 1 else None)
             if isinstance(categoriser, DecisionsCategoriser)
             else PROMPT_VERSION
             if categoriser.name != "stub"
             else None
         ),
+        "prompt_versions": dict(sorted(prompt_versions.items())),
         "categories_version": categories_version(categories),
         "score_kinds": dict(sorted(kinds.items())),
         "calibrated": bool(calibrated_calls) and all(calibrated_calls),
@@ -479,6 +513,14 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             "prior_agreeing": PRIOR_AGREEING,
             "prior_disagreeing": PRIOR_DISAGREEING,
         },
+        # Every categoriser whose answers shaped this run's, for the pre-fill rule: the model,
+        # the label memory when it answered first or supplied examples, and the categorisers of
+        # a verified run (a verified run's candidates are its suggestions, re-scored).
+        "categorisers": sorted(
+            {categoriser.model_name}
+            | ({MEMORY_CATEGORISER} if memory is not None or store is not None else set())
+            | set(verified_categorisers)
+        ),
         "decisions": None
         if not isinstance(categoriser, DecisionsCategoriser)
         else {
@@ -488,6 +530,13 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             "max_questions": categoriser.max_questions,
             "examples_per_item": args.examples,
             "verified_run": args.verify.name if args.verify else None,
+            "items_without_proposal": None
+            if proposals is None
+            else sum(
+                (receipt.ingest_id, item.position) not in proposals
+                for receipt in receipts
+                for item in receipt.items
+            ),
             "zdr_endpoints": zdr_endpoints,
         },
         "git": git_commit(),

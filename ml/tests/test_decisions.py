@@ -115,7 +115,7 @@ def test_the_catalogue_names_the_dated_model() -> None:
     ("model", "code"),
     [
         (CHAT_MODEL, "openrouter_not_a_decision_model"),
-        (ALIAS, "openrouter_no_zdr_endpoint"),
+        (ALIAS, "openrouter_moving_alias"),
         ("example/unknown", "openrouter_model_unknown"),
     ],
 )
@@ -348,3 +348,14 @@ def test_a_request_needs_questions_with_short_keys() -> None:
 
 def test_the_zdr_fixture_lists_the_decider() -> None:
     assert any(entry["model_id"] == DECIDER for entry in ZDR["data"])
+
+
+def test_answers_with_an_error_and_no_provider_halt() -> None:
+    body = HttpResponse(
+        200, json.dumps({"error": {"code": 500, "message": "x"}, "answers": answer()})
+    )
+    decider = client(FakeDecisions(FakeDecisions().responder, body))
+    with pytest.raises(BackendError) as raised:
+        decider.decide({"line_1": "x"}, QUESTIONS, deadline(), [])
+    assert raised.value.code == "openrouter_provider_unverified"
+    reset_halt()

@@ -8,9 +8,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from app.categorise.decisions import DecisionsCategoriser
+from app.categorise.decisions import DecisionsCategoriser, prompt_version
+from evaluation import item_categories_calibrate, item_categories_run, item_sanity
 from evaluation import item_categories_combine as combine
-from evaluation import item_categories_run, item_sanity
 from evaluation.common import UsageError
 from evaluation.item_scores import Scored, accepted_at_precision, reliability, summary
 from evaluation.label_memory import LabelMemory
@@ -95,6 +95,11 @@ def test_examples_come_from_earlier_receipts_only(
     item_categories_run.run(decisions_args(files, "--examples", "2"), io.StringIO())
 
     first, second = (post["body"]["state"] for post in fake.posts)
+    summary = json.loads(next(files["out"].glob("*/run.json")).read_text())
+    # Examples come from the memory's store: the label memory shaped the answers too.
+    assert summary["categorisers"] == sorted(["label-memory", DECIDER])
+    # Without earlier labels the first receipt had no examples: two prompt versions.
+    assert summary["prompt_version"] is None and len(summary["prompt_versions"]) == 2
     # The first receipt (in time order) has no earlier labels; the second is shown the earlier
     # receipt's milk, labelled, and nothing of its own labels.
     assert "examples" not in first
@@ -132,6 +137,11 @@ def test_the_runner_verifies_another_runs_candidates(
 
     assert summary["decisions"]["strategy"] == "verify"
     assert summary["decisions"]["verified_run"] == proposer["run_id"]
+    assert summary["decisions"]["items_without_proposal"] == 0
+    # The checked run's categoriser shaped these candidates: the pre-fill rule must know it.
+    assert summary["categorisers"] == sorted({DECIDER, proposer["model_name"]})
+    assert summary["prompt_version"] == prompt_version("verify", True)
+    assert summary["prompt_version"] != proposer["prompt_version"]
     questions = [q for post in fake.posts for q in post["body"]["questions"].values()]
     assert questions and all(q["type"] == "noul" for q in questions)
     lines = predictions(files["out"] / summary["run_id"])
@@ -371,40 +381,43 @@ def test_an_average_and_the_agreement_figures(combo: dict[str, Any]) -> None:
     assert agreement["combined_accuracy"] == agreement["run_accuracy"]["run-b"]
 
 
-def test_a_learned_combination_is_cross_validated_by_receipt(
-    combo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[tuple[set[str], set[str]]] = []
-    real = combine._fit_predict
-
-    def spy(x_train: Any, y_train: Any, x_test: Any, n: int, c: float) -> Any:
-        return real(x_train, y_train, x_test, n, c)
-
-    monkeypatch.setattr(combine, "_fit_predict", spy)
-    from sklearn.model_selection import GroupKFold
-
-    original = GroupKFold.split
-
-    def split(self: Any, x: Any, y: Any = None, groups: Any = None) -> Any:
-        for train, test in original(self, x, y, groups):
-            seen.append(({groups[i] for i in train}, {groups[i] for i in test}))
-            yield train, test
-
-    monkeypatch.setattr(GroupKFold, "split", split)
-
+def test_a_learned_combination_is_fitted_on_earlier_receipts_only(combo: dict[str, Any]) -> None:
     summary = combine.run(combine_args(combo, "--method", "learned", "--folds", "3"), io.StringIO())
 
-    assert len(seen) == 3
-    assert all(not (train & test) for train, test in seen)
-    # The receipt whose labels B pre-filled is in no fold.
-    assert all("rcpt_000009" not in train | test for train, test in seen)
     info = summary["method_info"]
+    # The receipt whose labels B pre-filled is neither fitted on nor scored.
     assert info["fitted_items"] == 27 and info["fitted_receipts"] == 9
+    assert info["folds"] == 3
+    assert info["warm_up_items"] == 9
     assert info["full_fit_items"] == 3
     assert set(info["weight_share"]) == {"run-a", "run-b"}
     assert summary["calibrated"] is True
-    scores = summary["scores_on_usable_items"]
-    assert scores["items"] == 27
+    assert summary["scores_on_usable_items"]["items"] == 27
+
+
+def test_no_item_is_scored_by_a_fit_on_its_own_or_a_later_receipt() -> None:
+    """Receipts r and r + 5 share a label, and one run knows every label: a fit that saw receipt
+    r's own items, or a later receipt with the same label, would get receipts 2 to 4 right."""
+    labels = [f"group/label-{i}" for i in range(5)]
+    truth = [labels[r % 5] for r in range(10) for _ in range(3)]
+    order = [r for r in range(10) for _ in range(3)]
+    perfect = combine.score_matrix([[(label, 1.0)] for label in truth], labels)
+    noise = combine.score_matrix([[(labels[0], 0.5)] for _ in truth], labels)
+
+    result, info = combine.learned(
+        [perfect, noise], labels, truth, order, [True] * 30, folds=4, c=10.0, names=["p", "n"]
+    )
+
+    best = [labels[int(np.argmax(row))] for row in result]
+    right = [b == t for b, t in zip(best, truth, strict=True)]
+    by_receipt = [all(right[r * 3 : r * 3 + 3]) for r in range(10)]
+    assert info["folds"] == 4 and info["warm_up_items"] == 6
+    # Receipts 0 and 1 (the first block) get the plain average, which needs no label.
+    assert by_receipt[:2] == [True, True]
+    # Their labels were never seen before them: no fit could know them.
+    assert by_receipt[2:5] == [False, False, False]
+    # Seen in an earlier receipt (r - 5): learned.
+    assert by_receipt[5:] == [True] * 5
 
 
 def test_the_combiner_refuses_bad_inputs(combo: dict[str, Any], tmp_path: Path) -> None:
@@ -481,3 +494,44 @@ def test_too_few_labels_for_a_learned_combination(combo: dict[str, Any], tmp_pat
 def test_one_label_in_a_fold_predicts_that_label() -> None:
     out, model = combine._fit_predict(np.zeros((2, 2)), np.array([1, 1]), np.zeros((1, 2)), 3, 1.0)
     assert model is None and out.tolist() == [[0.0, 1.0, 0.0]]
+
+
+def test_calibration_refuses_mixed_prompt_versions_and_knows_every_categoriser(
+    tmp_path: Path,
+) -> None:
+    run = write_run(
+        tmp_path,
+        "mixed",
+        [],
+        score_kinds={"decision_probability": 2},
+        prompt_versions={"a": 1, "b": 1},
+    )
+    with pytest.raises(UsageError, match="more than one prompt version"):
+        item_categories_calibrate.read_run(run)
+    assert item_categories_run.run_categorisers(
+        {"model_name": "m", "categorisers": ["v", ""], "memory": {"enabled": True}}
+    ) == ["label-memory", "m", "v"]
+    with pytest.raises(UsageError, match=r"run\.json"):
+        item_categories_run.read_categorisers(tmp_path / "missing")
+
+
+def test_a_cascade_keeps_the_deciding_runs_order(combo: dict[str, Any], tmp_path: Path) -> None:
+    tied = write_run(
+        tmp_path / "tied",
+        "run-tied",
+        [line(r, p, (SLUGS[4], 0.8), (SLUGS[0], 0.8)) for r, p in sorted(combo["truth"])],
+        model_name="model-t",
+    )
+    args = combine_args(combo, "--method", "cascade", "--thresholds", "0.5")
+    args.run = [tied, combo["b"]]
+    summary = combine.run(args, io.StringIO())
+    first = predictions(combo["out"] / summary["run_id"])[0]
+    assert [c["category_slug"] for c in first["candidates"]] == [SLUGS[4], SLUGS[0]]
+
+
+@pytest.mark.parametrize("value", ["nan", "inf"])
+def test_the_combiner_refuses_non_finite_numbers(combo: dict[str, Any], value: str) -> None:
+    with pytest.raises(UsageError, match="finite"):
+        combine.run(
+            combine_args(combo, "--method", "average", "--weights", f"1,{value}"), io.StringIO()
+        )

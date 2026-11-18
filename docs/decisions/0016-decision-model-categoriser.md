@@ -84,13 +84,21 @@ method whose best score reaches its threshold decides, for example the label mem
 model); a **weighted average** of the per-category scores; and a **learned** combination, a multinomial
 logistic regression on the methods' per-category scores side by side.
 
-The learned combination is cross-validated with **folds grouped by receipt**: all items of a receipt are in
-the same fold, so no item is scored by a model fitted on items of its own receipt. Items of one receipt share a
-shop and often a category; random folds would let the fit learn "this receipt is groceries" and report a
-precision the app will never see. Labelled items get out-of-fold probabilities; the rest get a fit on all
-usable labels. The pre-fill rule applies: an item whose labels were chosen with one of the combined
-categorisers' suggestions on screen (`categories_prefilled_by`) is neither fitted on nor counted, and the
-combined run lists every combined categoriser so a scorer applies the same rule. `run.json` also reports how
+The learned combination is cross-validated **by receipt and forward in time**: the receipts with usable
+labels, in time order, are cut into consecutive blocks, and each block is scored by a model fitted on the
+blocks before it only. Two leaks are closed. Items of one receipt share a shop and often a category; folds that
+split a receipt would let the fit learn "this receipt is groceries" and report a precision the app will never
+see. And with the label memory or labelled examples, a later receipt's scores already contain earlier
+receipts' labels, so even folds grouped by receipt would let a held-out label back in through a later
+receipt fitted on. Training only on the past is also what the app does. The
+first block, with no past, gets the plain average; items not scored get a fit on every usable label.
+
+The pre-fill rule applies: an item whose labels were chosen with one of the combined categorisers' suggestions
+on screen (`categories_prefilled_by`) is neither fitted on nor counted. Every run's `run.json` lists the
+categorisers that shaped it: its model; the label memory when it answered first or supplied examples; and for a
+verification run the categorisers of the run it checked, since its candidates are that run's suggestions,
+re-scored. The combined run lists them all, so a scorer applies the same rule, and the calibration fit reads
+the same list. `run.json` also reports how
 often the methods agree and the precision of "all agree", the simplest auto-accept rule.
 
 ### What is sent, and what never is
@@ -117,7 +125,10 @@ the dated id each answer reports.
 Every answer is checked against its question: a missing answer, an answer to a question not asked, an option
 not offered, a missing or extra probability, a value outside 0..1 or probabilities not adding up to 1 (within
 0.02) are errors, never dropped or guessed. A refusal is an answer; since the service promises a candidate for
-every item, a refused item fails its receipt (422), and the app shows no suggestion. Because answers vary
+every item, a refused item fails its receipt (422), and the app shows no suggestion. Shape errors are 5xx,
+so the app retries them: an answer varies between calls and a retry costs about $0.0001. The prompt version
+names the mode (strategy, context, whether examples were shown, verification), so a calibration fitted on one
+mode never applies to another. Because answers vary
 slightly between identical calls, each item is asked once and the answer kept: no retrying until two calls
 agree, which would bias the scores towards the stable ones.
 
@@ -142,7 +153,8 @@ compare, not how well it will do on real receipts.
 
 ## How it will be judged
 
-On the labelled items, with the same table as every other categoriser (the evaluation harness): macro-F1,
+On the labelled items, with the same table as every other categoriser (the evaluation harness, in its own
+pull request): macro-F1,
 top-3 accuracy, the share auto-accepted at 95% precision, calibration (reliability and its error), seconds and
 dollars per 1,000 items; alone, with the label memory first and with examples, as the verifier of the local
 model's answers, and in the cascade, average and learned combinations with the local model. The commands are
@@ -157,6 +169,12 @@ in `ml/README.md`, "Evaluating the item categoriser".
 - The Decisions API is marked alpha; its shape may change. The client checks every answer, so a change fails
   loudly instead of passing wrong scores.
 - Item names leave the machine, under the rule above. A refusal fails the whole receipt.
+- Routing rests on OpenRouter honouring `provider.only` and `zdr` on the alpha Decisions API. A request with
+  them was accepted, and every answer of the trial named the listed provider (TypeSafe), which the client
+  checks; an answer from anywhere else stops every hosted call, but only after that request was sent.
+- The learned combination has a weight per run, category and class (about 2,800 for two runs and 37
+  categories): it needs a few hundred labelled items before it beats the simpler methods, and its settings
+  (`--c`, `--folds`) must not be tuned on the figures it then reports.
 
 ## Consequences
 

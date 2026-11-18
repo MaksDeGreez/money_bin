@@ -55,7 +55,8 @@ def accepted_at_precision(
             best = {
                 "share": round(position / len(ordered), 4),
                 "items": position,
-                "threshold": round(score, 4),
+                # Exact: a rounded threshold could let in items just below it.
+                "threshold": score,
             }
     return best
 

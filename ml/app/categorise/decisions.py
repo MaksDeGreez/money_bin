@@ -105,16 +105,28 @@ VERIFY_ASK = (
 TEMPLATES = (ITEM_INTRO, RECEIPT_NOTE, EXAMPLES_NOTE, FLAT_ASK, GROUP_ASK, WITHIN_ASK, VERIFY_ASK)
 
 
-def prompt_version(strategy: str, receipt_context: bool) -> str:
-    """A hash of the fixed texts, the strategy and the context shape (the category list has its
-    own hash, `categories_version`)."""
-    text = json.dumps([TEMPLATES, strategy, receipt_context, EXPAND_GROUPS, EXPAND_MIN])
+def prompt_version(strategy: str, receipt_context: bool, *, examples: bool = False) -> str:
+    """A hash of the fixed texts, the strategy (`flat`, `two-stage` or `verify`), the context
+    shape and whether examples were shown (the category list has its own hash,
+    `categories_version`). Each mode has its own, so a calibration fitted on one (verified
+    yes-probabilities, answers with examples) never applies to another (`calibration.py` matches
+    on the prompt version)."""
+    text = json.dumps([TEMPLATES, strategy, receipt_context, examples, EXPAND_GROUPS, EXPAND_MIN])
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
 def refused() -> BackendError:
     return BackendError(
         422, "decisions_refused", "The decision model declined to categorise an item."
+    )
+
+
+def too_large() -> BackendError:
+    return BackendError(
+        422,
+        "decisions_request_too_large",
+        "One item's question with its category list is too long for the decision model's "
+        "normal input mode; shorten the category descriptions.",
     )
 
 
@@ -169,8 +181,16 @@ class Options:
                 )
         return criteria
 
+    def within_labels(self, group: str) -> dict[str, str]:
+        """Option label -> slug within a group: the names, or the slugs when names repeat."""
+        members = self.groups[group]
+        if len({c.name for c in members}) != len(members):
+            return {c.slug: c.slug for c in members}
+        return {c.name: c.slug for c in members}
+
     def within_criteria(self, group: str) -> dict[str, str]:
-        return {c.name: self.text(c) for c in self.groups[group]}
+        slugs = {c.slug: c for c in self.groups[group]}
+        return {label: self.text(slugs[slug]) for label, slug in self.within_labels(group).items()}
 
 
 # Requests -----------------------------------------------------------------------------------------
@@ -266,6 +286,7 @@ class DecisionsCategoriser(Categoriser):
 
     @property
     def prompt_version(self) -> str:
+        """The prompt version of `/categorise` answers (the service never sends examples)."""
         return prompt_version(self.strategy, self.receipt_context)
 
     def start(self) -> None:
@@ -281,7 +302,13 @@ class DecisionsCategoriser(Categoriser):
             "model": self.client.model or "",
             "state": work.state([ask.item for ask in asks]),
             "questions": {ask.key: ask.question.as_json() for ask in asks},
-            "provider": {"only": ["x" * 40], "allow_fallbacks": True, "zdr": True},
+            # More than the real preferences take (a few endpoint slugs, the privacy constants).
+            "provider": {
+                "only": ["x" * 60] * 4,
+                "allow_fallbacks": True,
+                "zdr": True,
+                "data_collection": "deny",
+            },
         }
         return len(json.dumps(body, ensure_ascii=False).encode())
 
@@ -309,6 +336,8 @@ class DecisionsCategoriser(Categoriser):
                 current = trial
         if current:
             chunks.append(current)
+        if any(len(chunk) == 1 and self._size(work, chunk) > MAX_REQUEST_BYTES for chunk in chunks):
+            raise too_large()
         return chunks
 
     def _ask(self, work: _Work, asks: Sequence[_Ask]) -> dict[str, Any]:
@@ -335,11 +364,12 @@ class DecisionsCategoriser(Categoriser):
             deadline=time.perf_counter() + self.settings.openrouter_timeout,
         )
 
-    def _result(self, work: _Work, candidates: list[list[Candidate]]) -> Categorisation:
+    def _result(self, work: _Work, candidates: list[list[Candidate]], mode: str) -> Categorisation:
+        examples = any(work.has_examples(i) for i in range(len(work.request.texts)))
         return Categorisation(
             candidates=candidates,
             score_kind=SCORE_KIND,  # type: ignore[arg-type]
-            prompt_version=self.prompt_version,
+            prompt_version=prompt_version(mode, self.receipt_context, examples=examples),
             diagnostics={
                 **accounting(work.calls),
                 "strategy": self.strategy,
@@ -348,13 +378,15 @@ class DecisionsCategoriser(Categoriser):
             },
         )
 
-    def _run(self, work: _Work, body: Callable[[], list[list[Candidate]]]) -> Categorisation:
+    def _run(
+        self, work: _Work, body: Callable[[], list[list[Candidate]]], mode: str
+    ) -> Categorisation:
         try:
             candidates = body()
         except BackendError as error:
             error.diagnostics = accounting(work.calls)
             raise
-        return self._result(work, candidates)
+        return self._result(work, candidates, mode)
 
     # Strategies ---------------------------------------------------------------------------
 
@@ -362,8 +394,8 @@ class DecisionsCategoriser(Categoriser):
         """Categorise one receipt's items with the configured strategy."""
         work = self._work(request)
         if self.strategy == "two-stage":
-            return self._run(work, lambda: self._two_stage(work))
-        return self._run(work, lambda: self._flat(work))
+            return self._run(work, lambda: self._two_stage(work), self.strategy)
+        return self._run(work, lambda: self._flat(work), self.strategy)
 
     def _flat(self, work: _Work) -> list[list[Candidate]]:
         criteria = work.options.flat_criteria()
@@ -380,7 +412,8 @@ class DecisionsCategoriser(Categoriser):
                 raise refused()
             assert isinstance(answer, ChoiceAnswer)
             scores = {work.options.by_label[label]: p for label, p in answer.normalised().items()}
-            result.append(top_candidates(scores))
+            candidates = [c for c in top_candidates(scores) if c.score > 0]
+            result.append(candidates or top_candidates(scores, 1))
         return result
 
     def _two_stage(self, work: _Work) -> list[list[Candidate]]:
@@ -400,6 +433,8 @@ class DecisionsCategoriser(Categoriser):
         scores: list[dict[str, float]] = [{} for _ in texts]
         second: list[_Ask] = []
         opened: dict[str, tuple[int, str, float]] = {}
+        # Per item, the rank of its most likely group of several categories (the one always opened).
+        top_rank: dict[int, int] = {}
         for ask in first:
             answer = answers[ask.key]
             if isinstance(answer, Refusal):
@@ -415,6 +450,8 @@ class DecisionsCategoriser(Categoriser):
                 for rank, name in enumerate(several[:EXPAND_GROUPS])
                 if rank == 0 or groups[name] >= EXPAND_MIN
             ]
+            if several:
+                top_rank[ask.item] = ranked.index(several[0]) + 1
             for name, probability in groups.items():
                 members = options.groups[name]
                 if len(members) == 1:
@@ -434,11 +471,15 @@ class DecisionsCategoriser(Categoriser):
                 answer = answers[ask.key]
                 index, name, probability = opened[ask.key]
                 if isinstance(answer, Refusal):
+                    if ask.key.endswith(f"_g{top_rank[index]}"):
+                        # The most likely group's categories cannot be told apart: no answer is
+                        # better than one from the groups the model found less likely.
+                        raise refused()
                     continue
                 assert isinstance(answer, ChoiceAnswer)
-                by_name = {c.name: c.slug for c in options.groups[name]}
+                labels = options.within_labels(name)
                 for category, value in answer.normalised().items():
-                    scores[index][by_name[category]] = probability * value
+                    scores[index][labels[category]] = probability * value
         result = []
         for item_scores in scores:
             candidates = top_candidates({s: p for s, p in item_scores.items() if p > 0})
@@ -493,7 +534,7 @@ class DecisionsCategoriser(Categoriser):
                 for entries in verified
             ]
 
-        return self._run(work, body)
+        return self._run(work, body, "verify")
 
 
 def criteria_size(categories: Sequence[CategoryOption]) -> Mapping[str, int]:
