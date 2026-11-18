@@ -51,6 +51,22 @@ class GroundTruthExportTest < ActiveSupport::TestCase
     assert GroundTruthExport.inside_git_repository?(Rails.root.join("tmp", "export").to_s)
   end
 
+  test "a symbolic link from outside into a repository does not hide it" do
+    checkout = File.join(@root, "checkout")
+    FileUtils.mkdir_p(File.join(checkout, ".git"))
+    FileUtils.mkdir_p(File.join(checkout, "nested", "deeper"))
+    outside = Dir.mktmpdir("ground-truth-export-link")
+    link = File.join(outside, "link")
+    File.symlink(File.join(checkout, "nested"), link)
+
+    assert GroundTruthExport.inside_git_repository?(link)
+    assert GroundTruthExport.inside_git_repository?(File.join(link, "deeper", "not-yet"))
+    assert_raises(GroundTruthExport::Error) { export(File.join(link, "out")) }
+    assert_not GroundTruthExport.inside_git_repository?(File.join(outside, "plain"))
+  ensure
+    FileUtils.remove_entry(outside) if outside
+  end
+
   test "the rake task needs a folder" do
     Rails.application.load_tasks if Rake::Task.tasks.none? { |task| task.name == "receipts:export_ground_truth" }
     task = Rake::Task["receipts:export_ground_truth"]

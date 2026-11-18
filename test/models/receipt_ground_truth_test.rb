@@ -138,6 +138,7 @@ class ReceiptGroundTruthTest < ActiveSupport::TestCase
     assert_constraint("receipt_ground_truths_unknown_items_empty") { write.(items_known: false) }
     assert_constraint("receipt_ground_truths_document_shape") { write.(document: [ 1 ]) }
     assert_constraint("receipt_ground_truths_document_shape") { write.(document: { "items" => {} }) }
+    assert_constraint("receipt_ground_truths_document_shape") { write.(document: {}, items_known: false) }
     assert_constraint("receipt_ground_truths_imported_fields") { write.(source_sha256: nil) }
     assert_constraint("receipt_ground_truths_imported_fields") { write.(prefilled_by: "stub-ocr") }
     assert_constraint("receipt_ground_truths_source_sha256_format") { write.(source_sha256: "x") }

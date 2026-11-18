@@ -100,10 +100,12 @@ module DpsXml
     end
 
     test "a discount that cannot be read leaves the amount unknown; a row without a cost too" do
-      rows = [ dps_row(1, discount: "five"), dps_row(2, cost: nil) ]
-      first, second = read(dps_xml(rows:)).document["items"]
+      rows = [ dps_row(1, discount: "five"), dps_row(2, cost: nil), dps_row(3, discount: "1" * 501), dps_row(4, discount: " ") ]
+      first, second, third, fourth = read(dps_xml(rows:)).document["items"]
       assert_equal [ nil, nil ], first.values_at("amount", "discount")
       assert_equal [ nil, "0.00" ], second.values_at("amount", "discount")
+      assert_equal [ nil, nil ], third.values_at("amount", "discount"), "a refused discount is not a missing one"
+      assert_equal [ "40.40", "0.00" ], fourth.values_at("amount", "discount"), "a blank discount is no discount"
     end
 
     test "an impossible date or time is left out and counted" do

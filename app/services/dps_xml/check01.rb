@@ -75,7 +75,7 @@ module DpsXml
 
         cost = number(row, "COST", "item_amount")
         # No DISCOUNTSUM means no discount; one that cannot be read leaves the discount and the amount unknown.
-        discount = text(row, "DISCOUNTSUM").nil? ? BigDecimal("0") : number(row, "DISCOUNTSUM", "item_discount")
+        discount = blank?(row, "DISCOUNTSUM") ? BigDecimal("0") : number(row, "DISCOUNTSUM", "item_discount")
         note(:surcharge) if discount&.negative?
 
         {

@@ -115,7 +115,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_140000) do
     t.check_constraint "(checked_at IS NULL) = (check_outcome IS NULL) AND (check_note IS NULL OR checked_at IS NOT NULL)", name: "receipt_ground_truths_check_consistent"
     t.check_constraint "check_outcome::text = ANY (ARRAY['matches'::character varying, 'differs'::character varying]::text[])", name: "receipt_ground_truths_check_outcome_allowed"
     t.check_constraint "items_known OR (document -> 'items'::text) = '[]'::jsonb", name: "receipt_ground_truths_unknown_items_empty"
-    t.check_constraint "jsonb_typeof(document) = 'object'::text AND jsonb_typeof(document -> 'items'::text) = 'array'::text", name: "receipt_ground_truths_document_shape"
+    t.check_constraint "jsonb_typeof(document) = 'object'::text AND document ? 'items'::text AND jsonb_typeof(document -> 'items'::text) = 'array'::text", name: "receipt_ground_truths_document_shape"
     t.check_constraint "schema_version > 0", name: "receipt_ground_truths_schema_version_positive"
     t.check_constraint "source::text <> 'dps_xml'::text OR source_sha256 IS NOT NULL AND source_format IS NOT NULL AND prefilled_by IS NULL", name: "receipt_ground_truths_imported_fields"
     t.check_constraint "source::text <> 'manual'::text OR source_sha256 IS NULL AND source_format IS NULL", name: "receipt_ground_truths_manual_fields"

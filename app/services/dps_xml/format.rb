@@ -36,6 +36,12 @@ module DpsXml
         node ? node.element_children.select { |element| element.name.casecmp?(name) } : []
       end
 
+      # True when the element is missing or holds only white space: "not given", unlike a value that was
+      # given but refused (which `text` and `number` also return as nil).
+      def blank?(node, name)
+        child(node, name)&.text.to_s.strip.empty?
+      end
+
       # The element's text with white space squeezed, or nil when it is missing or blank. Text longer than a
       # document allows is left out and counted.
       def text(node, name, field = name.downcase)

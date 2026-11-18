@@ -34,7 +34,8 @@ class CreateReceiptGroundTruths < ActiveRecord::Migration[8.1]
 
       t.check_constraint "source IN ('dps_xml', 'manual')", name: "receipt_ground_truths_source_allowed"
       t.check_constraint "schema_version > 0", name: "receipt_ground_truths_schema_version_positive"
-      t.check_constraint "jsonb_typeof(document) = 'object' AND jsonb_typeof(document -> 'items') = 'array'",
+      # `document ? 'items'` first: without the key, `document -> 'items'` is NULL and a CHECK passes on NULL.
+      t.check_constraint "jsonb_typeof(document) = 'object' AND document ? 'items' AND jsonb_typeof(document -> 'items') = 'array'",
         name: "receipt_ground_truths_document_shape"
       t.check_constraint "items_known OR document -> 'items' = '[]'::jsonb",
         name: "receipt_ground_truths_unknown_items_empty"

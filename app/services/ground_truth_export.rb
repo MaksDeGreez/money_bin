@@ -22,9 +22,13 @@ class GroundTruthExport
   end
 
   # Whether `path` (which may not exist yet) is inside a git working tree. `.git` is a folder in a normal
-  # checkout and a file in a linked worktree.
+  # checkout and a file in a linked worktree. Symbolic links are resolved first (its deepest existing
+  # folder through File.realpath), so a link from outside into a checkout is seen for what it is.
   def self.inside_git_repository?(path)
-    Pathname(File.expand_path(path)).ascend.any? { |folder| folder.join(".git").exist? }
+    expanded = Pathname(File.expand_path(path))
+    existing = expanded.ascend.find(&:exist?)
+    resolved = existing.realpath.join(expanded.relative_path_from(existing))
+    resolved.ascend.any? { |folder| folder.join(".git").exist? }
   end
 
   def initialize(out_dir, output: $stdout)
