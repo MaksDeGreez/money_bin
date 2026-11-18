@@ -343,19 +343,24 @@ it and the check) and refuses a folder inside a git repository. Rules: [`docs/do
 
 ## Training the transaction categoriser
 
-`ml/categoriser/` trains a model that suggests a category for a transaction (TF-IDF + logistic
-regression, with rule baselines to beat) from a history export, and evaluates it on the latest 20% of the
-history by date:
+`ml/categoriser/` trains a model that suggests a category for a transaction from a history export, and
+evaluates it on the latest 20% of the history by date. Two steps, so that the test set is scored once:
 
 ```sh
 cd ml
-uv run python -m categoriser.train /path/to/export   # model + metrics JSON in ~/Documents/money_bin_data/models/
+uv run python -m categoriser.selection /path/to/export   # tunes and compares the candidates on the validation slice
+uv run python -m categoriser.score /path/to/export --selection ~/Documents/money_bin_data/models/<run>.selection.json
 ```
 
-It runs locally only. The model file holds payee names, so it and the metrics JSON go to a folder outside
-the repository (the command refuses one inside a git repository); the console prints counts and metrics
-only. Details: [`ml/README.md`](ml/README.md); reasons:
-[`docs/decisions/0006-transaction-categoriser.md`](docs/decisions/0006-transaction-categoriser.md).
+The selection compares TF-IDF + logistic regression (the first version), local sentence embeddings,
+recency and class weights, and a hybrid with the payee's history, on the validation slice only; the test
+set stays sealed. The scoring step refits the chosen configuration on the whole training period and
+scores it, the first version and the rule baselines on the test set, once. Everything runs locally (the
+embedding models come from the local Hugging Face cache and need the `embeddings` dependency group,
+installed only on Apple silicon). The model file and the embedding cache hold personal text, so they and
+the JSON files go to folders outside the repository (the commands refuse one inside a git repository);
+the console prints counts and metrics only. Details: [`ml/README.md`](ml/README.md); reasons and the
+protocol: [`docs/decisions/0006-transaction-categoriser.md`](docs/decisions/0006-transaction-categoriser.md).
 
 ## The dashboard
 

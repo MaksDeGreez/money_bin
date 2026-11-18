@@ -16,10 +16,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.pipeline import Pipeline
 
 from categoriser.dataset import Row
-from categoriser.features import features
 
 TOP_K = 3
 
@@ -101,12 +99,3 @@ class PayeeMccBaseline:
             ranked.append(_fill(*(r.labels for r in chain)))
             confidence.append(chain[0].share)
         return Predictions(ranked=ranked, confidence=np.asarray(confidence, dtype=float))
-
-
-def model_predictions(model: Pipeline, rows: Sequence[Row]) -> Predictions:
-    """Rank the categories of a fitted model by probability."""
-    probabilities = model.predict_proba(features(rows))
-    classes = model.classes_
-    order = np.argsort(-probabilities, axis=1, kind="stable")[:, :TOP_K]
-    ranked = [[str(classes[i]) for i in row_order] for row_order in order]
-    return Predictions(ranked=ranked, confidence=probabilities.max(axis=1))
