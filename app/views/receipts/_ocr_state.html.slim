@@ -12,11 +12,13 @@
       p.text-sm
         | Reading since
         =< receipt_time(receipt.updated_at)
-        | , longer than a read takes: the job was most likely lost (the job runner stopped mid-read).
+        | , longer than a read takes. The job may have been lost (the job runner stopped mid-read), or a retry
+        |  may be waiting behind a long queue; reading again is harmless either way.
       - if waiting
         p.text-sm Queued to read again.
       - else
-        = ui_button_to read_receipt_path(receipt), variant: :secondary, size: :sm do
+        = ui_button_to read_receipt_path(receipt), variant: :secondary, size: :sm,
+          form: { data: { turbo_confirm: (receipt.items.any? ? "Read this receipt again? Its items are replaced by the new OCR result." : nil) } } do
           = ui_icon "refresh-cw"
           span Read again
 - elsif receipt.uploaded?

@@ -319,6 +319,18 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     assert_empty ml_requests(:ocr)
   end
 
+  test "a request that counts as lost no longer lets the job replace a read result" do
+    stub_ml_ocr
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(ocr_requested_at: (Receipt::OCR_REQUEST_LOST_AFTER + 1.hour).ago)
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert receipt.reload.extracted?
+    assert_equal 3, receipt.items.count
+    assert_empty ml_requests(:ocr)
+  end
+
   test "a request for a receipt accepted in the meantime is dropped without reading it" do
     stub_ml_ocr
     receipt = receipts(:market_receipt)

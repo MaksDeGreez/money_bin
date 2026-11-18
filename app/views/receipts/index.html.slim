@@ -2,7 +2,8 @@
 / Live: Receipts::LiveUpdate asks this page to refresh (morph, scroll kept) when a receipt's OCR state
 / changes, so the rows and the counts follow the OCR queue without a reload.
 / live-refresh asks again for a refresh that Turbo dropped during a visit (live_refresh_controller.js).
-div data-controller="live-refresh"
+- in_flight = @receipts.any? { |receipt| receipt_ocr_in_flight?(receipt) }
+div data-controller="live-refresh" data-live-refresh-pending-value=in_flight.to_s
   = turbo_stream_from Receipts::LiveUpdate::STREAM
 
 = render "ui/page_header", title: "Receipts", description: "Every receipt photo set, its OCR state and what was read from it." do

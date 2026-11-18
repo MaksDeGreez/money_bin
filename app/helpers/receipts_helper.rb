@@ -18,6 +18,11 @@ module ReceiptsHelper
     receipt.ingest_id || "Receipt ##{receipt.id}"
   end
 
+  # OCR is queued or running for the receipt: a page showing it waits for a live update.
+  def receipt_ocr_in_flight?(receipt)
+    receipt.processing? || receipt.ocr_request_waiting?
+  end
+
   def receipt_status_label(status)
     STATUS_LABELS.fetch(status.to_s)
   end

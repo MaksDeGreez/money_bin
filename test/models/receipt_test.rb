@@ -461,11 +461,27 @@ class ReceiptTest < ActiveSupport::TestCase
     assert_nil Receipt.new(ocr_raw: { "error" => "text" }).ocr_error
   end
 
-  test "ocr_readable is uploaded and failed; ocr_pending? is a waiting request" do
-    assert_equal [ receipts(:new_receipt), receipts(:failed_receipt) ].map(&:id).sort, Receipt.ocr_readable.pluck(:id).sort
-    assert_not receipts(:new_receipt).ocr_pending?
-    receipts(:new_receipt).ocr_requested_at = Time.current
-    assert receipts(:new_receipt).ocr_pending?
+  test "a request is pending once recorded, and waiting until it counts as lost" do
+    receipt = receipts(:new_receipt)
+    assert_not receipt.ocr_pending?
+
+    receipt.ocr_requested_at = 1.hour.ago
+    assert receipt.ocr_pending?
+    assert receipt.ocr_request_waiting?
+
+    receipt.ocr_requested_at = (Receipt::OCR_REQUEST_LOST_AFTER + 1.minute).ago
+    assert receipt.ocr_pending?
+    assert_not receipt.ocr_request_waiting?
+  end
+
+  test "a receipt is stuck when it has been processing for longer than a read takes" do
+    receipt = receipts(:new_receipt)
+    receipt.status = "processing"
+    receipt.updated_at = 10.minutes.ago
+    assert_not receipt.ocr_stuck?
+
+    receipt.updated_at = (Receipt::OCR_STUCK_AFTER + 1.minute).ago
+    assert receipt.ocr_stuck?
   end
 
   test "the photos are in upload order and have JPEG variants for the pages" do

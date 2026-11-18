@@ -69,7 +69,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_select "nav.count-tabs a", text: /Not read yet\s*1/
     assert_select "nav.count-tabs a", text: /OCR failed\s*1/
     assert_select "nav.count-tabs a[aria-current=page]", text: /All\s*4/
-    assert_select "[data-controller=live-refresh] turbo-cable-stream-source"
+    assert_select "[data-controller=live-refresh][data-live-refresh-pending-value=false] turbo-cable-stream-source"
     assert_select "[data-turbo-prefetch=false] a[href^='/receipts/']"
   end
 
@@ -249,7 +249,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
 
     get receipt_path(receipt)
 
-    assert_select ".callout-signal", text: /most likely lost/
+    assert_select ".callout-signal", text: /may have been lost/
     assert_select "form[action=?]", read_receipt_path(receipt)
     post read_receipt_path(receipt)
     assert_equal 1, ocr_jobs.size
@@ -304,6 +304,8 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_equal receipt.to_global_id.to_s, ocr_jobs.sole["arguments"].first["_aj_globalid"]
     assert receipt.reload.ocr_pending?
     assert_select ".callout", text: /Queued for OCR at/
+    assert_select "[data-controller=live-refresh][data-live-refresh-pending-value=true]", 1,
+      "a page waiting for OCR asks again when its stream (re)connects"
   end
 
   test "a prefetch or a HEAD request does not queue OCR" do
@@ -413,6 +415,9 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     post read_all_receipts_path
     assert_equal 2, ocr_jobs.size
     assert_match(/Nothing to queue/, flash[:alert])
+
+    get receipts_path
+    assert_select "[data-controller=live-refresh][data-live-refresh-pending-value=true]"
   end
 
   test "'Read all' never queues an extracted or a reviewed receipt" do

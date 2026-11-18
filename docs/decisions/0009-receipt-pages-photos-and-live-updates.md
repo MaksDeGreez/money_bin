@@ -50,8 +50,9 @@ Rejected: replacing parts of the page with rendered partials (Action Cable does 
 messages, and a fast failure left a stale "Reading" badge in testing); polling (a request every few
 seconds per open page, for events that happen once a minute at most).
 
-Turbo drops a refresh that arrives while a visit is running; a small Stimulus controller
-(`live_refresh_controller.js`) notices and asks for one more refresh afterwards.
+Turbo drops a refresh that arrives while a visit is running, and a page misses what was broadcast
+before its stream subscribed; a small Stimulus controller (`live_refresh_controller.js`) asks for one
+more refresh in both cases.
 
 The WebSocket accepts only a signed-in session, and the connection is identified by that session, so
 signing out or a new password closes the ended sessions' sockets.

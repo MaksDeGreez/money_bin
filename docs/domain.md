@@ -333,8 +333,9 @@ browser's speculative loads send `Sec-Purpose: prefetch`; such a request, and a 
 nothing. Links to receipt pages also carry `data-turbo-prefetch="false"`, so a prefetched page (which
 queued nothing) is never shown in place of a real visit.
 
-**Re-reading a `failed` or `extracted` receipt** needs `ocr_requested_at` set when the job starts: a stray
-duplicate job finds it nil and leaves the receipt alone. A re-read that fails leaves the receipt `failed`, with its
+**Re-reading a `failed` or `extracted` receipt** needs a request that still waits when the job starts: a
+stray duplicate job finds none and leaves the receipt alone, and so does a job that runs after its request
+counted as lost (the page offered "Read again" again by then, so it must not look unqueued and still run). A re-read that fails leaves the receipt `failed`, with its
 earlier items still there (only a successful read replaces them).
 
 "Read all" can queue hundreds of receipts; the OCR capsule reads them one at a time, so with a local model
@@ -384,8 +385,10 @@ its own filter and morphs, so the status badge, the data column, the rows and th
 nothing else moves. A refresh rather than replacing parts with rendered partials, because Action Cable
 does not promise the order of messages: a job that fails within milliseconds of starting could otherwise
 leave "Reading" on the page. Turbo drops a refresh that arrives while a visit is still running (say the
-"Reading" refresh), so the pages carry a small Stimulus controller (`live_refresh_controller.js`) that
-notices this and asks for one more refresh once that visit is done. A failed broadcast is logged and
+"Reading" refresh), and a page misses what was broadcast before its stream subscribed (a fast job right
+after an upload, a cable that dropped while the laptop slept, a page restored by the back button). So the
+pages carry a small Stimulus controller (`live_refresh_controller.js`) that asks for one more refresh once
+such a visit is done, and whenever the stream (re)connects while the page shows OCR queued or running. A failed broadcast is logged and
 reported, never raised into the job.
 
 Only a signed-in browser opens the WebSocket (`ApplicationCable::Connection` reads the same signed

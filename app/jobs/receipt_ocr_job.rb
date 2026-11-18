@@ -97,11 +97,13 @@ class ReceiptOcrJob < ApplicationJob
       started
     end
 
-    # A `failed` or `extracted` receipt is read again only on request (Receipts::RequestOcr), never by a
-    # stray duplicate job: a failed receipt stays failed, and a read result is not replaced unasked.
+    # A `failed` or `extracted` receipt is read again only on a request that still waits
+    # (Receipts::RequestOcr), never by a stray duplicate job: a failed receipt stays failed, and a read result
+    # is not replaced unasked. A request older than a day counts as lost, as the page shows it: a job that
+    # runs after that leaves the receipt alone, and the person can ask again.
     def startable?(receipt)
       STARTABLE_STATUSES.include?(receipt.status) ||
-        (REQUESTED_STATUSES.include?(receipt.status) && receipt.ocr_pending?)
+        (REQUESTED_STATUSES.include?(receipt.status) && receipt.ocr_request_waiting?)
     end
 
     # The photos in upload order, read into memory (at most three phone photos).

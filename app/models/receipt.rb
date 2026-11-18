@@ -50,8 +50,6 @@ class Receipt < ApplicationRecord
   CARD_LAST4_FORMAT = /\A[0-9]{4}\z/
   QR_FIELDS = %i[qr_issued_at qr_total qr_fiscal_number qr_receipt_number].freeze
   CHUNK_SIZE = 64.kilobytes
-  # Statuses that "Read all" queues for OCR (a failed one only without items: Receipts::RequestOcr).
-  OCR_READABLE_STATUSES = %w[uploaded failed].freeze
   # A request for OCR older than this counts as lost (the queue was emptied) and may be made again.
   OCR_REQUEST_LOST_AFTER = 24.hours
   # A receipt `processing` for longer than this counts as stuck (Sidekiq killed mid-job lost the job): "Read
@@ -75,8 +73,6 @@ class Receipt < ApplicationRecord
     order(Arel.sql("length(receipts.ingest_id) DESC NULLS FIRST, receipts.ingest_id DESC NULLS FIRST"))
       .order(created_at: :desc, id: :desc)
   }
-  # Receipts that "Read all" may queue: never read, or read and failed.
-  scope :ocr_readable, -> { where(status: OCR_READABLE_STATUSES) }
 
   belongs_to :ledger_transaction, class_name: "Transaction", foreign_key: :transaction_id, optional: true, inverse_of: :receipt
   has_many :items, -> { order(:position) }, class_name: "ReceiptItem", inverse_of: :receipt, dependent: :destroy
@@ -168,7 +164,8 @@ class Receipt < ApplicationRecord
   end
 
   # A request for OCR was recorded (Receipts::RequestOcr) and no job has started on it yet; the job clears
-  # it when it starts. It also authorises the job to read a `failed` or `extracted` receipt again.
+  # it when it starts. A waiting one (ocr_request_waiting?) also lets the job read a `failed` or `extracted`
+  # receipt again.
   def ocr_pending?
     ocr_requested_at.present?
   end
@@ -178,7 +175,7 @@ class Receipt < ApplicationRecord
     ocr_pending? && ocr_requested_at > OCR_REQUEST_LOST_AFTER.ago
   end
 
-  # Being read for longer than any read takes: the job was most likely lost.
+  # Being read for longer than a read takes: the job may have been lost (or a retry waits behind a long queue).
   def ocr_stuck?
     processing? && updated_at < OCR_STUCK_AFTER.ago
   end
