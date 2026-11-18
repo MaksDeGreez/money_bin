@@ -106,6 +106,9 @@ class Receipt < ApplicationRecord
   has_many :ground_truths, class_name: "ReceiptGroundTruth", inverse_of: :receipt, dependent: :delete_all
   belongs_to :category, optional: true
   belongs_to :suggested_category, class_name: "Category", optional: true
+  # The open OCR batch the receipt waits in (docs/domain.md, "OCR in a batch"), and every batch it was ever in.
+  belongs_to :ocr_batch, optional: true, inverse_of: :held_receipts
+  has_many :ocr_batch_entries, inverse_of: :receipt, dependent: :nullify
   accepts_nested_attributes_for :items, allow_destroy: true
   # Resized copies for the pages, made once by Active Storage and kept (active_storage_variant_records).
   # Always JPEG, so a HEIC photo shows in every browser; metadata stripped. Served by
@@ -258,9 +261,15 @@ class Receipt < ApplicationRecord
   end
 
   # Nothing has happened to the receipt since it was stored: no OCR result, no items, no transaction, no
-  # ground truth. Only such a receipt may be changed or removed by the receipt load.
+  # ground truth, and it is not waiting in an OCR batch (its photos are at the provider). Only such a receipt may
+  # be changed or removed by the receipt load.
   def pristine?
-    uploaded? && transaction_id.nil? && !items.exists? && !ground_truths.exists?
+    uploaded? && ocr_batch_id.nil? && transaction_id.nil? && !items.exists? && !ground_truths.exists?
+  end
+
+  # Waiting in an OCR batch (Receipt#ocr_batch): no read one at a time is queued for it meanwhile.
+  def in_ocr_batch?
+    ocr_batch_id.present?
   end
 
   # The sum of the item amounts, as a BigDecimal (items the review form marked for removal left out).

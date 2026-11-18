@@ -3,8 +3,8 @@ require "test_helper"
 # Fixtures are written straight into the database, past every validation. This test loads each fixture
 # record through its model and checks that it is valid, so the fixtures cannot drift from the rules.
 class FixturesTest < ActiveSupport::TestCase
-  MODELS = [ Account, Category, Payee, Transaction, TransactionLine, Receipt, ReceiptItem, ReceiptGroundTruth, User, ApiToken,
-    TransactionSuggestionRun, BulkAcceptance, BulkAcceptanceItem ].freeze
+  MODELS = [ Account, Category, Payee, Transaction, TransactionLine, Receipt, ReceiptItem, ReceiptGroundTruth, OcrBatch, OcrBatchEntry,
+    User, ApiToken, TransactionSuggestionRun, BulkAcceptance, BulkAcceptanceItem ].freeze
 
   test "every fixture record is valid" do
     MODELS.each do |model|
