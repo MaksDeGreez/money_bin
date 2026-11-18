@@ -703,8 +703,8 @@ trial: `docs/decisions/0016-decision-model-categoriser.md`.
   dropped or guessed. They are 5xx, so the app retries them: an answer varies
   between calls, and a retry costs about $0.0001. A refusal fails the receipt
   (422 `decisions_refused`; with `two-stage`, a refused second question for the
-  most likely group does too, while one for the second group only drops that
-  group): the service promises a candidate for every item. A question too long
+  most likely group overall does too, while one for a less likely group only
+  drops that group): the service promises a candidate for every item. A question too long
   for the normal input mode on its own is refused before sending (422
   `decisions_request_too_large`). Each item is asked once: answers vary
   slightly between calls, and a run keeps the first.
@@ -824,7 +824,8 @@ combined run folder in the same format (`source: combined`):
   one: with the label memory or examples, a later receipt's scores already
   contain earlier labels, so random folds would let a held-out label back in.
   The first block gets the plain average (`warm_up_items`); unscored items a fit
-  on every usable label.
+  on every usable label. Because of the warm-up block the run never claims
+  `calibrated` scores, although the fitted probabilities are fitted to labels.
 
 Items whose labels were chosen with one of the combined categorisers on screen
 (`categories_prefilled_by` names a categoriser behind one of the runs: its

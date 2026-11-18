@@ -292,6 +292,13 @@ def categoriser_entries(summary: dict[str, Any]) -> list[dict[str, Any]]:
     if (summary.get("memory") or {}).get("enabled"):
         entries.append(dict(MEMORY_ENTRY))
     entries += [entry for entry in summary.get("combined_from") or [] if isinstance(entry, dict)]
+    # A run that lists its categorisers only by name (`categorisers`) is read too.
+    listed = {entry.get("model_name") for entry in entries}
+    entries += [
+        {"model_name": name}
+        for name in summary.get("categorisers") or []
+        if isinstance(name, str) and name and name not in listed
+    ]
     return entries
 
 

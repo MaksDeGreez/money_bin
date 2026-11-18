@@ -447,3 +447,25 @@ def test_flat_leaves_out_zero_scores_but_keeps_one_candidate() -> None:
     categoriser, _ = make(respond)
     result = categoriser.categorise(CategoriseInput(OPTIONS, TEXTS[:1]))
     assert [(c.slug, c.score) for c in result.candidates[0]] == [("groceries/groceries", 1.0)]
+
+
+def test_a_refused_secondary_group_does_not_fail_when_a_singleton_group_leads() -> None:
+    def respond(body: Mapping[str, Any]) -> dict[str, Any]:
+        answers = {}
+        for key, question in body["questions"].items():
+            if key == "line_1":
+                probabilities = {o: 0.0 for o in question["criteria"]}
+                probabilities.update({"Groceries": 0.9, "Household & shopping": 0.1})
+                answers[key] = {
+                    "type": "choice",
+                    "choice": "Groceries",
+                    "probabilities": probabilities,
+                }
+            else:
+                answers[key] = {"type": "refusal"}
+        return answers
+
+    categoriser, transport = make(respond, decisions_strategy="two-stage")
+    result = categoriser.categorise(CategoriseInput(OPTIONS, TEXTS[:1]))
+    assert set(transport.posts[1]["body"]["questions"]) == {"line_1_g2"}
+    assert [(c.slug, c.score) for c in result.candidates[0]] == [("groceries/groceries", 0.9)]

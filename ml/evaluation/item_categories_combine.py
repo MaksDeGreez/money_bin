@@ -505,9 +505,10 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             entry for one in inputs for entry in categoriser_entries(dict(one.summary))
         ],
         "score_kinds": {"combined": len(keys)},
-        # A learned combination's probabilities are fitted to the labels (out of fold).
-        "calibrated": args.method == "learned",
-        "scores_calibrated": args.method == "learned",
+        # Never claimed: a learned combination's probabilities are fitted to the labels, but its
+        # warm-up block holds the plain average of the inputs' raw scores.
+        "calibrated": False,
+        "scores_calibrated": False,
         "git": git_commit(),
         "started_at": started_at.isoformat(),
         "counts": {

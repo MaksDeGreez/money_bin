@@ -433,8 +433,6 @@ class DecisionsCategoriser(Categoriser):
         scores: list[dict[str, float]] = [{} for _ in texts]
         second: list[_Ask] = []
         opened: dict[str, tuple[int, str, float]] = {}
-        # Per item, the rank of its most likely group of several categories (the one always opened).
-        top_rank: dict[int, int] = {}
         for ask in first:
             answer = answers[ask.key]
             if isinstance(answer, Refusal):
@@ -450,8 +448,6 @@ class DecisionsCategoriser(Categoriser):
                 for rank, name in enumerate(several[:EXPAND_GROUPS])
                 if rank == 0 or groups[name] >= EXPAND_MIN
             ]
-            if several:
-                top_rank[ask.item] = ranked.index(several[0]) + 1
             for name, probability in groups.items():
                 members = options.groups[name]
                 if len(members) == 1:
@@ -471,9 +467,10 @@ class DecisionsCategoriser(Categoriser):
                 answer = answers[ask.key]
                 index, name, probability = opened[ask.key]
                 if isinstance(answer, Refusal):
-                    if ask.key.endswith(f"_g{top_rank[index]}"):
-                        # The most likely group's categories cannot be told apart: no answer is
-                        # better than one from the groups the model found less likely.
+                    if ask.key.endswith("_g1"):
+                        # The most likely group overall was refused: no answer is better than
+                        # one from the groups the model found less likely. A refusal for any
+                        # other group only drops that group.
                         raise refused()
                     continue
                 assert isinstance(answer, ChoiceAnswer)

@@ -402,7 +402,8 @@ def test_a_learned_combination_is_fitted_on_earlier_receipts_only(combo: dict[st
     assert info["warm_up_items"] == 9
     assert info["full_fit_items"] == 3
     assert set(info["weight_share"]) == {"run-a", "run-b"}
-    assert summary["calibrated"] is True
+    # The warm-up block holds raw averages: the run never claims calibrated scores.
+    assert summary["calibrated"] is False and summary["scores_calibrated"] is False
     assert summary["scores_on_usable_items"]["items"] == 27
 
 
@@ -519,6 +520,9 @@ def test_calibration_refuses_mixed_prompt_versions_and_knows_every_categoriser(
     )
     with pytest.raises(UsageError, match="more than one prompt version"):
         item_categories_calibrate.read_run(run)
+    assert item_categories_run.run_categorisers(
+        {"model_name": "c", "categorisers": ["a", "b", 3]}
+    ) == ["a", "b", "c"]
     assert item_categories_run.run_categorisers(
         {
             "model_name": "m",
