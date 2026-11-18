@@ -1,10 +1,12 @@
 require "test_helper"
 require_relative "../support/ml_service_stubs"
 require_relative "../support/receipt_images"
+require "turbo/broadcastable/test_helper"
 
 class ReceiptOcrJobTest < ActiveJob::TestCase
   include MlServiceStubs
   include ReceiptImages
+  include Turbo::Broadcastable::TestHelper
 
   def new_receipt(*colours)
     colours = [ 10 ] if colours.empty?
@@ -88,7 +90,7 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     assert_equal [ "Oat milk 1 l", "Apples" ], receipt.reload.items.map(&:name)
   end
 
-  test "picks up a receipt stuck in processing and retries a failed one" do
+  test "picks up a receipt stuck in processing and retries a failed one on request" do
     stub_ml_ocr
     stuck = new_receipt(1)
     stuck.update_columns(status: "processing")
@@ -96,6 +98,7 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     failed.update_columns(status: "failed", ocr_raw: { "error" => { "code" => "ml_timeout", "message" => "Too slow." } })
 
     ReceiptOcrJob.perform_now(stuck)
+    Receipts::RequestOcr.read_again(failed)
     ReceiptOcrJob.perform_now(failed)
 
     assert stuck.reload.extracted?
@@ -270,5 +273,99 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
       with_singleton_method(Receipts::ApplyOcr, :call, failing) { ReceiptOcrJob.perform_now(receipt) }
     end
     assert receipt.reload.processing?
+  end
+
+  # --- requests (Receipts::RequestOcr) and re-reads
+
+  test "starting clears the waiting request" do
+    stub_ml_ocr
+    receipt = new_receipt
+    receipt.update_columns(ocr_requested_at: Time.current)
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert_nil receipt.reload.ocr_requested_at
+    assert receipt.extracted?
+  end
+
+  test "an extracted receipt is read again only while a request to read it again waits, and its items are replaced" do
+    stub_ml_ocr
+    receipt = new_receipt
+    ReceiptOcrJob.perform_now(receipt)
+    assert_equal 2, receipt.reload.items.count
+
+    stub_ml_ocr(receipt: { merchant: "Second Read", items: [ { name: "Bread", amount: "30.00" } ] })
+    ReceiptOcrJob.perform_now(receipt)
+    assert_equal "Sample Grocer", receipt.reload.merchant_name, "a stray job leaves an extracted receipt alone"
+
+    Receipts::RequestOcr.read_again(receipt)
+    ReceiptOcrJob.perform_now(receipt)
+
+    receipt.reload
+    assert receipt.extracted?
+    assert_equal "Second Read", receipt.merchant_name
+    assert_equal [ "Bread" ], receipt.items.map(&:name)
+    assert_nil receipt.ocr_requested_at
+  end
+
+  test "a stray job leaves a failed receipt failed: only a request reads it again" do
+    stub_ml_ocr
+    receipt = receipts(:failed_receipt)
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert receipt.reload.failed?
+    assert_equal "unsupported_media_type", receipt.ocr_error["code"]
+    assert_empty ml_requests(:ocr)
+  end
+
+  test "a request that counts as lost no longer lets the job replace a read result" do
+    stub_ml_ocr
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(ocr_requested_at: (Receipt::OCR_REQUEST_LOST_AFTER + 1.hour).ago)
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert receipt.reload.extracted?
+    assert_equal 3, receipt.items.count
+    assert_empty ml_requests(:ocr)
+  end
+
+  test "a request for a receipt accepted in the meantime is dropped without reading it" do
+    stub_ml_ocr
+    receipt = receipts(:market_receipt)
+    receipt.update_columns(ocr_requested_at: Time.current)
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert_nil receipt.reload.ocr_requested_at
+    assert receipt.reviewed?
+    assert_empty ml_requests(:ocr)
+  end
+
+  # --- live updates (Receipts::LiveUpdate)
+
+  test "the receipt's page and the list are refreshed when the job starts and when it finishes" do
+    receipt = new_receipt
+    during = nil
+    stub_request(:post, ml_url("/ocr")).to_return do
+      during = capture_turbo_stream_broadcasts(receipt).size
+      { status: 200, body: JSON.generate(ml_ocr_body) }
+    end
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert_equal 1, during, "one refresh when the job starts, before the service answers"
+    assert_turbo_stream_broadcasts receipt, count: 2
+    assert_turbo_stream_broadcasts Receipts::LiveUpdate::STREAM, count: 2
+  end
+
+  test "the receipt's page is refreshed when the job fails" do
+    stub_ml_error(:ocr, status: 422, code: "too_many_images", message: "Send at most 3 files, got 4.")
+    receipt = new_receipt
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert_turbo_stream_broadcasts receipt, count: 2
   end
 end

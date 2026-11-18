@@ -14,6 +14,14 @@ Rails.application.routes.draw do
     resources :api_tokens, only: %i[ index create destroy ]
   end
 
+  # Receipts: the list, one receipt, the upload, and OCR requests. Photos are served by the app behind
+  # sign-in (Receipts::PhotosController), never by Rails' own Active Storage routes, which are not drawn.
+  resources :receipts, only: %i[ index show new create ] do
+    post :read, on: :member
+    post :read_all, on: :collection
+    get "photos/:id/:size", to: "receipts/photos#show", as: :photo, constraints: { id: /\d+/, size: /thumb|page|full/ }, format: false
+  end
+
   # The REST API for AI agents and scripts: personal API tokens only (Api::BaseController).
   # JSON only: `format: false` drops the `.:format` suffix, so `/api/v1/transactions.xml` is not routed.
   namespace :api, defaults: { format: :json }, format: false do

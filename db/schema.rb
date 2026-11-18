@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_130000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -144,6 +144,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_120000) do
     t.string "qr_fiscal_number"
     t.string "qr_receipt_number"
     t.string "ingest_id"
+    t.timestamptz "ocr_requested_at"
     t.index "COALESCE(issued_at, (created_at AT TIME ZONE 'UTC'::text)) DESC, id DESC", name: "index_receipts_on_sort_time_and_id"
     t.index ["batch"], name: "index_receipts_on_batch"
     t.index ["ingest_id"], name: "index_receipts_on_ingest_id", unique: true, where: "(ingest_id IS NOT NULL)"

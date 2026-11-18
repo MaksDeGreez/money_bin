@@ -1,0 +1,29 @@
+/ The stored fields of a receipt, read-only.
+- rows = { "Merchant" => receipt.merchant_name,
+    "Issued at" => receipt_time(receipt.issued_at),
+    "Total" => receipt_money(receipt.total),
+    "Currency" => receipt.currency,
+    "Kind" => receipt_kind_label(receipt),
+    "Fiscal number" => receipt.fiscal_number,
+    "Receipt number" => receipt.receipt_number,
+    "Card" => (receipt.card_last4 && "•••• #{receipt.card_last4}"),
+    "Incomplete" => (receipt.incomplete? ? "Yes: torn or cut off" : "No"),
+    "Batch" => receipt.batch,
+    "Ingest number" => receipt.ingest_id,
+    "OCR model" => (receipt.ocr_model_name && [ receipt.ocr_model_name, receipt.ocr_model_version ].compact.join(" ")),
+    "Uploaded" => receipt_time(receipt.created_at) }
+section aria-labelledby=dom_id(receipt, :details_heading)
+  h2.text-base id=dom_id(receipt, :details_heading) Details
+  dl.data-table.mt-3
+    - rows.each do |title, value|
+      .data-row
+        dt.data-row-title = title
+        dd.data-row-value
+          - if value.present?
+            = value
+          - else
+            span.text-ink-muted —
+    - if (transaction = receipt.ledger_transaction)
+      .data-row
+        dt.data-row-title Transaction
+        dd.data-row-value = "##{transaction.id} · #{l(transaction.occurred_on)} · #{receipt_money(transaction.amount, transaction.account.currency)}"

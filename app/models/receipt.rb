@@ -50,6 +50,11 @@ class Receipt < ApplicationRecord
   CARD_LAST4_FORMAT = /\A[0-9]{4}\z/
   QR_FIELDS = %i[qr_issued_at qr_total qr_fiscal_number qr_receipt_number].freeze
   CHUNK_SIZE = 64.kilobytes
+  # A request for OCR older than this counts as lost (the queue was emptied) and may be made again.
+  OCR_REQUEST_LOST_AFTER = 24.hours
+  # A receipt `processing` for longer than this counts as stuck (Sidekiq killed mid-job lost the job): "Read
+  # again" is offered. One read takes minutes at most, retries included.
+  OCR_STUCK_AFTER = 1.hour
 
   enum :status, { uploaded: "uploaded", processing: "processing", extracted: "extracted", reviewed: "reviewed", failed: "failed" },
     validate: true
@@ -59,10 +64,26 @@ class Receipt < ApplicationRecord
   scope :kind_unknown, -> { where(kind: nil) }
   scope :with_tax_qr, -> { where(QR_FIELDS.map { |field| arel_table[field].not_eq(nil) }.reduce(:or)) }
   scope :without_tax_qr, -> { where(QR_FIELDS.index_with(nil)) }
+  scope :incomplete_only, -> { where(incomplete: true) }
+  scope :in_batch, ->(batch) { where(batch:) }
+  # Newest first: receipts uploaded in the app (no ingest number) by upload time, then loaded ones by
+  # ingest number, highest first. The number is compared by length first: `rcpt_1000000` follows
+  # `rcpt_999999`, which a plain text order would get wrong.
+  scope :newest_first, -> {
+    order(Arel.sql("length(receipts.ingest_id) DESC NULLS FIRST, receipts.ingest_id DESC NULLS FIRST"))
+      .order(created_at: :desc, id: :desc)
+  }
 
   belongs_to :ledger_transaction, class_name: "Transaction", foreign_key: :transaction_id, optional: true, inverse_of: :receipt
   has_many :items, -> { order(:position) }, class_name: "ReceiptItem", inverse_of: :receipt, dependent: :destroy
-  has_many_attached :images
+  # Resized copies for the pages, made once by Active Storage and kept (active_storage_variant_records).
+  # Always JPEG, so a HEIC photo shows in every browser; metadata stripped. Served by
+  # Receipts::PhotosController, never through Rails' own Active Storage routes (they are not drawn).
+  has_many_attached :images do |attachable|
+    attachable.variant :thumb, resize_to_limit: [ 240, 240 ], format: :jpeg, saver: { quality: 80, strip: true }
+    attachable.variant :page, resize_to_limit: [ 1600, 1600 ], format: :jpeg, saver: { quality: 85, strip: true }
+    attachable.variant :full, format: :jpeg, saver: { quality: 90, strip: true }
+  end
 
   normalizes :currency, with: ->(value) { value.strip.upcase.presence }
   normalizes :batch, with: ->(value) { value.strip.presence }
@@ -135,6 +156,34 @@ class Receipt < ApplicationRecord
   # True when the tax-service QR code gave at least one ground-truth value.
   def tax_qr?
     QR_FIELDS.any? { |field| !self[field].nil? }
+  end
+
+  # The photos in upload order (the order the OCR job sends them in).
+  def ordered_images
+    images.attachments.sort_by(&:id)
+  end
+
+  # A request for OCR was recorded (Receipts::RequestOcr) and no job has started on it yet; the job clears
+  # it when it starts. A waiting one (ocr_request_waiting?) also lets the job read a `failed` or `extracted`
+  # receipt again.
+  def ocr_pending?
+    ocr_requested_at.present?
+  end
+
+  # A request is waiting and is not old enough to count as lost.
+  def ocr_request_waiting?
+    ocr_pending? && ocr_requested_at > OCR_REQUEST_LOST_AFTER.ago
+  end
+
+  # Being read for longer than a read takes: the job may have been lost (or a retry waits behind a long queue).
+  def ocr_stuck?
+    processing? && updated_at < OCR_STUCK_AFTER.ago
+  end
+
+  # The reason of the last OCR failure, { "code" => ..., "message" => ... }, or nil.
+  def ocr_error
+    error = ocr_raw["error"] if ocr_raw.is_a?(Hash)
+    error if error.is_a?(Hash)
   end
 
   # Nothing has happened to the receipt since it was stored: no OCR result, no items, no transaction. Only

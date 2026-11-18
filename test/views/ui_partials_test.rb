@@ -30,4 +30,35 @@ class UiPartialsTest < ActionView::TestCase
     assert_select "header p", 0
     assert_select ".page-header-actions", 0
   end
+
+  test "pagination links to the neighbouring pages through the given URL builder" do
+    pagination = Pagination.new(Receipt.order(:id), page: 2, per_page: 1)
+
+    render partial: "ui/pagination", locals: { pagination:, url: ->(page) { "/things?page=#{page}" } }
+
+    assert_select "nav.pagination[aria-label=Pages]"
+    assert_select "a[rel=prev][href=?]", "/things?page=1", text: /Previous/
+    assert_select "a[rel=next][href=?]", "/things?page=3", text: /Next/
+    assert_select "p", text: /2–2 of #{Receipt.count}/
+  end
+
+  test "pagination disables the missing direction and is left out for one page" do
+    render partial: "ui/pagination", locals: { pagination: Pagination.new(Receipt.order(:id), page: 1, per_page: 1), url: ->(page) { "/p/#{page}" } }
+    assert_select "button[disabled]", text: /Previous/
+    assert_select "a[rel=next]"
+
+    render partial: "ui/pagination", locals: { pagination: Pagination.new(Receipt.none, page: 1), url: ->(page) { "/p/#{page}" } }
+    assert_empty rendered.strip
+  end
+
+  test "count tabs link each value with its count and mark the current one" do
+    render partial: "ui/count_tabs", locals: { label: "Status", tabs: [
+      { label: "All", count: 1200, url: "/r", current: false },
+      { label: "Failed", count: 3, url: "/r?status=failed", current: true }
+    ] }
+
+    assert_select "nav.count-tabs[aria-label=Status] a.count-tab", 2
+    assert_select "a[href='/r']", text: /All\s*1 200/
+    assert_select "a[aria-current=page][href='/r?status=failed']", text: /Failed\s*3/
+  end
 end

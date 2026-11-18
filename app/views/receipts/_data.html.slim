@@ -1,0 +1,8 @@
+/ The data column of a receipt page: OCR state, the stored fields, the QR comparison and the items.
+/ Read-only for now. The page's live refresh (Receipts::LiveUpdate) morphs it when OCR starts, finishes or
+/ fails; a form here (the review form) must survive that, e.g. by not being refreshed while OCR runs.
+section.min-w-0.space-y-8 id=dom_id(receipt, :data) aria-label="Receipt data"
+  = render "receipts/ocr_state", receipt: receipt
+  = render "receipts/details", receipt: receipt
+  = render "receipts/qr_comparison", receipt: receipt
+  = render "receipts/items", receipt: receipt

@@ -202,6 +202,10 @@
     @apply aria-invalid:border-danger;
   }
   .form-control-select { @apply appearance-none pr-9; }
+  .form-control-file {
+    @apply h-auto cursor-pointer py-1.5;
+    @apply file:mr-3 file:cursor-pointer file:rounded-md file:border file:border-hairline file:bg-surface file:px-3 file:py-1 file:text-sm file:font-medium file:text-ink-display;
+  }
   .form-control-textarea { @apply h-auto min-h-[6rem] py-2 leading-normal; }
   .form-select-wrapper { @apply relative; }
   .form-select-chevron { @apply pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted; }
@@ -267,6 +271,32 @@
   .data-grid-link { @apply text-ink-display no-underline hover:underline; }
   /* The last cell: inline row actions (small ghost buttons), as narrow as its content. */
   .data-grid .data-grid-actions { @apply w-0 whitespace-nowrap py-1.5 text-right; }
+
+  /* Filter bar: a GET form of selects and check boxes above a list (keeps its state in the URL) */
+  .filter-bar { @apply flex flex-wrap items-end gap-4 rounded-md border border-hairline bg-surface p-4; }
+  .filter-bar .field { @apply w-full sm:w-auto sm:min-w-[11rem]; }
+  .filter-bar-actions { @apply flex items-center gap-2 pb-0.5; }
+
+  /* Count tabs (ui/_count_tabs): links that each pick one value of a filter, with how many rows have it */
+  .count-tabs { @apply flex flex-wrap gap-2; }
+  .count-tab {
+    @apply inline-flex items-center gap-2 rounded-md border border-hairline px-3 py-1.5 text-sm text-ink-body no-underline transition-colors hover:bg-surface hover:text-ink-display;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-page;
+  }
+  .count-tab[aria-current="page"] { @apply border-accent bg-accent-faded text-ink-display; }
+  .count-tab-number { @apply tabular-nums text-ink-muted; }
+
+  /* Pagination (ui/_pagination) */
+  .pagination { @apply flex flex-wrap items-center justify-between gap-3 text-sm text-ink-muted; }
+  .pagination-links { @apply flex items-center gap-2; }
+
+  /* A photo: a thumbnail in a list row, or a full-width photo that links to the original */
+  .photo-thumb { @apply block h-14 w-14 shrink-0 rounded border border-hairline bg-surface object-cover; }
+  .photo-frame {
+    @apply block overflow-hidden rounded-md border border-hairline bg-surface;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-page;
+  }
+  .photo-frame img { @apply block h-auto w-full; }
 
   /* Callouts */
   .callout {

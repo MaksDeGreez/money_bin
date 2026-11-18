@@ -163,7 +163,8 @@ class McpToolsTest < ActionDispatch::IntegrationTest
 
   test "recent_receipts: newest first, a status filter, and a page size of 10 by default" do
     receipts = mcp_structured("recent_receipts")["receipts"]
-    assert_equal [ receipts(:new_receipt).id, receipts(:corner_receipt).id, receipts(:market_receipt).id ], receipts.map { |row| row["id"] }
+    assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:market_receipt), receipts(:failed_receipt) ].map(&:id),
+      receipts.map { |row| row["id"] }
 
     assert_equal [ receipts(:market_receipt).id ], mcp_structured("recent_receipts", { status: "reviewed" })["receipts"].map { |row| row["id"] }
     assert_equal McpTools::RecentReceipts::DEFAULT_LIMIT, mcp_tools["recent_receipts"].dig("inputSchema", "properties", "limit", "description")[/(\d+) by default/, 1].to_i

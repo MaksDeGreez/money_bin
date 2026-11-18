@@ -9,6 +9,13 @@ module ApplicationCable
       connect
 
       assert_equal users(:owner), connection.current_user
+      assert_equal session_record, connection.current_session
+    end
+
+    test "a cookie that is not signed is refused" do
+      cookies[Session::COOKIE_NAME] = users(:owner).sessions.create!.id
+
+      assert_reject_connection { connect }
     end
 
     test "a browser without a session is refused" do

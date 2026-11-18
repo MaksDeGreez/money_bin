@@ -42,3 +42,16 @@ corner_receipt:
 # Just uploaded in the app: no OCR yet, no items, kind not known.
 new_receipt:
   sha256: 135c2f31616a107039a7880c07ccb4c86f730b414ac45bd495a49106c0699a9c
+
+# OCR gave up: the service refused the photo. Loaded from the ingest set, with a tax QR code.
+failed_receipt:
+  status: failed
+  ingest_id: rcpt_000042
+  batch: november-shopping
+  qr_issued_at: 2026-11-02T09:15:00+02:00
+  qr_total: 88.00
+  ocr_raw: { "error": { "code": "unsupported_media_type", "message": "The file is not a supported image." } }
+  sha256: 5d41402abc4b2a76b9719d911017c592ae2a4cdd0b1d8f3b0e3c6c2a3c8d9e0f
+  # Loaded before the others: no time on it, so lists by time put it last.
+  created_at: 2026-10-01 09:00:00
+  updated_at: 2026-10-01 09:00:00

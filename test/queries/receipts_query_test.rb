@@ -11,8 +11,9 @@ class ReceiptsQueryTest < ActiveSupport::TestCase
   test "newest first: by the time on the receipt, else the upload time, then by id" do
     rows = ReceiptsQuery.new.relation.to_a
 
-    # new_receipt has no issued_at and was uploaded now; corner (Oct 8) is newer than market (Oct 3).
-    assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:market_receipt) ], rows
+    # new_receipt has no issued_at and was uploaded now; corner (Oct 8) is newer than market (Oct 3);
+    # failed_receipt has no issued_at and was uploaded on Oct 1.
+    assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:market_receipt), receipts(:failed_receipt) ], rows
   end
 
   test "an old upload with no time on it sorts by its upload time" do
@@ -20,7 +21,7 @@ class ReceiptsQueryTest < ActiveSupport::TestCase
 
     rows = ReceiptsQuery.new.relation.to_a
 
-    assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), old_failed, receipts(:market_receipt) ], rows
+    assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), old_failed, receipts(:market_receipt), receipts(:failed_receipt) ], rows
   end
 
   test "filters by status" do
@@ -50,7 +51,8 @@ class ReceiptsQueryTest < ActiveSupport::TestCase
     page = ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { ReceiptsQuery.new.page }
 
     assert_equal 1, queries
-    assert_equal({ receipts(:new_receipt).id => 0, receipts(:corner_receipt).id => 3, receipts(:market_receipt).id => 3 },
+    assert_equal({ receipts(:new_receipt).id => 0, receipts(:corner_receipt).id => 3, receipts(:market_receipt).id => 3,
+      receipts(:failed_receipt).id => 0 },
       page.records.to_h { |receipt| [ receipt.id, receipt.items_count ] })
   end
 

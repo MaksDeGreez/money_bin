@@ -1,0 +1,27 @@
+/ One row of the receipts list.
+- photo = receipt.ordered_images.first
+- url = receipt_path(receipt, filter_params)
+tr id=dom_id(receipt)
+  td.w-0
+    - if photo
+      = link_to url, tabindex: -1, aria: { hidden: true } do
+        img.photo-thumb src=receipt_photo_path(receipt, photo, :thumb) alt="" loading="lazy" width="56" height="56"
+  td.whitespace-nowrap
+    = link_to receipt_label(receipt), url, class: "data-grid-link font-medium"
+    - if receipt.batch
+      .text-xs.text-ink-muted = receipt.batch
+  td.whitespace-nowrap = receipt_status_badge(receipt)
+  td.whitespace-nowrap = receipt_kind_label(receipt)
+  td
+    - if receipt.tax_qr?
+      = ui_badge "QR", tone: :accent, title: "Has tax-service QR data"
+    - else
+      span.text-ink-muted aria-label="No tax-service QR data" —
+  td = receipt.merchant_name
+  td.whitespace-nowrap = receipt_time(receipt.issued_at)
+  td.data-grid-num = receipt_money(receipt.total, receipt.currency)
+  td.data-grid-num = receipt.items_count
+  td.whitespace-nowrap
+    - if (transaction = receipt.ledger_transaction)
+      span title="Transaction ##{transaction.id}"
+        = "#{l(transaction.occurred_on)} · #{receipt_money(transaction.amount)}"
