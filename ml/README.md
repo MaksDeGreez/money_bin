@@ -8,15 +8,17 @@ A small HTTP service for the money_bin app. It does two jobs:
 
 The Rails app calls this service and stores the results.
 
-Two backends work today:
+Three backends:
 
 - **`stub`** (the default) returns fixed, invented data in the final response
   shapes. The tests and CI use it.
 - **`mlx`** reads receipts with a local vision-language model (a Qwen VL model
   run by [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)) on a Mac with Apple
   silicon. Nothing leaves the machine. It does not categorise yet (501).
-
-`openrouter` (a hosted model) is a placeholder that answers 501.
+- **`openrouter`** reads receipts with a hosted vision model through
+  [OpenRouter](https://openrouter.ai), only through endpoints with zero data
+  retention. The receipt photos and the fixed prompt leave the machine; nothing
+  else does (see "The openrouter backend"). It does not categorise (501).
 
 ## Requirements
 
@@ -62,8 +64,9 @@ uv run ruff check .           # lint
 uv run ruff format --check .  # format check (use `ruff format .` to fix)
 ```
 
-The tests never load a model: the `mlx` backend is tested with a fake
-generator. `app/backends/mlx_vlm_generator.py`, the only code that calls
+The tests never load a model and never reach the network: the `mlx` backend
+is tested with a fake generator, the `openrouter` backend with a fake
+transport (and httpx's mock transport for the real client). `app/backends/mlx_vlm_generator.py`, the only code that calls
 mlx-vlm, is left out of the coverage measurement.
 
 ## Settings
@@ -76,9 +79,25 @@ mlx-vlm, is left out of the coverage measurement.
 | `MLX_OCR_MAX_TOKENS`           | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer. A receipt with 40 items needs about 2,000. |
 | `MLX_OCR_IMAGE_MAX_SIDE`       | `2048`                                      | 256 to 4096                 | Each photo is scaled down so that its longer side is at most this many pixels. |
 | `MLX_OCR_CONSTRAINED_DECODING` | `true`                                      | `true`, `false`             | Constrain the model's answer to the JSON schema (see "The mlx backend"). |
+| `OPENROUTER_API_KEY`           | none                                        | an OpenRouter API key       | The `openrouter` backend's key. A secret: keep it in the git-ignored `.env`. Without it the service starts and `/ocr` answers 501 `openrouter_key_missing` (`openrouter_key_invalid` for a key with spaces or control characters). |
+| `OPENROUTER_OCR_MODEL`         | none                                        | a model id from openrouter.ai/models | The `openrouter` backend's model. No default: without it the service does not start. |
+| `OPENROUTER_TIMEOUT`           | `100`                                       | seconds, 10 to 600          | A hard deadline for one receipt: reading the endpoint list when it is due, the call and the repair call together, connecting and uploading included; an answer still arriving at the deadline is abandoned. A call is not started with less than 10 seconds left, a repair call not with less than the first call took. Keep it under the Rails client's `ML_SERVICE_OCR_TIMEOUT` (120), so the client does not retry (and pay again) while a call is still running. |
+| `OPENROUTER_MAX_TOKENS`        | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer, as `MLX_OCR_MAX_TOKENS`. |
+| `OPENROUTER_OCR_IMAGE_MAX_SIDE` | `2048`                                     | 256 to 4096                 | As `MLX_OCR_IMAGE_MAX_SIDE`, for the photos sent to the hosted model. |
+| `OPENROUTER_STRUCTURED_OUTPUT` | `true`                                      | `true`, `false`             | Ask for the answer's JSON schema when the endpoints support it (see "The openrouter backend"). |
 
 An unknown `OCR_BACKEND` value stops the service at startup. The error
 message lists the valid names.
+
+Each model backend has its own image-size setting with the same default
+(2048), not one shared setting: the local and the hosted backend can then be
+tuned apart (a hosted model's cost grows with the pixels), while a comparison
+run with the defaults sends both the same pixels. `MLX_OCR_IMAGE_MAX_SIDE`
+keeps its name and its behaviour.
+
+The service reads its settings from the real environment only. `bin/dev`
+starts it through foreman, which loads the repository's `.env`; for a command
+run by hand, pass the file: `uv run --env-file ../.env ...`.
 
 ## Endpoints
 
@@ -95,6 +114,11 @@ curl http://127.0.0.1:8100/health
 With `mlx`, `model_name` is the model id (`MLX_OCR_MODEL`) and
 `model_version` the revision of the weights: the Hugging Face commit, or
 `local` for a model in a plain folder.
+
+With `openrouter`, `model_name` is `OPENROUTER_OCR_MODEL` (`not-configured`
+without it) and `model_version` the model's dated slug from OpenRouter's model
+list (`canonical_slug`, for example `vendor/model-20260101`), which changes
+when the model behind the id changes; `not-started` until the list was read.
 
 ### `POST /ocr`
 
@@ -177,7 +201,7 @@ The rest of the answer:
   fixed it.
 - `elapsed_seconds`: how long the backend took, as a decimal string. With
   `mlx` it includes the wait for an earlier request (one receipt is read at a
-  time).
+  time); with `openrouter` it includes both calls when the repair pass ran.
 
 ### `POST /categorise`
 
@@ -232,8 +256,17 @@ Every error has the same shape:
 | 422    | `empty_image`             | An image file is empty.                        |
 | 422    | `image_unreadable`        | An image has the right signature but cannot be decoded (a cut-off file). |
 | 422    | `ocr_parse_failed`        | The model's answer was not valid receipt JSON, even after one repair pass. |
-| 501    | `backend_not_implemented` | The selected backend is only a placeholder.    |
+| 424    | `openrouter_auth_failed`, `openrouter_payment_required`, `openrouter_refused`, `openrouter_no_matching_endpoint`, `openrouter_bad_request`, `openrouter_provider_unverified` | `openrouter` only: OpenRouter refused the request (HTTP 401, 402, 403, 404, another 4xx, also when reported inside an answer with HTTP 200), or an answer came from a provider outside the zero-retention list (then nothing more is sent until the service restarts). Permanent. |
+| 501    | `backend_not_implemented` | The selected backend cannot do this (`/categorise` on `mlx` and `openrouter`). |
+| 501    | `openrouter_model_missing`, `openrouter_key_missing`, `openrouter_key_invalid`, `openrouter_model_unknown`, `openrouter_model_without_images`, `openrouter_no_zdr_endpoint` | `openrouter` only: a setting is missing, or the model is unknown, takes no images or has no strict zero-retention endpoint. |
+| 502    | `openrouter_upstream_error`, `openrouter_unreachable`, `openrouter_bad_response` | `openrouter` only: the hosted service failed (HTTP 408 or 5xx, an error in the answer), cannot be reached, or answered in an unexpected shape. Transient. |
+| 503    | `openrouter_rate_limited`, `openrouter_catalogue_unavailable` | `openrouter` only: rate limited (HTTP 429), or the list of zero-retention endpoints cannot be read (nothing is sent then). Transient. |
+| 504    | `openrouter_timeout`      | `openrouter` only: no answer within the receipt's `OPENROUTER_TIMEOUT`. Transient. |
 | 500    | `internal_error`          | An unexpected error. Details go to the log.    |
+
+The Rails job retries a 5xx other than 501 and treats a 4xx or 501 as
+permanent. An `openrouter` error message is the service's own short text: an
+upstream error body is never passed on, since it can echo the request.
 
 `ocr_parse_failed` is a 4xx on purpose: the model is deterministic
 (temperature 0), so sending the same photos again gives the same answer. The
@@ -289,6 +322,107 @@ use the same prompt and rules and the two differ only in the model:
   computed. It never rounds money: a value with more than 2 decimal places (3
   for a quantity) becomes null and is counted. Only `Decimal`, never a float.
 
+## The openrouter backend
+
+`app/backends/openrouter.py`. The reasons are in
+`docs/decisions/0012-hosted-ocr-backend.md`. It uses the shared prompt,
+parsing with its repair pass (a second request with the same photos, the first
+answer and the problems found) and post-processing, so it differs from the
+local backend only in the model. All the photos of a receipt go in one
+chat-completions request, in order, at temperature 0.
+
+### Zero data retention
+
+Every request is routed only to endpoints that keep nothing and train on
+nothing. The code enforces it; no setting can switch it off:
+
+1. Before the first call, and again once the list is an hour old, the backend
+   reads OpenRouter's public model list and its list of zero-data-retention
+   endpoints (`GET /api/v1/models`, `GET /api/v1/endpoints/zdr`, without the
+   key and without any receipt data). It keeps the configured model's
+   endpoints whose `safety_retention` flag is explicitly `false`: a Safety
+   Retention endpoint may keep prompts flagged by the provider's safety
+   classifiers, and OpenRouter's `zdr` request flag alone still lets requests
+   reach them on a default self-serve account. A slug that would also match a
+   retaining endpoint of the model (in `only`, `vendor` also matches
+   `vendor/eu`) is not used, nor is any endpoint of a provider that also has a
+   retaining endpoint for the model (an answer names its provider, not its
+   endpoint, so step 3 could not tell them apart). A retaining entry with
+   neither a slug nor a provider name blocks the model.
+2. Every request carries `provider: {"only": [those endpoints], "zdr": true,
+   "data_collection": "deny", "allow_fallbacks": true}`. `zdr` and
+   `data_collection` come from a constant applied last.
+3. The provider each answer names must be one of those endpoints' providers
+   (compared without case); any other answer is discarded (424
+   `openrouter_provider_unverified`), and from then on the backend sends
+   nothing until the service is restarted (`ocr_run` stops the run). Chat
+   calls go one at a time, from sending to this check, so no request slips
+   out while another one's answer is being checked; the Rails OCR queue reads
+   one receipt at a time anyway. `/health` does not show the halt; the log
+   does, and every `/ocr` answers 424 until the restart.
+
+A model that is unknown, takes no images or has no such endpoint stops the
+service at start-up. When the list cannot be read, no request is sent (503).
+Still set the OpenRouter account's privacy settings to "ZDR only" for every
+model group and leave prompt logging off: it covers requests made outside this
+code too.
+
+### What is sent
+
+- the photos, decoded, turned upright, scaled to
+  `OPENROUTER_OCR_IMAGE_MAX_SIDE` and re-encoded from their pixels as new
+  JPEGs (no EXIF, GPS, ICC profile or comment), as data URLs: no file name;
+- the fixed prompt of `app/ocr/prompt.py` (and, in the repair pass, the
+  model's own first answer and the problems found);
+- `model`, `temperature`, `max_tokens`, `stream`, `provider` and, with
+  structured output, `response_format`. No `user`, `session_id`, `metadata`,
+  `trace` or `plugins` field; no receipt id, ledger data or user id;
+- headers: `Authorization: Bearer <key>`, `Content-Type`, `Accept`,
+  `User-Agent: ocr-client`, and httpx's `Host`, `Content-Length`,
+  `Accept-Encoding`, `Connection`. No `HTTP-Referer` or `X-Title` (the
+  attribution headers that would name the app). The client ignores proxy
+  variables and `.netrc`, follows no redirect, and keeps no cookie (no
+  `Cookie` header ever goes out). The anonymous catalogue reads and the keyed
+  chat requests use separate clients, so they share no connection.
+
+The limits: what is printed on the receipt goes with the photo, including the
+masked card number of a card slip (`**** 1234`). It is not blurred: finding it
+needs OCR first (see the decision record). The provider processes the photo
+and keeps nothing; OpenRouter keeps the request's metadata (time, model,
+tokens, cost) for billing, and screens all traffic, ZDR included, for child
+sexual abuse material. The network sees the machine's IP address.
+
+The key is read as a secret (`SecretStr`), sent only in the chat request's
+`Authorization` header, and never logged, put in an error or written to a run
+folder. A key with spaces or control characters is refused before it reaches
+the HTTP client, whose errors would quote the header. The tests use an obvious
+fake key and a fake transport, and a fixture makes every socket connection in
+the test run fail, so no test can reach the network.
+
+### Structured output
+
+When some of the allowed endpoints support structured outputs, the request
+asks for the answer's JSON schema (`response_format` with `json_schema`,
+strict) and `only` names just those endpoints; otherwise it asks for plain
+JSON.
+The answer is parsed and checked either way. `OPENROUTER_STRUCTURED_OUTPUT=false`
+turns the schema off. Each call records which was used.
+
+### Cost
+
+Every OpenRouter answer carries `usage`: prompt and completion tokens and
+`cost`, the amount charged in credits (US dollars). The answer is parsed with
+numbers as `Decimal`, so the cost keeps its exact digits, and costs are added
+with enough precision to stay exact (`app/decimals.py`; a cost of more than 50
+digits counts as unknown). A call whose answer was lost after it was sent (a
+read timeout, a cut connection, an unreadable answer) may still have been
+charged: it counts as a call with an unknown cost, so the receipt's cost is
+null rather than too low. A call refused with an error status is counted as
+not charged. Each call records its
+latency, tokens, cost, the provider that served it, the model it ran
+(`model`) and whether structured output was used; the evaluation scripts sum
+them (below).
+
 ## Evaluating OCR on the receipt set
 
 `evaluation/` runs a backend over the receipt set made by
@@ -312,19 +446,48 @@ uv run python -m evaluation.ocr_fields --run ~/Documents/money_bin_data/runs/<ru
 `ocr_run` options: `--only-tax-qr` (only receipts whose QR code is a tax-service
 link, which have ground truth), `--limit N`, `--ids FILE` (receipt ids, one per
 line), `--crops` (send the ingest tool's cropped photos where they exist),
-`--model ID`, `--image-max-side N`, `--max-tokens N`. It writes
+`--model ID`, `--image-max-side N`, `--max-tokens N` (they set the
+`MLX_OCR_*` settings, or the `OPENROUTER_*` ones with `--backend openrouter`). It writes
 `<out>/<run id>/predictions.jsonl` (one line per receipt: status `ok`,
 `parse_failed`, `error` or `skipped` for more than 3 photos; seconds; whether it
 was repaired; the receipt; token counts, peak memory and post-processing
 counts) and `run.json` (backend, model, weights revision, prompt version, git
 commit, settings, counts, seconds per receipt).
 
+A hosted run reads `OPENROUTER_API_KEY` and `OPENROUTER_OCR_MODEL` from the
+environment and sends the photos to the hosted model (only to zero-retention
+endpoints, as above); it stops before the first receipt when a setting is
+missing or the endpoint list cannot be read:
+
+```sh
+uv run --env-file ../.env python -m evaluation.ocr_run \
+  --ingest ~/Documents/money_bin_data/receipts \
+  --out ~/Documents/money_bin_data/runs \
+  --backend openrouter --model vendor/model-id --only-tax-qr --limit 20
+```
+
+Each predictions line then also has, in `diagnostics`: `cost_usd` (the sum of
+the calls' costs as a decimal string; null when a call reported none),
+`latency_seconds`, `providers`, `structured_output` and `calls` (per call:
+seconds, prompt and completion tokens, cost, provider, served model, finish
+reason, structured output). A receipt that failed after a call keeps its
+accounting: it was paid for. `run.json` adds `cost_usd` (`total_usd`,
+`per_receipt_usd`, `per_1000_receipts_usd`, `receipts_with_cost`,
+`receipts_without_cost`, `complete`), `upstream_providers` (calls per
+provider), `stopped` (why a run ended early, such as
+`openrouter_provider_unverified`, or null) with `counts.attempted`, and in
+`settings` the endpoints the requests were limited to. The
+averages are over the receipts that made a call and reported a cost, rounded
+for the report (a millionth of a dollar per receipt, a ten-thousandth per
+1,000); the totals are exact.
+
 `ocr_fields` scores the receipts that have QR fields: date, time (to the
 minute, Kyiv time), total, fiscal number and receipt number as shares of exact
 matches; the share of receipts whose items add up exactly to the QR total
 (there is no item ground truth yet, so this stands in for item quality); the
 share read as `fiscal`; parse failures; seconds per receipt (mean, median, 90th
-percentile). A failed receipt counts as wrong for every field. The scores are
+percentile); and for a hosted run the cost per receipt and per 1,000 receipts
+(`cost_usd`, as in `run.json`; null for a local backend). A failed receipt counts as wrong for every field. The scores are
 also written to `scores.json` in the run folder.
 
 ## Code layout
@@ -341,7 +504,7 @@ app/
     stub.py        the stub backend (default)
     mlx.py         the local MLX backend: worker thread, VisionGenerator protocol
     mlx_vlm_generator.py  the real model call (mlx-vlm); macOS on Apple silicon only
-    openrouter.py  placeholder for a hosted model
+    openrouter.py  the hosted backend: zero-retention routing, Transport protocol
   ocr/
     prompt.py      the prompt, the answer schema, PROMPT_VERSION
     parsing.py     the model's text to a raw receipt, with one repair pass
@@ -350,7 +513,7 @@ app/
 evaluation/
   ocr_run.py       run a backend over the receipt set
   ocr_fields.py    score a run against the QR codes
-  common.py        shared helpers
+  common.py        shared helpers (timings, cost summary)
 categoriser/       transaction categoriser training (see below)
 tests/
 ```
@@ -365,7 +528,9 @@ tests/
    version, whether a repair was needed, and diagnostics for the evaluation).
    A vision model backend uses `app/ocr/` for the prompt, the parsing and the
    post-processing. Raise `BackendNotImplementedError` for a task the backend
-   does not support yet.
+   does not support yet, and `BackendError` (a status, a code, a short message
+   of your own) for a failure the client must tell apart: a 5xx other than
+   501 is retried by the Rails job, a 4xx or 501 is not.
 3. If it needs to load something, do it in `start()` (called once when the
    service starts) and release it in `stop()`.
 4. Add the class to `BACKENDS` in `app/backends/__init__.py`. It can now be

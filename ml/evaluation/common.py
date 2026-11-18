@@ -5,8 +5,11 @@ import math
 import os
 import statistics
 from collections.abc import Iterable, Iterator, Sequence
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+
+from app.decimals import exact_sum, wide_context
 
 FILE_MODE = 0o600
 DIR_MODE = 0o700
@@ -81,4 +84,59 @@ def timing_summary(seconds: Iterable[float]) -> dict[str, float | int | None]:
         "mean": rounded(statistics.fmean(values)) if values else None,
         "median": rounded(statistics.median(values)) if values else None,
         "p90": rounded(percentile(values, 0.9)),
+    }
+
+
+# Cost statistics are reported to a millionth of a dollar per receipt and to a
+# ten-thousandth per 1,000 receipts. The sums themselves are exact.
+COST_PER_RECEIPT_PLACES = Decimal("0.000001")
+COST_PER_1000_PLACES = Decimal("0.0001")
+
+
+def _cost(value: Any) -> Decimal | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        cost = Decimal(value)
+    except InvalidOperation:
+        return None
+    # A receipt's cost is a sum of bounded call costs, so it may be longer than
+    # one call's: only a finite value is required here.
+    return cost if cost.is_finite() and cost >= 0 else None
+
+
+def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """The hosted model's cost over the receipts of a run, in US dollars.
+
+    Counts every receipt that made at least one model call, whatever its
+    status: a failed receipt was paid for too. `cost_usd` in a record's
+    diagnostics is the sum OpenRouter reported for its calls (a decimal
+    string), or null when a call reported none; such receipts are counted in
+    `receipts_without_cost` and left out of the averages, so `complete` says
+    whether the averages cover every paid receipt. None when no record carries
+    a cost field at all (a local backend).
+    """
+    hosted = [
+        record.get("diagnostics") or {}
+        for record in records
+        if "cost_usd" in (record.get("diagnostics") or {})
+    ]
+    if not hosted:
+        return None
+    paid = [diagnostics for diagnostics in hosted if diagnostics.get("model_calls", 0) > 0]
+    costs = [_cost(diagnostics.get("cost_usd")) for diagnostics in paid]
+    known = [cost for cost in costs if cost is not None]
+    total = exact_sum(known)
+    per_receipt = per_1000 = None
+    if known:
+        with wide_context():
+            per_receipt = format((total / len(known)).quantize(COST_PER_RECEIPT_PLACES), "f")
+            per_1000 = format((total * 1000 / len(known)).quantize(COST_PER_1000_PLACES), "f")
+    return {
+        "total_usd": format(total, "f"),
+        "receipts_with_cost": len(known),
+        "receipts_without_cost": len(costs) - len(known),
+        "complete": len(known) == len(costs),
+        "per_receipt_usd": per_receipt,
+        "per_1000_receipts_usd": per_1000,
     }
