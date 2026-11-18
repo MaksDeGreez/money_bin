@@ -178,14 +178,16 @@ validation is the effect of the refit itself; it is a protocol choice, not a tun
   short half-life and was not tried separately.
 - **Sentence embeddings.** The texts mix Ukrainian, Russian and English, with transliterations and
   truncated bank strings; a multilingual sentence encoder may relate texts that share no n-gram (a new
-  payee whose name says what it sells). Two local encoders were tried, `jinaai/jina-embeddings-v3`
-  (with its classification adapter) and `intfloat/multilingual-e5-base`, each alone with the one-hot
+  payee whose name says what it sells). Two local encoders were tried, `intfloat/multilingual-e5-base`
+  and `intfloat/multilingual-e5-large` (mean pooling, the "query: " prefix), each alone with the one-hot
   fields and next to the TF-IDF features, under a logistic regression. They run on the Apple GPU with
-  PyTorch from the local Hugging Face cache (`local_files_only`, pinned revisions): transaction text is
-  never sent to a hosted model. The vectors are cached outside the repository, keyed by the encoder and
-  the text's hash. torch and transformers are an optional dependency group installed only on Apple
-  silicon, so CI and the tests (which use a fake encoder) never need them; jina-v3's remote code needs
-  transformers 4.x, hence the pin below 5.
+  PyTorch from the local Hugging Face cache (`local_files_only`, pinned revisions, no remote code):
+  transaction text is never sent to a hosted model. The vectors are cached outside the repository, keyed
+  by the encoder and the text's hash. torch and transformers are an optional dependency group installed
+  only on Apple silicon, so CI and the tests (which use a fake encoder) never need them.
+  `jinaai/jina-embeddings-v3` was the first choice, but its remote code does not load with transformers
+  5, which the local OCR backend's `mlx-vlm` requires; both groups must install together with a plain
+  `uv sync`, so it was replaced before any candidate was scored.
 - **Class-weight strength.** An error analysis of the first version on the validation slice (aggregates
   only) showed its balanced class weights pulling frequent payees with a mixed history, and rows with no
   text at all, towards rare categories. The weights are therefore also tried at a lower strength

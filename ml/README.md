@@ -564,7 +564,7 @@ the manifest's file hashes before they read anything.
 
 `selection` options: `--out DIR`, `--seed N` (42), `--test-fraction` (0.2),
 `--validation-fraction` (0.15), `--c-grid` (0.1 0.3 1 3 10), `--resamples`
-(1000 bootstrap resamples), `--min-df` (2), `--encoders` (`jina-v3 e5-base`;
+(1000 bootstrap resamples), `--min-df` (2), `--encoders` (`e5-base e5-large`;
 none for TF-IDF only), `--embedding-cache DIR`
 (`~/Documents/money_bin_data/cache/embeddings/`), `--taxonomy`
 (`../db/seeds/taxonomy.yml`). `score` options: `--selection FILE` (required),
@@ -600,17 +600,17 @@ them, so a selection run cannot use a test label or write a test metric.
 | `+mix` | the hybrid: `w * q + (1 - w) * p_model`, `q` the payee's category shares in the fitting rows, `w = n / (n + k) * purity ** beta`; for an unknown payee, the MCC's shares with weight `alpha_mcc * ...` | `k`, `beta`, `alpha_mcc` |
 | `+switch` | the payee's history decides when it was seen at least `min_count` times with a purity of at least `min_purity`; the model otherwise | `min_count`, `min_purity` |
 
-The encoders: `jina-v3` (`jinaai/jina-embeddings-v3`, its classification
-adapter) and `e5-base` (`intfloat/multilingual-e5-base`, "query: " prefix),
-each at a pinned revision, loaded with `local_files_only` from the local
-Hugging Face cache and run with PyTorch on the Apple GPU. Download the weights
-once (no transaction data is involved):
-`uv run hf download intfloat/multilingual-e5-base --revision <revision in categoriser/embeddings.py>`.
+The encoders: `e5-base` (`intfloat/multilingual-e5-base`) and `e5-large`
+(`intfloat/multilingual-e5-large`), with the "query: " prefix and mean
+pooling, each at a pinned revision, loaded with `local_files_only` from the
+local Hugging Face cache (no remote code) and run with PyTorch on the Apple
+GPU. Download the weights once (no transaction data is involved):
+`uv run hf download intfloat/multilingual-e5-large --revision <revision in categoriser/embeddings.py>`.
 torch and transformers are in the `embeddings` dependency group, which a plain
 `uv sync` installs on macOS on Apple silicon only; elsewhere, and in the tests
 (which use a fake encoder), they are not needed. The vectors are cached in a
-SQLite file keyed by the SHA-256 of the encoder (model, revision, prefix or
-task, maximum length) and the text, so each distinct text is encoded once.
+SQLite file keyed by the SHA-256 of the encoder (model, revision, prefix,
+pooling, maximum length) and the text, so each distinct text is encoded once.
 
 **Selection rule** (fixed before any candidate was scored, recorded in the
 JSON): eligible are the candidates whose validation top-3 accuracy is at least

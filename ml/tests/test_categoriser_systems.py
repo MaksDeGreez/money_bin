@@ -66,14 +66,14 @@ def test_the_default_config_is_the_first_version() -> None:
 def test_config_names_complexity_and_round_trip() -> None:
     config = Config(
         feature_set="tfidf+embedding",
-        encoder="jina-v3",
+        encoder="e5-large",
         c=0.3,
         half_life_days=180.0,
         class_weight_power=0.5,
         hybrid=HybridParams(mode="mix", k=2.0, beta=1.0, alpha_mcc=0.3),
     )
 
-    assert config.name == "tfidf+emb:jina-v3+recency+classweight+mix"
+    assert config.name == "tfidf+emb:e5-large+recency+classweight+mix"
     assert config.complexity == (1, 4)
     assert Config.from_dict(config.as_dict()) == config
     switch = Config(hybrid=HybridParams(mode="switch", min_count=2, min_purity=0.7))
@@ -87,7 +87,7 @@ def test_config_names_complexity_and_round_trip() -> None:
     [
         ({"feature_set": "words"}, "unknown feature set"),
         ({"feature_set": "embedding"}, "an encoder is needed"),
-        ({"encoder": "jina-v3"}, "an encoder is needed"),
+        ({"encoder": "e5-large"}, "an encoder is needed"),
         ({"c": 0.0}, "every C"),
         ({"half_life_days": 0.0}, "half-life"),
         ({"class_weight_power": -1.0}, "class weight power"),
@@ -253,11 +253,11 @@ def test_the_cache_key_names_the_encoder_and_the_text() -> None:
     assert text_key("model-a", "text") == text_key("model-a", "text")
     assert text_key("model-a", "text") != text_key("model-b", "text")
     assert text_key("model-a", "text") != text_key("model-a", "text ")
-    jina, e5 = ENCODERS["jina-v3"], ENCODERS["e5-base"]
-    assert jina.revision in jina.key
-    assert "classification" in jina.key
-    assert "query: " in e5.key
-    assert jina.key != e5.key
+    base, large = ENCODERS["e5-base"], ENCODERS["e5-large"]
+    assert base.revision in base.key
+    assert "query: " in base.key
+    assert "pooling=mean" in large.key
+    assert base.key != large.key
 
 
 def test_cached_encoder_encodes_each_text_once(tmp_path: Path) -> None:
@@ -312,10 +312,10 @@ def test_real_encoders_are_named_cached_and_lazy(tmp_path: Path) -> None:
         real_encoders(["nope"], tmp_path / "cache")
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     with pytest.raises(TrainingError, match="embedding cache is inside a git repository"):
-        real_encoders(["jina-v3"], tmp_path / "repo" / "cache")
+        real_encoders(["e5-large"], tmp_path / "repo" / "cache")
 
-    encoders = real_encoders(["jina-v3", "e5-base"], tmp_path / "cache")
+    encoders = real_encoders(["e5-base", "e5-large"], tmp_path / "cache")
 
-    assert set(encoders) == {"jina-v3", "e5-base"}
+    assert set(encoders) == {"e5-base", "e5-large"}
     assert encoders["e5-base"].key == ENCODERS["e5-base"].key
-    assert isinstance(encoders["jina-v3"].encoder, TransformerEncoder)  # nothing loaded yet
+    assert isinstance(encoders["e5-large"].encoder, TransformerEncoder)  # nothing loaded yet

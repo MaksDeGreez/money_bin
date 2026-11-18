@@ -1,14 +1,16 @@
 """Sentence embeddings of the row texts, computed on this machine and cached on disk.
 
 An `Encoder` turns texts into vectors. The real ones (`TransformerEncoder`) run a multilingual
-sentence-embedding model from the local Hugging Face cache with PyTorch, on the Apple GPU when there
-is one. They are imported lazily: torch and transformers are in the `embeddings` dependency group,
-which installs only on macOS on Apple silicon, so CI and the tests never load them (the tests use a
-fake encoder). Transaction text never leaves the machine: the models load with `local_files_only`,
-so nothing is fetched, let alone sent, while texts are encoded.
+sentence-embedding model (multilingual E5, base or large) from the local Hugging Face cache with
+PyTorch, on the Apple GPU when there is one: the mean of the last hidden states over the tokens,
+scaled to unit length. No model code is downloaded or trusted (no `trust_remote_code`). torch and
+transformers are imported lazily: they are in the `embeddings` dependency group, which installs only
+on macOS on Apple silicon, so CI and the tests never load them (the tests use a fake encoder).
+Transaction text never leaves the machine: the models load with `local_files_only`, so nothing is
+fetched, let alone sent, while texts are encoded.
 
 `EmbeddingCache` keeps every vector in a SQLite file outside the repository, keyed by the SHA-256 of
-the encoder's key (model, pinned revision, prefix or task, maximum length) and the text, so a
+the encoder's key (model, pinned revision, prefix, pooling, maximum length) and the text, so a
 repeated run encodes nothing it has seen and a different model or setting never reuses a vector.
 The cache holds vectors of personal text: it lives in the private data folder, file mode 600.
 """
@@ -47,35 +49,30 @@ class EncoderSpec:
     name: str
     model_id: str
     revision: str  # a pinned commit of the model repository
-    kind: str  # "jina" or "e5"
     prefix: str = ""
-    task: str = ""
     max_length: int = 128
 
     @property
     def key(self) -> str:
         return (
-            f"{self.model_id}@{self.revision}|kind={self.kind}|prefix={self.prefix}"
-            f"|task={self.task}|max_length={self.max_length}"
+            f"{self.model_id}@{self.revision}|prefix={self.prefix}|pooling=mean"
+            f"|max_length={self.max_length}"
         )
 
 
+# Multilingual E5 (XLM-RoBERTa, trained for multilingual sentence embeddings). E5 expects a
+# "query: " prefix for texts that are not retrieval passages.
 ENCODERS: dict[str, EncoderSpec] = {
-    # Jina embeddings v3 (XLM-RoBERTa large + task LoRA adapters, 1024 dimensions), with its
-    # classification adapter.
-    "jina-v3": EncoderSpec(
-        name="jina-v3",
-        model_id="jinaai/jina-embeddings-v3",
-        revision="f1944de8402dcd5f2b03f822a4bc22a7f2de2eb9",
-        kind="jina",
-        task="classification",
-    ),
-    # Multilingual E5 base (XLM-RoBERTa base, 768 dimensions); E5 expects a "query: " prefix.
-    "e5-base": EncoderSpec(
+    "e5-base": EncoderSpec(  # 278M parameters, 768 dimensions
         name="e5-base",
         model_id="intfloat/multilingual-e5-base",
         revision="d128750597153bb5987e10b1c3493a34e5a4502a",
-        kind="e5",
+        prefix="query: ",
+    ),
+    "e5-large": EncoderSpec(  # 560M parameters, 1024 dimensions
+        name="e5-large",
+        model_id="intfloat/multilingual-e5-large",
+        revision="3d7cfbdacd47fdda877c5cd8a79fbcc4f2a574f3",
         prefix="query: ",
     ),
 }
@@ -198,13 +195,8 @@ class TransformerEncoder:  # pragma: no cover - needs torch, transformers and lo
         self._device = "mps" if torch.backends.mps.is_available() else "cpu"
         options = {"revision": self.spec.revision, "local_files_only": True}
         try:
-            if self.spec.kind == "jina":
-                model = AutoModel.from_pretrained(
-                    self.spec.model_id, trust_remote_code=True, **options
-                )
-            else:
-                self._tokenizer = AutoTokenizer.from_pretrained(self.spec.model_id, **options)
-                model = AutoModel.from_pretrained(self.spec.model_id, **options)
+            self._tokenizer = AutoTokenizer.from_pretrained(self.spec.model_id, **options)
+            model = AutoModel.from_pretrained(self.spec.model_id, **options)
         except OSError:
             raise EmbeddingError(
                 f"the weights of {self.spec.model_id} at revision {self.spec.revision[:12]} are "
@@ -219,18 +211,8 @@ class TransformerEncoder:  # pragma: no cover - needs torch, transformers and lo
             self._load()
         prefixed = [self.spec.prefix + text for text in texts]
         torch = self._torch
+        out = []
         with torch.inference_mode():
-            if self.spec.kind == "jina":
-                vectors = self._model.encode(
-                    prefixed,
-                    task=self.spec.task,
-                    batch_size=self.batch_size,
-                    max_length=self.spec.max_length,
-                    convert_to_numpy=True,
-                    show_progress_bar=False,
-                )
-                return np.asarray(vectors, dtype=np.float32)
-            out = []
             for start in range(0, len(prefixed), self.batch_size):
                 batch = self._tokenizer(
                     prefixed[start : start + self.batch_size],
@@ -243,4 +225,4 @@ class TransformerEncoder:  # pragma: no cover - needs torch, transformers and lo
                 mask = batch["attention_mask"].unsqueeze(-1).to(hidden.dtype)
                 pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
                 out.append(pooled.float().cpu().numpy())
-            return np.vstack(out).astype(np.float32)
+        return np.vstack(out).astype(np.float32)

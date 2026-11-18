@@ -1,6 +1,6 @@
 """Choose the categoriser's configuration on the validation slice. The test set stays sealed.
 
-    uv run python -m categoriser.selection EXPORT_DIR [--out DIR] [--encoders jina-v3 e5-base]
+    uv run python -m categoriser.selection EXPORT_DIR [--out DIR] [--encoders e5-base e5-large]
 
 Steps: read the export and build the rows; cut them by date into the fitting rows, the validation
 slice (the end of the training period) and the test set, which is sealed (`categoriser.split`):
@@ -89,7 +89,7 @@ FIRST_VERSION = "first_version"
 DEFAULT_C_GRID = (0.1, 0.3, 1.0, 3.0, 10.0)
 DEFAULT_HALF_LIVES = (60.0, 180.0, 365.0, 730.0)
 DEFAULT_CLASS_WEIGHT_POWERS = (0.0, 0.25, 0.5, 0.75)
-DEFAULT_ENCODERS = ("jina-v3", "e5-base")
+DEFAULT_ENCODERS = ("e5-base", "e5-large")
 MIX_GRID = tuple(
     HybridParams(mode="mix", k=k, beta=beta, alpha_mcc=alpha_mcc)
     for k, beta, alpha_mcc in itertools.product((0.5, 2.0, 8.0), (0.0, 1.0, 3.0), (0.0, 0.3, 0.6))
