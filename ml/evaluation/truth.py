@@ -39,11 +39,18 @@ from evaluation.models import prefill_exclusion
 
 def prefill_reason(record: GroundTruthRecord, run: Run, *, categories: bool) -> str | None:
     """Why `record` is left out of `run` by the pre-fill rule (`same_model`, `unknown`), or None."""
-    names = (run.model_name, run.model_version)
     if categories:
-        return prefill_exclusion(
-            record.categories_prefilled_by, None, names, unknown_marker="source:unknown"
-        )
+        # A combined run is every categoriser it combines: left out when any of them pre-filled.
+        reasons = [
+            prefill_exclusion(
+                record.categories_prefilled_by, None, names, unknown_marker="source:unknown"
+            )
+            for names in run.categoriser_names()
+        ]
+        if "same_model" in reasons:
+            return "same_model"
+        return "unknown" if "unknown" in reasons else None
+    names = (run.model_name, run.model_version)
     return prefill_exclusion(record.prefilled_by, record.prefilled_model_version, names)
 
 
@@ -137,8 +144,16 @@ class GroundTruth:
         record = self._first(receipt_id, checked_only, lambda r: r.items_known)
         return self._for_run(record, run, categories=False)
 
-    def field(self, receipt_id: str, run: Run, key: str) -> Chosen:
-        record = self._first(receipt_id, False, lambda r: r.document.get(key) is not None)
+    def field(
+        self, receipt_id: str, run: Run, key: str, *, usable: Any = lambda value: True
+    ) -> Chosen:
+        """The first record with a usable (not null, and `usable`) value for `key`."""
+
+        def wanted(record: GroundTruthRecord) -> bool:
+            value = record.document.get(key)
+            return value is not None and usable(value)
+
+        record = self._first(receipt_id, False, wanted)
         return self._for_run(record, run, categories=False)
 
     def categories(self, receipt_id: str, run: Run) -> Chosen:

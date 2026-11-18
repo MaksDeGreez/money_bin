@@ -38,7 +38,7 @@ def read_receipt_set(ingest: Path) -> list[dict[str, Any]]:
     """The lines of `receipts.jsonl` in a receipt set folder."""
     path = ingest / "receipts.jsonl"
     if not path.is_file():
-        raise UsageError(f"no receipts.jsonl in {ingest}")
+        raise UsageError(f"no receipts.jsonl in the folder {ingest.name}")
     return list(read_jsonl(path))
 
 
@@ -105,6 +105,10 @@ def _cost(value: Any) -> Decimal | None:
     return cost if cost.is_finite() and cost >= 0 else None
 
 
+def _calls(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
     """The hosted model's cost over the receipts of a run, in US dollars.
 
@@ -123,7 +127,7 @@ def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
     ]
     if not hosted:
         return None
-    paid = [diagnostics for diagnostics in hosted if diagnostics.get("model_calls", 0) > 0]
+    paid = [diagnostics for diagnostics in hosted if _calls(diagnostics.get("model_calls")) > 0]
     costs = [_cost(diagnostics.get("cost_usd")) for diagnostics in paid]
     known = [cost for cost in costs if cost is not None]
     total = exact_sum(known)

@@ -92,7 +92,21 @@ NOTES = {
     "item_categories": (
         "Item categories against the ground truth; percent with 95% intervals from resampling "
         "receipts. Card slips are scored apart (receipt-level category). Items whose "
-        "categories were pre-filled by the run's model are left out."
+        "categories were pre-filled by the run's model (or, for a combined run, by any model it "
+        "combines) are left out. ECE and Brier: see the calibration table. Scores calibrated: "
+        "what the run says about its scores (n/a when it does not say)."
+    ),
+    "item_categories_by_source": (
+        "The same metrics split by the source of each prediction (memory, model, decision, "
+        "combined, or none for an item without a prediction); percent with 95% intervals from "
+        "resampling receipts."
+    ),
+    "calibration": (
+        "Reliability table: the top category's score in ten equal-width bins over 0 to 1 (the "
+        "last bin includes 1), with the mean score and the share correct per bin. ECE in the "
+        "runs table is the bins' gaps weighted by their share of items; Brier is the mean of "
+        "the squared difference of score and correctness (1 or 0) for the top category. "
+        "Items without a score are left out."
     ),
     "auto_accept": (
         "Precision (percent) of the top category when only the most confident items are "
@@ -305,10 +319,9 @@ def item_categories(results: list[dict[str, Any]]) -> tuple[list[str], list[list
         "Weighted F1 %",
         "Accuracy %",
         "Top-3 %",
-        "Memory items",
-        "Memory accuracy %",
-        "Model items",
-        "Model accuracy %",
+        "ECE %",
+        "Brier",
+        "Scores calibrated",
         "Card slips",
         "Card slip accuracy %",
         "Seconds per item",
@@ -317,7 +330,7 @@ def item_categories(results: list[dict[str, Any]]) -> tuple[list[str], list[list
     rows = []
     for result in sorted(results, key=_run_order):
         run, head, counts = result["run"], result["headline"], result["counts"]
-        memory, model = result["by_source"]["memory"], result["by_source"]["model"]
+        calib = result["calibration"]
         slips = result["card_slips"]
         timing = result["seconds_per_item"] or {}
         cost = result.get("cost_usd") or {}
@@ -333,16 +346,78 @@ def item_categories(results: list[dict[str, Any]]) -> tuple[list[str], list[list
                 _pct(head["weighted_f1"]),
                 _pct(head["accuracy"]),
                 _pct(head["top3_accuracy"]),
-                memory["items"],
-                _pct(memory["accuracy"]),
-                model["items"],
-                _pct(model["accuracy"]),
+                _pct(calib["ece"]),
+                _brier(calib["brier"]),
+                _yes_no(calib["scores_calibrated"]),
                 slips["receipts"],
                 _pct({"value": slips["accuracy"]}),
                 _seconds(timing.get("mean")),
                 cost.get("per_1000_items_usd") or "n/a",
             ]
         )
+    return headers, rows
+
+
+def _brier(estimate: dict[str, Any]) -> Est:
+    if estimate.get("value") is None:
+        return Est(None, None, None)
+    ci = estimate.get("ci95") or [None, None]
+    return Est(estimate["value"], ci[0], ci[1], places=3)
+
+
+def _yes_no(value: bool | None) -> str:
+    return "n/a" if value is None else ("yes" if value else "no")
+
+
+def item_categories_by_source(results: list[dict[str, Any]]) -> tuple[list[str], list[list[Any]]]:
+    headers = [
+        "Run",
+        "Model",
+        "Source",
+        "Items",
+        "Macro F1 %",
+        "Accuracy %",
+        "Top-3 %",
+        "ECE %",
+        "Brier",
+    ]
+    rows = []
+    for result in sorted(results, key=_run_order):
+        run = result["run"]
+        for source, block in sorted(result["by_source"].items()):
+            rows.append(
+                [
+                    run["run_id"],
+                    run["model_name"],
+                    source,
+                    block["items"],
+                    _pct(block["macro_f1"]),
+                    _pct(block["accuracy"]),
+                    _pct(block["top3_accuracy"]),
+                    _pct(block["calibration"]["ece"]),
+                    _brier(block["calibration"]["brier"]),
+                ]
+            )
+    return headers, rows
+
+
+def calibration(results: list[dict[str, Any]]) -> tuple[list[str], list[list[Any]]]:
+    headers = ["Run", "Model", "Score from", "Score to", "Items", "Mean score %", "Correct %"]
+    rows = []
+    for result in sorted(results, key=_run_order):
+        run = result["run"]
+        for bin_ in result["calibration"]["bins"]:
+            rows.append(
+                [
+                    run["run_id"],
+                    run["model_name"],
+                    f"{bin_['low']:.1f}",
+                    f"{bin_['high']:.1f}",
+                    bin_["rows"],
+                    _pct({"value": bin_["mean_score"]}),
+                    _pct({"value": bin_["share_correct"]}),
+                ]
+            )
     return headers, rows
 
 
@@ -421,6 +496,8 @@ TITLES = {
     "full_vs_cropped": "Full against cropped photos",
     "ocr_comparisons": "OCR comparisons",
     "item_categories": "Item categories by run",
+    "item_categories_by_source": "Item categories by source",
+    "calibration": "Calibration of the top category score",
     "auto_accept": "Auto-accept: precision at coverage",
     "item_category_comparisons": "Item category comparisons",
 }
@@ -450,9 +527,12 @@ def write_tables(
             _comparison_rows([c for c in ocr_comparisons if c["dimension"] != "crops"]),
         ),
         "item_categories": item_categories(categories),
+        "item_categories_by_source": item_categories_by_source(categories),
+        "calibration": calibration(categories),
         "auto_accept": auto_accept(categories),
         "item_category_comparisons": item_category_comparisons(category_comparisons),
     }
+    writer.allow_words(source for result in categories for source in result["by_source"])
     for name, (headers, rows) in tables.items():
         writer.write_table(name, TITLES[name], headers, rows, NOTES[name])
     return list(tables)

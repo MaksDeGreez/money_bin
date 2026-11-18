@@ -8,6 +8,7 @@ value from it.
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,9 @@ TASKS = ("ocr", "item_categories")
 OCR_STATUSES = ("ok", "parse_failed", "error", "skipped")
 GROUND_TRUTH_FILE = "ground_truth.jsonl"
 SOURCES = ("dps_xml", "manual")
-CATEGORY_SOURCES = ("memory", "model")
+# `source` of an item-category line: an open set (`memory`, `model`, `decision`, `combined`, ...),
+# any short lower-case word.
+CATEGORY_SOURCE = re.compile(r"\A[a-z][a-z_]{0,29}\Z")
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,24 @@ class Run:
     def crops(self) -> bool:
         return bool((self.meta.get("settings") or {}).get("crops"))
 
+    @property
+    def combined_from(self) -> list[dict[str, Any]]:
+        """The runs a combined item-category run was made from (`run.json`'s `combined_from`)."""
+        value = self.meta.get("combined_from")
+        return (
+            [entry for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
+        )
+
+    def categoriser_names(self) -> list[tuple[str | None, ...]]:
+        """The (name, version) of every categoriser behind this run: its own, and for a combined
+        run each one it combines (an entry without a usable `model_name` gives an empty name,
+        which the pre-fill rule treats as unknown)."""
+        names: list[tuple[str | None, ...]] = [(self.model_name, self.model_version)]
+        for entry in self.combined_from:
+            name = entry.get("model_name")
+            names.append((name if isinstance(name, str) else "", None))
+        return names
+
 
 @dataclass(frozen=True)
 class GroundTruthRecord:
@@ -88,7 +109,7 @@ def file_sha256(path: Path) -> str | None:
 def read_receipt_set(folder: Path) -> dict[str, ReceiptInfo]:
     path = folder / "receipts.jsonl"
     if not path.is_file():
-        raise UsageError(f"no receipts.jsonl in the receipt set folder {folder}")
+        raise UsageError(f"no receipts.jsonl in the receipt set folder {folder.name}")
     receipts: dict[str, ReceiptInfo] = {}
     for number, line in enumerate(read_jsonl(path), start=1):
         receipt_id = line.get("receipt_id")
@@ -111,6 +132,8 @@ def _finite_or_none(value: Any) -> bool:
         return True
     if isinstance(value, bool) or not isinstance(value, int | float):
         return False
+    if isinstance(value, int):
+        return abs(value) < 10**15
     return math.isfinite(value)
 
 
@@ -146,8 +169,11 @@ def _check_category_record(record: dict[str, Any], name: str, number: int) -> No
             raise UsageError(f"{name}: line {number} has a candidate score that is not a number")
     if not _finite_or_none(record.get("seconds")):
         raise UsageError(f"{name}: line {number} has seconds that are not a finite number")
-    if record.get("source") not in (*CATEGORY_SOURCES, None):
-        raise UsageError(f"{name}: line {number} has an unknown source")
+    source_value = record.get("source")
+    if source_value is not None and (
+        not isinstance(source_value, str) or not CATEGORY_SOURCE.match(source_value)
+    ):
+        raise UsageError(f"{name}: line {number} has a source that is not a short lower-case word")
     source = record.get("ground_truth_source")
     if source is not None and source not in SOURCES:
         raise UsageError(f"{name}: line {number} has an unknown ground_truth_source")
@@ -170,6 +196,11 @@ def read_run(folder: Path) -> Run:
     for key in ("backend", "model_name"):
         if not isinstance(meta.get(key), str) or not meta[key].strip():
             raise UsageError(f"{run_id}: run.json has no {key}")
+    combined = meta.get("combined_from")
+    if combined is not None and (
+        not isinstance(combined, list) or not all(isinstance(entry, dict) for entry in combined)
+    ):
+        raise UsageError(f"{run_id}: run.json's combined_from is not a list of objects")
     name = f"{run_id}/predictions.jsonl"
     records = list(read_jsonl(folder / "predictions.jsonl"))
     seen: set[tuple[str, Any]] = set()
@@ -193,7 +224,7 @@ def discover_runs(runs_dir: Path) -> list[Run]:
     """Every folder under `runs_dir` (at any depth) with both `run.json` and `predictions.jsonl`,
     ordered by run id."""
     if not runs_dir.is_dir():
-        raise UsageError(f"the runs folder {runs_dir} does not exist")
+        raise UsageError(f"the runs folder {runs_dir.name} does not exist")
     runs = [
         read_run(meta.parent)
         for meta in sorted(runs_dir.rglob("run.json"))

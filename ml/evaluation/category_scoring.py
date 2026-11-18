@@ -2,22 +2,25 @@
 
 **The run's format** (written by the item categoriser; `docs/decisions/0014-evaluation-harness.md`):
 `RUNS_DIR/<run id>/run.json` with `"task": "item_categories"`, `run_id`, `backend`, `model_name`,
-`model_version`, `prompt_version`, `git` (`sha`, `dirty`), `counts`, `seconds_per_item` and
-`cost_usd` (null for a local model); and `predictions.jsonl`, one line per item:
+`model_version`, `prompt_version`, `git` (`sha`, `dirty`), `counts`, `seconds_per_item`,
+`cost_usd` (null for a local model), `scores_calibrated` (true, false, or absent when not
+known) and, for a combined run, `combined_from` (`[{"run_id", "backend", "model_name"}, ...]`); and
+`predictions.jsonl`, one line per item:
 
-    {"receipt_id": "rcpt_000123", "ground_truth_source": "dps_xml", "position": 2,
+    {"receipt_id": "rcpt_000123", "ground_truth_source": "manual", "position": 2,
      "candidates": [{"category_slug": "groceries/groceries", "score": 0.82}, ...],
      "source": "model", "seconds": 0.004, "cost_usd": null}
 
 `position` is the item's 1-based place in the `items` of the ground-truth record named by
 `ground_truth_source` (`dps_xml` or `manual`; when absent, the record the harness chooses); a card
 slip's line has `position: null` and predicts the receipt's own category. `candidates`: up to
-three, best first. `source`: `memory` (an earlier booking of the same text) or `model`. `seconds`
-a number; `cost_usd` a decimal string or null.
+three, best first. `source`: an open set of short lower-case words (`memory`, `model`,
+`decision`, `combined`, ...). `seconds` a number; `cost_usd` a decimal string or null.
 
 **Rows.** For every receipt the run has a line for, the reference record is
 `GroundTruth.categories` (exclusions, precedence and the pre-fill rule on
-`categories_prefilled_by`). Each of its items with a `category_slug` is a row; an item without one
+`categories_prefilled_by`, against the run's own model and, for a combined run, every model it
+combines). Each of its items with a `category_slug` is a row; an item without one
 is not scored (`unlabelled_items`). A row without a prediction line counts as wrong, with the label
 `_none` and confidence 0. A line for another source or a position the record does not have is not
 scored (`unmatched_lines`). Card slips are not item rows: their receipt-level category is scored
@@ -29,8 +32,10 @@ be wrong anyway).
 are a true label or a top-1 prediction), weighted F1, accuracy, top-3 accuracy, with 95% intervals
 from resampling whole receipts; precision at coverage levels and at confidence thresholds (the top
 candidate's score is the confidence); the auto-accept point (the largest coverage at which the
-precision of the kept rows is at least 95%); per-category support and F1; the confusion counts; the
-same headline split by `source`; seconds per item and the cost.
+precision of the kept rows is at least 95%); per-category support and F1; the confusion counts;
+calibration (`calibration`: a reliability table over ten fixed bins, the expected calibration error
+and the Brier score of the top candidate); the headline and calibration split by every `source`
+value that occurs; seconds per item and the cost.
 """
 
 import re
@@ -51,7 +56,7 @@ from categoriser.metrics import (
     intervals,
     per_class_f1,
 )
-from evaluation.bootstrap import rng_for
+from evaluation.bootstrap import interval, rng_for
 from evaluation.common import COST_PER_1000_PLACES, COST_PER_RECEIPT_PLACES, timing_summary
 from evaluation.inputs import ReceiptInfo, Run
 from evaluation.truth import GroundTruth
@@ -60,7 +65,8 @@ SLUG = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 NONE_LABEL = "_none"
 OTHER_LABEL = "_other"
 AUTO_ACCEPT_PRECISION = 0.95
-SOURCES = ("memory", "model")
+CALIBRATION_BINS = 10
+NO_SOURCE = "none"
 
 
 def clean_slug(value: Any, known: frozenset[str] | None = None) -> str:
@@ -82,6 +88,7 @@ class Row:
     confidence: float
     source: str | None
     line: dict[str, Any] | None
+    has_score: bool = False
 
 
 @dataclass
@@ -108,8 +115,9 @@ def _row(
     candidates = line.get("candidates") or []
     ranked = tuple(clean_slug(c["category_slug"], known) for c in candidates) or (NONE_LABEL,)
     score = candidates[0].get("score") if candidates else None
-    confidence = float(score) if isinstance(score, int | float) else 0.0
-    return Row(receipt_id, position, label, ranked, confidence, line.get("source"), line)
+    has_score = isinstance(score, int | float) and not isinstance(score, bool)
+    confidence = min(1.0, max(0.0, float(score))) if has_score else 0.0
+    return Row(receipt_id, position, label, ranked, confidence, line.get("source"), line, has_score)
 
 
 def build_rows(
@@ -184,6 +192,13 @@ def build_rows(
     return items, slips, {key: int(counts.get(key, 0)) for key in keys}
 
 
+def _scores_calibrated(run: Run) -> bool | None:
+    """What the run says about its scores: `run.json`'s `scores_calibrated` (true when the scores
+    were calibrated, for example on a validation set), null when it does not say."""
+    value = run.meta.get("scores_calibrated")
+    return value if isinstance(value, bool) else None
+
+
 def encode(rows: list[Row], systems: dict[str, list[Row]] | None = None) -> Encoded:
     """`rows` as one system named `run`, or several systems over the same rows."""
     systems = systems or {"run": rows}
@@ -238,6 +253,68 @@ def headline_block(rows: list[Row], *, seed: int, resamples: int) -> dict[str, A
         "items": len(rows),
         **{metric: {"value": point[metric], "ci95": ci[metric]} for metric in HEADLINE},
     }
+
+
+def _calibration_point(confidence: np.ndarray, correct: np.ndarray) -> tuple[float, float]:
+    """(ECE over the fixed bins, Brier score of the top candidate)."""
+    bins = np.minimum((confidence * CALIBRATION_BINS).astype(int), CALIBRATION_BINS - 1)
+    counts = np.bincount(bins, minlength=CALIBRATION_BINS)
+    hits = np.bincount(bins, weights=correct.astype(float), minlength=CALIBRATION_BINS)
+    sums = np.bincount(bins, weights=confidence, minlength=CALIBRATION_BINS)
+    filled = counts > 0
+    gap = np.abs(hits[filled] / counts[filled] - sums[filled] / counts[filled])
+    ece = float((counts[filled] / len(confidence) * gap).sum())
+    brier = float(np.mean((confidence - correct.astype(float)) ** 2))
+    return ece, brier
+
+
+def calibration(rows: list[Row], *, seed: int, resamples: int) -> dict[str, Any]:
+    """Whether the top candidate's score means what it says (rows with a score only).
+
+    Bins: `CALIBRATION_BINS` equal-width bins of the score over [0, 1] (the last one closed), fixed
+    rather than fitted to the data, so two runs are binned alike. ECE: the bins' gaps between the
+    share correct and the mean score, weighted by their share of rows. Brier score: the mean of
+    (score - correct)^2 for the top candidate. Intervals: resampling whole receipts."""
+    scored = [row for row in rows if row.has_score]
+    result: dict[str, Any] = {
+        "rows": len(scored),
+        "rows_without_score": len(rows) - len(scored),
+        "bins": [],
+        "ece": {"value": None, "ci95": None},
+        "brier": {"value": None, "ci95": None},
+    }
+    if not scored:
+        return result
+    confidence = np.array([row.confidence for row in scored])
+    correct = np.array([row.ranked[0] == row.label for row in scored])
+    bins = np.minimum((confidence * CALIBRATION_BINS).astype(int), CALIBRATION_BINS - 1)
+    for b in range(CALIBRATION_BINS):
+        members = bins == b
+        count = int(members.sum())
+        result["bins"].append(
+            {
+                "low": b / CALIBRATION_BINS,
+                "high": (b + 1) / CALIBRATION_BINS,
+                "rows": count,
+                "mean_score": float(confidence[members].mean()) if count else None,
+                "share_correct": float(correct[members].mean()) if count else None,
+            }
+        )
+    ece, brier = _calibration_point(confidence, correct)
+    groups: dict[str, list[int]] = {}
+    for i, row in enumerate(scored):
+        groups.setdefault(row.receipt_id, []).append(i)
+    blocks = [np.array(members) for members in groups.values()]
+    rng = np.random.default_rng(seed)
+    ece_samples = np.empty(resamples)
+    brier_samples = np.empty(resamples)
+    for i in range(resamples):
+        chosen = rng.integers(0, len(blocks), size=len(blocks))
+        index = np.concatenate([blocks[j] for j in chosen])
+        ece_samples[i], brier_samples[i] = _calibration_point(confidence[index], correct[index])
+    result["ece"] = {"value": ece, "ci95": interval(ece_samples)}
+    result["brier"] = {"value": brier, "ci95": interval(brier_samples)}
+    return result
 
 
 def _cost(rows: list[Row]) -> dict[str, Any] | None:
@@ -319,13 +396,25 @@ def score_run(
         result["auto_accept"] = auto_accept(np.zeros(0, dtype=bool), np.zeros(0))
         result["per_class"] = []
         result["confusion"] = {}
+    result["calibration"] = calibration(
+        rows, seed=seed_for(seed, run.run_id, "calibration"), resamples=resamples
+    )
+    result["calibration"]["scores_calibrated"] = _scores_calibrated(run)
+    sources = sorted({row.source or NO_SOURCE for row in rows})
     result["by_source"] = {
-        source: headline_block(
-            [row for row in rows if row.source == source],
-            seed=seed_for(seed, run.run_id, source),
-            resamples=resamples,
-        )
-        for source in SOURCES
+        source: {
+            **headline_block(
+                [row for row in rows if (row.source or NO_SOURCE) == source],
+                seed=seed_for(seed, run.run_id, "source", source),
+                resamples=resamples,
+            ),
+            "calibration": calibration(
+                [row for row in rows if (row.source or NO_SOURCE) == source],
+                seed=seed_for(seed, run.run_id, "calibration", source),
+                resamples=resamples,
+            ),
+        }
+        for source in sources
     }
     slip_correct = [row.ranked[0] == row.label for row in slips]
     slip_top3 = [row.label in row.ranked for row in slips]

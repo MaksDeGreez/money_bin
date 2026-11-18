@@ -168,7 +168,7 @@ def test_prefill_rule_counts_what_it_leaves_out(inputs: dict[str, Path]) -> None
 
 
 def test_prefill_rule_does_not_touch_another_model(inputs: dict[str, Path]) -> None:
-    fx.write_run(inputs["runs"], "run-b", fx.standard_predictions(), model="vendor/model-b")
+    fx.write_run(inputs["runs"], "run-b", fx.standard_predictions(), model="openai/gpt-4.1-mini")
     run_harness(inputs)
     b = result(inputs, "run-b")
     assert b["counts"]["excluded_prefilled_items"] == 0
@@ -646,7 +646,7 @@ def test_category_comparisons(category_inputs: dict[str, Path]) -> None:
         ({"candidates": "x"}, "candidates"),
         ({"candidates": [{"score": 1}]}, "category_slug"),
         ({"candidates": [{"category_slug": G, "score": "high"}]}, "score"),
-        ({"source": "guess"}, "unknown source"),
+        ({"source": "Not A Word"}, "short lower-case word"),
         ({"ground_truth_source": "paper"}, "ground_truth_source"),
         ({"receipt_id": None}, "receipt_id"),
     ],
@@ -718,7 +718,7 @@ def test_outputs_are_deterministic(inputs: dict[str, Path], tmp_path: Path) -> N
     run_harness({**inputs, "out": second_out})
     second = {p.relative_to(second_out): p.read_bytes() for p in second_out.rglob("*.*")}
     assert first == second
-    assert len(first) == 1 + 2 + 1 + 18  # index, two runs, one comparison, nine tables
+    assert len(first) == 1 + 2 + 1 + 22  # index, two runs, one comparison, eleven tables
 
 
 def test_stale_files_are_removed(inputs: dict[str, Path]) -> None:
@@ -949,7 +949,8 @@ def manual_r1(prefilled_by: str, **extra: Any) -> list[dict[str, Any]]:
         ("source:unknown-model", {}, 2, 1),
         ("qwen/model-a", {}, 2, 0),  # the hosted id of the run's model
         ("vendor/other", {"prefilled_model_version": "Model-A-2026-01-01"}, 2, 0),
-        ("vendor/model-a-70b", {}, 1, 0),  # another size
+        ("vendor/othermodel-a", {}, 1, 0),  # another family
+        ("vendor/model-a-special", {}, 2, 1),  # not proved different: unknown
         ("/Users/someone/models/a", {}, 2, 1),
     ],
 )
@@ -1105,3 +1106,195 @@ def test_a_refused_value_writes_nothing_and_check_finds_it(
         run_harness(inputs)
     after = {p: p.read_bytes() for p in inputs["out"].rglob("*") if p.is_file()}
     assert after == before
+
+
+# --- calibration, open sources, combined runs --------------------------------------------------
+
+
+def test_calibration_worked_by_hand(category_inputs: dict[str, Path]) -> None:
+    run_harness(category_inputs)
+    calib = result(category_inputs, "cats")["calibration"]
+    # Scores 0.9 (right), 0.8 (wrong), 0.7 (right): one per bin 9, 8 and 7.
+    assert calib["rows"] == 3 and calib["rows_without_score"] == 0
+    filled = {round(b["low"], 1): b for b in calib["bins"] if b["rows"]}
+    assert set(filled) == {0.7, 0.8, 0.9}
+    assert filled[0.8]["share_correct"] == 0.0
+    assert filled[0.8]["mean_score"] == pytest.approx(0.8)
+    # ECE: (|1 - 0.9| + |0 - 0.8| + |1 - 0.7|) / 3; Brier: (0.01 + 0.64 + 0.09) / 3.
+    assert calib["ece"]["value"] == pytest.approx(1.2 / 3, abs=1e-6)  # JSON keeps 6 places
+    assert calib["brier"]["value"] == pytest.approx(0.74 / 3, abs=1e-6)
+    low, high = calib["ece"]["ci95"]
+    assert low <= high
+    assert calib["scores_calibrated"] is None
+    assert len(calib["bins"]) == 10
+
+
+def test_a_score_of_one_and_missing_scores(category_inputs: dict[str, Path]) -> None:
+    folder = category_inputs["runs"] / "cats"
+    lines = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    lines[0]["candidates"][0]["score"] = 1.0
+    lines[1]["candidates"][0]["score"] = None
+    (folder / "predictions.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+    meta = json.loads((folder / "run.json").read_text())
+    meta["scores_calibrated"] = True
+    (folder / "run.json").write_text(json.dumps(meta))
+    run_harness(category_inputs)
+    calib = result(category_inputs, "cats")["calibration"]
+    assert calib["rows"] == 2 and calib["rows_without_score"] == 1
+    assert calib["bins"][-1]["rows"] == 1  # 1.0 falls in the last bin
+    assert calib["scores_calibrated"] is True
+    table = (category_inputs["out"] / "tables" / "item_categories.md").read_text()
+    assert "| yes |" in table
+
+
+def test_sources_are_an_open_set(category_inputs: dict[str, Path]) -> None:
+    folder = category_inputs["runs"] / "cats"
+    lines = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    lines[1]["source"] = "decision"
+    lines[2]["source"] = "combined"
+    (folder / "predictions.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+    run_harness(category_inputs)
+    by_source = result(category_inputs, "cats")["by_source"]
+    assert sorted(by_source) == ["combined", "decision", "memory"]
+    assert by_source["decision"]["items"] == 1
+    assert "ece" in by_source["decision"]["calibration"]
+    table = (category_inputs["out"] / "tables" / "item_categories_by_source.md").read_text()
+    assert "| decision |" in table
+
+
+def test_an_item_without_a_prediction_has_source_none(category_inputs: dict[str, Path]) -> None:
+    folder = category_inputs["runs"] / "cats"
+    lines = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    (folder / "predictions.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in lines if line.get("position") != 3)
+    )
+    run_harness(category_inputs)
+    assert result(category_inputs, "cats")["by_source"]["none"]["items"] == 1
+
+
+def combined_run(runs: Path, combined_from: Any) -> None:
+    fx.write_run(
+        runs,
+        "cats-combined",
+        [
+            fx.category_line("rcpt_000001", 1, [(G, 0.9)], source="combined"),
+            fx.category_line("rcpt_000002", 1, [(G, 0.9)], source="combined"),
+        ],
+        task="item_categories",
+        model="combiner",
+        backend="local",
+        combined_from=combined_from,
+    )
+
+
+def test_a_combined_run_inherits_the_prefill_of_its_parts(
+    category_inputs: dict[str, Path],
+) -> None:
+    combined_run(
+        category_inputs["runs"],
+        [
+            {"run_id": "cats", "backend": "local", "model_name": "cat-model"},
+            {"run_id": "other", "backend": "openrouter", "model_name": "openai/gpt-4.1-mini"},
+        ],
+    )
+    run_harness(category_inputs)
+    combined = result(category_inputs, "cats-combined")
+    # rcpt_000002's categories were pre-filled by cat-model, one of the combined categorisers.
+    assert combined["counts"]["receipts_excluded_prefilled"] == 1
+    assert combined["counts"]["receipts_excluded_prefilled_unknown"] == 0
+    assert combined["run"]["combined_from"][1] == {
+        "run_id": "other",
+        "backend": "openrouter",
+        "model_name": "openai/gpt-4.1-mini",
+    }
+
+
+def test_a_combined_part_without_a_name_is_unknown(category_inputs: dict[str, Path]) -> None:
+    combined_run(category_inputs["runs"], [{"run_id": "cats"}])
+    run_harness(category_inputs)
+    counts = result(category_inputs, "cats-combined")["counts"]
+    assert counts["receipts_excluded_prefilled_unknown"] == 1
+
+
+def test_combined_from_must_be_a_list(tmp_path: Path) -> None:
+    combined_run(tmp_path, "cats")
+    with pytest.raises(UsageError, match="combined_from"):
+        discover_runs(tmp_path)
+
+
+# --- second review -------------------------------------------------------------------------
+
+
+def test_two_run_ids_with_one_file_name_are_refused(inputs: dict[str, Path]) -> None:
+    fx.write_run(inputs["runs"], "run:x", fx.standard_predictions(), model="openai/gpt-4o")
+    fx.write_run(inputs["runs"], "run_x", fx.standard_predictions(), model="openai/o4-mini")
+    with pytest.raises(ResultsShapeError, match="same name"):
+        run_harness(inputs)
+
+
+def test_long_comparison_names_are_shortened(inputs: dict[str, Path]) -> None:
+    long_a, long_b = "a" * 150, "b" * 150
+    fx.write_run(inputs["runs"], long_a, fx.standard_predictions(), crops=True)
+    fx.write_run(inputs["runs"], long_b, fx.standard_predictions())
+    index, _ = run_harness(inputs, "--no-auto-compare", "--compare", long_a, long_b)
+    assert index is not None
+    (comparison,) = index["comparisons"]
+    assert len(Path(comparison["file"]).name) < 200
+
+
+def test_a_foreign_results_folder_is_refused(inputs: dict[str, Path]) -> None:
+    inputs["out"].mkdir()
+    (inputs["out"] / "notes.txt").write_text("mine", encoding="utf-8")
+    with pytest.raises(ResultsShapeError, match="did not write"):
+        run_harness(inputs)
+    assert (inputs["out"] / "notes.txt").read_text() == "mine"
+
+
+def test_a_blank_merchant_falls_back_to_the_next_record(inputs: dict[str, Path]) -> None:
+    lines = fx.standard_truth()
+    lines[0]["document"]["merchant"] = "ТОВ"
+    lines.append(
+        fx.truth_line(
+            "rcpt_000001",
+            "manual",
+            fx.document("fiscal", [], merchant="SentinelShop"),
+            items_known=False,
+        )
+    )
+    fx.write_truth(inputs["truth"], lines)
+    run_harness(inputs)
+    merchant = result(inputs, "run-a")["segments"]["all"]["merchant"]
+    assert (merchant["numerator"], merchant["denominator"]) == (2, 2)
+
+
+def test_an_ok_line_without_a_receipt_is_not_an_answer(inputs: dict[str, Path]) -> None:
+    records = fx.standard_predictions()
+    records[2]["receipt"] = None
+    fx.write_run(inputs["runs"], "run-a", records)
+    run_harness(inputs)
+    slip = result(inputs, "run-a")["segments"]["card_slip"]["items"]["main"]["f1_macro"]
+    assert slip["value"] == 0.0
+
+
+def test_malformed_values_do_not_crash(inputs: dict[str, Path]) -> None:
+    records = fx.standard_predictions()
+    records[0]["receipt"]["total"] = "sNaN"
+    records[1]["receipt"]["items"] = ["not an item"]
+    records[2]["diagnostics"] = {"model_calls": "many", "cost_usd": "0.001"}
+    records[3]["seconds"] = 10**400
+    fx.write_run(inputs["runs"], "run-a", records)
+    with pytest.raises(UsageError, match="seconds"):
+        run_harness(inputs)
+    records[3]["seconds"] = 1.0
+    fx.write_run(inputs["runs"], "run-a", records)
+    run_harness(inputs)
+    assert result(inputs, "run-a")["segments"]["all"]["fields"]["total"]["numerator"] == 1
+
+
+def test_errors_name_folders_not_paths(tmp_path: Path) -> None:
+    with pytest.raises(UsageError) as error:
+        read_receipt_set(tmp_path / "private" / "receipts")
+    assert str(tmp_path) not in str(error.value)
+    with pytest.raises(UsageError) as error:
+        discover_runs(tmp_path / "private" / "runs")
+    assert str(tmp_path) not in str(error.value)

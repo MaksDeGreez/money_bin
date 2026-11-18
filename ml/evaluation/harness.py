@@ -22,6 +22,7 @@ outside any git repository, readable by the owner only. The console shows aggreg
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -175,7 +176,19 @@ def run_section(run: Run) -> dict[str, Any]:
             "ids_file": filters.get("ids_file"),
             "limit": filters.get("limit"),
         },
+        "combined_from": (
+            [
+                {key: _text_or_none(entry.get(key)) for key in ("run_id", "backend", "model_name")}
+                for entry in run.combined_from
+            ]
+            if run.task == "item_categories" and "combined_from" in meta
+            else None
+        ),
     }
+
+
+def _text_or_none(value: Any) -> Any:
+    return public_name(value) if isinstance(value, str) and value else None
 
 
 def run_values(runs: list[Run]) -> set[str]:
@@ -187,6 +200,11 @@ def run_values(runs: list[Run]) -> set[str]:
             run.model_name,
             run.model_version,
             run.meta.get("prompt_version"),
+            *(
+                entry.get(key)
+                for entry in run.combined_from
+                for key in ("run_id", "backend", "model_name")
+            ),
         ):
             if isinstance(value, str) and value:
                 values.add(public_name(value))
@@ -196,6 +214,15 @@ def run_values(runs: list[Run]) -> set[str]:
 def file_stem(run_id: str) -> str:
     """A run id as a file name: anything but letters, digits, `.`, `_` and `-` becomes `_`."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", run_id)
+
+
+def comparison_stem(a: str, b: str) -> str:
+    """`<a>__vs__<b>`, shortened (with a digest of both ids) when it would be a long file name."""
+    stem = f"{file_stem(a)}__vs__{file_stem(b)}"
+    if len(stem) <= 180:
+        return stem
+    digest = hashlib.sha256(f"{a}\n{b}".encode()).hexdigest()[:12]
+    return f"{file_stem(a)[:80]}__vs__{file_stem(b)[:80]}-{digest}"
 
 
 def public_name(name: Any) -> Any:
@@ -272,7 +299,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
     declared = [tuple(pair) for pair in args.compare]
     comparison_file = args.comparisons or runs_dir / "comparisons.txt"
     if args.comparisons is not None and not comparison_file.is_file():
-        raise UsageError(f"the comparisons file {comparison_file} does not exist")
+        raise UsageError(f"the comparisons file {comparison_file.name} does not exist")
     if comparison_file.is_file():
         declared.extend(read_comparison_file(comparison_file))
     planned = plan_comparisons(runs, declared, automatic=not args.no_auto_compare)
@@ -292,6 +319,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
     # Score everything and check every file before anything is written.
     out_dir = args.out.expanduser().resolve()
     writer = ResultsWriter(out_dir, run_values(runs))
+    writer.check_folder()
     scored: dict[str, Any] = {}
     run_results: list[dict[str, Any]] = []
     index_runs = []
@@ -364,7 +392,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
             "declared": is_declared,
             **body,
         }
-        relative = f"comparisons/{file_stem(a.run_id)}__vs__{file_stem(b.run_id)}.json"
+        relative = f"comparisons/{comparison_stem(a.run_id, b.run_id)}.json"
         comparison_results.append(json.loads(writer.write_json(relative, comparison, spec)))
         index_comparisons.append(
             {

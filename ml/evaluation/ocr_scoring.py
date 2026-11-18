@@ -142,7 +142,9 @@ def score_receipt(
         present = qr[name] is not None
         ratios[f"fields.{name}"] = (float(present and predicted[name] == qr[name]), float(present))
 
-    merchant = truth.field(info.receipt_id, run, "merchant")
+    merchant = truth.field(
+        info.receipt_id, run, "merchant", usable=lambda value: bool(normalise_merchant(value))
+    )
     outcome.excluded_prefilled["merchant"] = merchant.reason
     reference_merchant = (
         normalise_merchant(merchant.record.document["merchant"]) if merchant.record else ""
@@ -182,7 +184,7 @@ def score_receipt(
                     prefix,
                     predicted_items,
                     chosen.record.items,
-                    answered=record["status"] == "ok",
+                    answered=receipt is not None,
                 )
             )
 

@@ -52,6 +52,9 @@ class ResultsShapeError(Exception):
 @dataclass
 class Context:
     run_values: frozenset[str] = field(default_factory=frozenset)
+    # Words a table may show besides the fixed ones: the `source` values of item-category runs,
+    # which the results JSON already holds as checked keys.
+    words: frozenset[str] = field(default_factory=frozenset)
 
 
 Check = Callable[[Any, str, Context], None]
@@ -270,6 +273,16 @@ RUN = obj(
         "filters": obj(
             {"only_tax_qr": boolean(), "ids_file": boolean(), "limit": integer(nullable=True)}
         ),
+        "combined_from": listing(
+            obj(
+                {
+                    "run_id": run_value(RUN_ID, nullable=True),
+                    "backend": run_value(nullable=True),
+                    "model_name": run_value(nullable=True),
+                }
+            ),
+            nullable=True,
+        ),
     }
 )
 GROUND_TRUTH = obj(
@@ -326,6 +339,33 @@ CATEGORY_COST = obj(
     nullable=True,
 )
 HEADLINE_BLOCK = obj({"items": integer(), **{metric: ESTIMATE for metric in HEADLINE}})
+CALIBRATION_FIELDS = {
+    "rows": integer(),
+    "rows_without_score": integer(),
+    "bins": listing(
+        obj(
+            {
+                "low": number(False),
+                "high": number(False),
+                "rows": integer(),
+                "mean_score": number(),
+                "share_correct": number(),
+            }
+        )
+    ),
+    "ece": ESTIMATE,
+    "brier": ESTIMATE,
+}
+CALIBRATION = obj({**CALIBRATION_FIELDS, "scores_calibrated": boolean()})
+SOURCE_WORD = re.compile(r"\A[a-z][a-z_]{0,29}\Z")
+SOURCE_KEY = pattern(SOURCE_WORD, nullable=False)
+SOURCE_BLOCK = obj(
+    {
+        "items": integer(),
+        **{metric: ESTIMATE for metric in HEADLINE},
+        "calibration": obj(CALIBRATION_FIELDS),
+    }
+)
 COVERAGE = obj(
     {
         "at_coverage": listing(
@@ -379,7 +419,8 @@ CATEGORY_RUN_RESULT = obj(
             )
         ),
         "confusion": mapping(LABEL_KEY, mapping(LABEL_KEY, integer())),
-        "by_source": obj({source: HEADLINE_BLOCK for source in ("memory", "model")}),
+        "calibration": CALIBRATION,
+        "by_source": mapping(SOURCE_KEY, SOURCE_BLOCK),
         "card_slips": obj({"receipts": integer(), "accuracy": number(), "top3_accuracy": number()}),
         "seconds_per_item": TIMING,
         "cost_usd": CATEGORY_COST,
@@ -549,11 +590,16 @@ def check_cell(value: Any, ctx: Context) -> None:
     if isinstance(value, str) and (
         CELL.match(value)
         or value in CELL_WORDS
+        or value in ctx.words
         or LABEL.match(value)
         or (value in ctx.run_values and PARAMETER.match(value))
     ):
         return
     raise ResultsShapeError("results: a table cell is not a number, a label or a run parameter")
+
+
+MAX_FILE_NAME_BYTES = 200
+OWN_ENTRIES = frozenset({"README.md", "index.json", "runs", "comparisons", "tables", ".DS_Store"})
 
 
 class ResultsWriter:
@@ -568,11 +614,39 @@ class ResultsWriter:
         self.ctx = Context(frozenset(value for value in run_values if isinstance(value, str)))
         self.staged: dict[str, str] = {}
 
+    def allow_words(self, words: Iterable[str]) -> None:
+        """Let tables show these words (each a short lower-case word, as a `source` key is)."""
+        allowed = set()
+        for word in words:
+            if not isinstance(word, str) or not SOURCE_WORD.match(word):
+                raise ResultsShapeError("results: a table word has not the allowed form")
+            allowed.add(word)
+        self.ctx = Context(self.ctx.run_values, self.ctx.words | frozenset(allowed))
+
     def _stage(self, relative: str, text: str) -> None:
         path = (self.root / relative).resolve()
         if self.root.resolve() not in path.parents:
             raise ResultsShapeError("results: a file name leaves the results folder")
+        if len(path.name.encode()) > MAX_FILE_NAME_BYTES:
+            raise ResultsShapeError("results: a file name is too long")
+        if relative in self.staged:
+            raise ResultsShapeError("results: two files would have the same name")
         self.staged[relative] = text
+
+    def check_folder(self) -> None:
+        """Refuse a results folder that holds anything but the harness's own files, so a mistyped
+        folder never loses files to the removal of stale ones."""
+        if not self.root.exists():
+            return
+        if not self.root.is_dir():
+            raise ResultsShapeError("results: the results folder is not a folder")
+        names = {path.name for path in self.root.iterdir()}
+        unexpected = names - OWN_ENTRIES
+        if unexpected:
+            raise ResultsShapeError(
+                f"results: the results folder holds {len(unexpected)} entry(ies) the harness did "
+                "not write; choose an empty folder or eval/results"
+            )
 
     def write_json(self, relative: str, value: Any, spec: Check) -> str:
         """Check `value` and keep it; returns the JSON text that will be written."""
@@ -605,6 +679,7 @@ class ResultsWriter:
     def commit(self) -> int:
         """Write every kept file (through a temporary file each) and delete the files in the
         harness's own subfolders that are not among them; returns how many were deleted."""
+        self.check_folder()
         written: set[Path] = set()
         for relative, text in sorted(self.staged.items()):
             path = (self.root / relative).resolve()
