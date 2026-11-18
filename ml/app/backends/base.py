@@ -8,10 +8,13 @@ backends.
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config import Settings
 from app.schemas import Receipt
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.batch.base import OcrBatches
 
 
 class BackendNotImplementedError(NotImplementedError):
@@ -104,3 +107,14 @@ class Backend(ABC):
     @abstractmethod
     def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
         """Read one receipt from 1 to 3 images (pages or parts of the same receipt)."""
+
+    def batches(self) -> "OcrBatches":
+        """Batch mode: many receipts in one provider batch (`app.batch`).
+
+        Only the openrouter backend has it, and only when it is explicitly
+        allowed; the others answer 501.
+        """
+        raise BackendNotImplementedError(
+            f"The {self.name} backend cannot read receipts in a batch: batch mode needs "
+            "OCR_BACKEND=openrouter and OPENROUTER_BATCH_ALLOW_RETENTION=true (see ml/README.md)."
+        )

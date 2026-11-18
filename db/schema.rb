@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_180000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_190000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -126,6 +126,74 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_180000) do
     t.check_constraint "slug::text ~ '^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)?$'::text", name: "categories_slug_format"
   end
 
+  create_table "ocr_batch_entries", force: :cascade do |t|
+    t.bigint "ocr_batch_id", null: false
+    t.bigint "receipt_id"
+    t.integer "position", null: false
+    t.string "custom_id", null: false
+    t.string "state", default: "waiting", null: false
+    t.string "error_code"
+    t.text "error_message"
+    t.decimal "cost_usd"
+    t.timestamptz "resolved_at"
+    t.timestamptz "followed_up_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["custom_id"], name: "index_ocr_batch_entries_on_custom_id", unique: true
+    t.index ["ocr_batch_id", "position"], name: "index_ocr_batch_entries_on_ocr_batch_id_and_position", unique: true
+    t.index ["ocr_batch_id", "state"], name: "index_ocr_batch_entries_on_ocr_batch_id_and_state"
+    t.index ["receipt_id"], name: "index_ocr_batch_entries_on_receipt_id"
+    t.check_constraint "(state::text = 'waiting'::text) = (resolved_at IS NULL)", name: "ocr_batch_entries_resolved_consistent"
+    t.check_constraint "\"position\" > 0", name: "ocr_batch_entries_position_positive"
+    t.check_constraint "cost_usd >= 0::numeric", name: "ocr_batch_entries_cost_not_negative"
+    t.check_constraint "custom_id::text ~ '^[A-Za-z0-9_-]{16,64}$'::text", name: "ocr_batch_entries_custom_id_format"
+    t.check_constraint "followed_up_at IS NULL OR (state::text = ANY (ARRAY['applied'::character varying, 'sync_queued'::character varying]::text[]))", name: "ocr_batch_entries_follow_up_needs_a_result"
+    t.check_constraint "state::text = ANY (ARRAY['waiting'::character varying, 'applied'::character varying, 'sync_queued'::character varying, 'failed'::character varying, 'released'::character varying, 'superseded'::character varying]::text[])", name: "ocr_batch_entries_state_allowed"
+  end
+
+  create_table "ocr_batches", force: :cascade do |t|
+    t.string "state", default: "pending", null: false
+    t.integer "receipts_count", null: false
+    t.string "provider_batch_id"
+    t.string "provider_status"
+    t.string "model"
+    t.string "provider"
+    t.integer "requests_total"
+    t.integer "requests_completed"
+    t.integer "requests_failed"
+    t.decimal "estimated_cost_usd"
+    t.decimal "cost_usd"
+    t.integer "checks", default: 0, null: false
+    t.integer "submit_attempts", default: 0, null: false
+    t.timestamptz "submit_started_at"
+    t.timestamptz "submitted_at"
+    t.timestamptz "last_checked_at"
+    t.timestamptz "next_check_at"
+    t.timestamptz "expires_at"
+    t.timestamptz "finished_at"
+    t.timestamptz "deleted_upstream_at"
+    t.string "upstream_deletion"
+    t.string "error_code"
+    t.text "error_message"
+    t.string "check_error_code"
+    t.text "check_error_message"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["next_check_at"], name: "index_ocr_batches_on_next_check_at"
+    t.index ["provider_batch_id"], name: "index_ocr_batches_on_provider_batch_id", unique: true, where: "(provider_batch_id IS NOT NULL)"
+    t.index ["state"], name: "index_ocr_batches_on_state"
+    t.check_constraint "(deleted_upstream_at IS NULL) = (upstream_deletion IS NULL)", name: "ocr_batches_deletion_consistent"
+    t.check_constraint "(state::text <> ALL (ARRAY['running'::character varying, 'applying'::character varying]::text[])) OR provider_batch_id IS NOT NULL", name: "ocr_batches_running_has_provider_id"
+    t.check_constraint "checks >= 0 AND submit_attempts >= 0", name: "ocr_batches_attempts_not_negative"
+    t.check_constraint "deleted_upstream_at IS NULL OR provider_batch_id IS NOT NULL", name: "ocr_batches_deleted_has_provider_id"
+    t.check_constraint "estimated_cost_usd >= 0::numeric AND cost_usd >= 0::numeric", name: "ocr_batches_costs_not_negative"
+    t.check_constraint "provider_batch_id::text ~ '^[A-Za-z0-9_-]{1,128}$'::text", name: "ocr_batches_provider_batch_id_format"
+    t.check_constraint "receipts_count > 0", name: "ocr_batches_receipts_count_positive"
+    t.check_constraint "requests_total >= 0 AND requests_completed >= 0 AND requests_failed >= 0", name: "ocr_batches_counts_not_negative"
+    t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'submitting'::character varying, 'running'::character varying, 'applying'::character varying, 'finished'::character varying, 'failed'::character varying, 'unknown'::character varying]::text[])", name: "ocr_batches_state_allowed"
+    t.check_constraint "upstream_deletion::text = ANY (ARRAY['deleted'::character varying, 'unsupported'::character varying, 'not_applicable'::character varying, 'gone'::character varying]::text[])", name: "ocr_batches_upstream_deletion_allowed"
+  end
+
   create_table "payees", force: :cascade do |t|
     t.string "name", null: false
     t.string "normalized_name", null: false
@@ -229,11 +297,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_180000) do
     t.string "categoriser_model_name"
     t.timestamptz "categorised_at"
     t.string "categoriser_error"
+    t.bigint "ocr_batch_id"
     t.index "COALESCE(issued_at, (created_at AT TIME ZONE 'UTC'::text)) DESC, id DESC", name: "index_receipts_on_sort_time_and_id"
     t.index ["batch"], name: "index_receipts_on_batch"
     t.index ["category_id"], name: "index_receipts_on_category_id"
     t.index ["ingest_id"], name: "index_receipts_on_ingest_id", unique: true, where: "(ingest_id IS NOT NULL)"
     t.index ["kind"], name: "index_receipts_on_kind"
+    t.index ["ocr_batch_id"], name: "index_receipts_on_ocr_batch_id"
     t.index ["sha256"], name: "index_receipts_on_sha256", unique: true
     t.index ["status"], name: "index_receipts_on_status"
     t.index ["suggested_category_id"], name: "index_receipts_on_suggested_category_id"
@@ -355,12 +425,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_180000) do
   add_foreign_key "bulk_acceptance_items", "categories"
   add_foreign_key "bulk_acceptance_items", "transactions", on_delete: :cascade
   add_foreign_key "categories", "categories", column: "parent_id"
+  add_foreign_key "ocr_batch_entries", "ocr_batches", on_delete: :cascade
+  add_foreign_key "ocr_batch_entries", "receipts", on_delete: :nullify
   add_foreign_key "receipt_ground_truths", "receipts", on_delete: :cascade
   add_foreign_key "receipt_items", "categories"
   add_foreign_key "receipt_items", "categories", column: "suggested_category_id"
   add_foreign_key "receipt_items", "receipts"
   add_foreign_key "receipts", "categories"
   add_foreign_key "receipts", "categories", column: "suggested_category_id"
+  add_foreign_key "receipts", "ocr_batches", on_delete: :nullify
   add_foreign_key "receipts", "transactions", on_delete: :nullify
   add_foreign_key "sessions", "users", on_delete: :cascade
   add_foreign_key "transaction_lines", "categories"

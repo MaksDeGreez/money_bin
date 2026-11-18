@@ -1,0 +1,47 @@
+# Invented OCR batches (docs/domain.md, "OCR in a batch"). Neither is followed by the poller any more: tests that
+# need a running batch create one. The provider batch ids and costs are made up.
+
+# Read and stored; deleted at OpenRouter and at the provider.
+finished_batch:
+  state: finished
+  receipts_count: 1
+  provider_batch_id: batch_fixture0001
+  provider_status: completed
+  model: example/vision-model
+  provider: Anthropic
+  requests_total: 1
+  requests_completed: 1
+  requests_failed: 0
+  estimated_cost_usd: 0.0012
+  cost_usd: 0.000987654321
+  checks: 3
+  submitted_at: 2026-10-08T09:00:00+03:00
+  last_checked_at: 2026-10-08T09:04:00+03:00
+  next_check_at: 2026-10-08T09:04:00+03:00
+  expires_at: 2026-10-09T09:00:00+03:00
+  finished_at: 2026-10-08T09:04:00+03:00
+  deleted_upstream_at: 2026-10-08T09:04:00+03:00
+  upstream_deletion: deleted
+
+# The provider did not finish it in time; its receipt was released and is back as it was.
+expired_batch:
+  state: failed
+  receipts_count: 1
+  provider_batch_id: batch_fixture0002
+  provider_status: expired
+  model: example/vision-model
+  provider: Anthropic
+  requests_total: 1
+  requests_completed: 0
+  requests_failed: 1
+  estimated_cost_usd: 0.0011
+  checks: 40
+  submitted_at: 2026-10-10T10:00:00+03:00
+  last_checked_at: 2026-10-11T10:05:00+03:00
+  next_check_at: 2026-10-11T10:05:00+03:00
+  expires_at: 2026-10-11T10:00:00+03:00
+  finished_at: 2026-10-11T10:05:00+03:00
+  deleted_upstream_at: 2026-10-11T10:05:00+03:00
+  upstream_deletion: not_applicable
+  error_code: batch_expired
+  error_message: The provider did not finish the batch before it expired.

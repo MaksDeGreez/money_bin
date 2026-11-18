@@ -1,0 +1,8 @@
+/ The receipts list's "Read in a batch" button, loaded in a lazy Turbo Frame (OcrBatchesController#offer), so
+/ the list never waits for the ML service. Empty unless the service says batch mode is available and the
+/ filter has receipts to send.
+= turbo_frame_tag "ocr_batch_offer" do
+  - if @count.positive? && @capability&.available
+    = ui_link_button new_ocr_batch_path(@filter.to_params), variant: :secondary, size: :sm, data: { turbo_frame: "_top" } do
+      = ui_icon "layers"
+      span = "Read in a batch (#{@count})"

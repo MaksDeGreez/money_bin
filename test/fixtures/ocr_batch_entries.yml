@@ -1,0 +1,21 @@
+# One receipt per fixture batch. The keys are invented random-looking tokens, as OcrBatchEntry.new_custom_id makes.
+
+finished_entry:
+  ocr_batch: finished_batch
+  receipt: corner_receipt
+  position: 1
+  custom_id: Qx3vT9kLm2PzR7wY0aB4cD8e
+  state: applied
+  cost_usd: 0.000987654321
+  resolved_at: 2026-10-08T09:04:00+03:00
+  followed_up_at: 2026-10-08T09:04:00+03:00
+
+expired_entry:
+  ocr_batch: expired_batch
+  receipt: failed_receipt
+  position: 1
+  custom_id: Hn5sJ1uV6gK0bW3xE9yF2tM7
+  state: released
+  error_code: batch_expired
+  error_message: The provider did not finish the batch before it expired.
+  resolved_at: 2026-10-11T10:05:00+03:00

@@ -1,0 +1,105 @@
+- content_for :title, "Batch ##{@batch.id} · OCR batches · Money Bin"
+= turbo_stream_from @batch
+
+= render "ui/page_header", title: "Batch ##{@batch.id}", description: "#{pluralize(@batch.receipts_count, 'receipt')} read together by #{@batch.model || 'a hosted model'}." do
+  = ui_link_button "All batches", ocr_batches_path, variant: :ghost
+  - if @batch.unfinished? || @batch.awaiting_deletion?
+    = ui_button_to check_ocr_batch_path(@batch), variant: :secondary do
+      = ui_icon "refresh-cw"
+      span Check now
+  - if @batch.unfinished? && !@batch.submitting?
+    = ui_button_to release_ocr_batch_path(@batch), variant: :ghost,
+      form: { data: { turbo_confirm: "Take the waiting receipts out of this batch? Its results are not used, even if they arrive; it is still deleted at OpenRouter once it ends." } } do
+      = ui_icon "unlink"
+      span Release the receipts
+
+- if @batch.error_message.present?
+  = render "ui/callout", tone: :danger, class: "mt-6" do
+    p.text-sm
+      = @batch.error_message
+      code.ml-1.text-xs = "(#{@batch.error_code})"
+- if @batch.check_error_message.present?
+  = render "ui/callout", tone: :signal, class: "mt-6" do
+    p.text-sm
+      | The last check did not work:
+      =< @batch.check_error_message
+      code.ml-1.text-xs = "(#{@batch.check_error_code})"
+      |  It is tried again at
+      =< receipt_time(@batch.next_check_at)
+      | .
+
+dl.data-table.mt-6
+  .data-row
+    dt State
+    dd
+      = ocr_batch_state_badge(@batch)
+      - if @batch.provider_status
+        span.ml-2.text-xs.text-ink-muted = "provider: #{@batch.provider_status}"
+  .data-row
+    dt Receipts
+    dd = link_to "#{pluralize(@batch.receipts_count, 'receipt')} in the list", receipts_path(ocr_batch: @batch.id)
+  .data-row
+    dt Requests at the provider
+    dd = ocr_batch_counts(@batch) || "—"
+  .data-row
+    dt Provider
+    dd = @batch.provider || "—"
+  .data-row
+    dt Estimated cost
+    dd = ocr_batch_estimate(@batch.estimated_cost_usd) || "—"
+  .data-row
+    dt Cost
+    dd = ocr_batch_usd(@batch.cost_usd) || "—"
+  .data-row
+    dt Created
+    dd = receipt_time(@batch.created_at)
+  .data-row
+    dt Sent
+    dd = receipt_time(@batch.submitted_at) || "—"
+  .data-row
+    dt Last successful check
+    dd = receipt_time(@batch.last_checked_at) || "—"
+  - if @batch.unfinished?
+    .data-row
+      dt Next check
+      dd = receipt_time(@batch.next_check_at) || "—"
+  .data-row
+    dt Expires at the provider
+    dd = receipt_time(@batch.expires_at) || "—"
+  .data-row
+    dt Finished
+    dd = receipt_time(@batch.finished_at) || "—"
+  .data-row
+    dt Provider's copy
+    dd
+      = ocr_batch_deletion_label(@batch)
+      - if @batch.deleted_upstream_at
+        =< "(#{l(@batch.deleted_upstream_at.in_time_zone, format: '%Y-%m-%d %H:%M')})"
+
+h2.mt-8 What became of the receipts
+ul.mt-3.flex.flex-wrap.gap-2
+  - @entry_counts.each do |state, count|
+    - next if count.zero?
+    li = ui_badge "#{ocr_batch_entry_label(state)}: #{count}", tone: :muted
+
+- if @problems.any?
+  .data-grid-wrapper.mt-4 data-turbo-prefetch="false"
+    table.data-grid
+      thead
+        tr
+          th Receipt
+          th Outcome
+          th Why
+      tbody
+        - @problems.each do |entry|
+          tr
+            td.whitespace-nowrap
+              - if entry.receipt
+                = link_to receipt_label(entry.receipt), receipt_path(entry.receipt), class: "data-grid-link"
+              - else
+                span.text-ink-muted Deleted
+            td.whitespace-nowrap = ocr_batch_entry_label(entry.state)
+            td
+              = entry.error_message
+              - if entry.error_code
+                code.ml-1.text-xs = "(#{entry.error_code})"

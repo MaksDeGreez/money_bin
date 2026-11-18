@@ -111,6 +111,9 @@ class MlClient
     def code = "ml_not_local"
   end
 
+  # Batch mode: the /ocr/batches calls (MlClient::Batches).
+  include Batches
+
   NETWORK_ERRORS = [
     SocketError, IOError, EOFError, Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
     Errno::ENETUNREACH, Errno::EPIPE, Errno::EADDRNOTAVAIL, OpenSSL::SSL::SSLError

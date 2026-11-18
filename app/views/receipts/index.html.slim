@@ -7,6 +7,7 @@ div data-controller="live-refresh" data-live-refresh-pending-value=in_flight.to_
   = turbo_stream_from Receipts::LiveUpdate::STREAM
 
 = render "ui/page_header", title: "Receipts", description: "Every receipt photo set, its OCR state and what was read from it." do
+  = ui_link_button "OCR batches", ocr_batches_path, variant: :ghost
   = ui_link_button new_receipt_path, variant: :primary do
     = ui_icon "upload"
     span Upload
@@ -21,10 +22,13 @@ p.mt-4.text-sm.text-ink-muted role="status"
     tabs: [ { label: "All", count: @status_counts.values.sum, url: receipts_path(@filter.merge(status: nil).to_params), current: @filter.status.nil? } ] + \
       @status_counts.map { |status, count| { label: receipt_status_label(status), count:, url: receipts_path(@filter.merge(status:).to_params), current: @filter.status == status } }
   - if @readable_count.positive?
-    = ui_button_to read_all_receipts_path(@filter.to_params), variant: :secondary, size: :sm,
-      form: { data: { turbo_confirm: "Queue #{pluralize(@readable_count, 'receipt')} for OCR (the ones in this filter that were never read, or failed with no items to lose)? The OCR model reads one receipt at a time, so this can take hours." } } do
-      = ui_icon "scan-text"
-      span = "Read all in this filter (#{@readable_count})"
+    .flex.flex-wrap.items-center.gap-2
+      = ui_button_to read_all_receipts_path(@filter.to_params), variant: :secondary, size: :sm,
+        form: { data: { turbo_confirm: "Queue #{pluralize(@readable_count, 'receipt')} for OCR (the ones in this filter that were never read, or failed with no items to lose)? The OCR model reads one receipt at a time, so this can take hours." } } do
+        = ui_icon "scan-text"
+        span = "Read all in this filter (#{@readable_count})"
+      / "Read in a batch" comes from the ML service, asked after the page is shown (OcrBatchesController#offer).
+      = turbo_frame_tag "ocr_batch_offer", src: offer_ocr_batches_path(@filter.to_params), loading: :lazy
 
 - if @receipts.empty?
   .mt-6
