@@ -1,5 +1,5 @@
 {
-  "about": "Invented receipt items with the obviously right category, for tests and for a smoke test of a real model (python -m evaluation.item_sanity). Every name and shop is made up; none comes from a real receipt.",
+  "about": "Invented receipt items with the obviously right category, for tests and for a smoke test of a real model (python -m evaluation.item_sanity). Every name and shop is made up; none comes from a real receipt. The receipts marked \"set\": \"extension\" were added for the decision-model trial: more items per category, and some that need their receipt to be read right (a mouse in an electronics shop, a pouch in a pet shop).",
   "receipts": [
     {
       "merchant": "Супермаркет Ранок",
@@ -97,6 +97,121 @@
       "merchant": "Каса вокзалу",
       "items": [
         ["Квиток Київ-Львів ІС", "transport/trips-intercity-travel"]
+      ]
+    },
+    {
+      "merchant": "Супермаркет Вечір",
+      "set": "extension",
+      "items": [
+        ["ГРЕЧКА ЯДРИЦЯ 1КГ", "groceries/groceries"],
+        ["ОЛІЯ СОНЯШН 0,85Л", "groceries/groceries"],
+        ["ЦУКОР 1КГ", "groceries/groceries"],
+        ["КАВА МЕЛЕНА 250Г", "groceries/groceries"],
+        ["СІК АПЕЛЬСИН 1Л", "groceries/groceries"],
+        ["ПІЦА ЗАМОРОЖ 350Г", "groceries/groceries"],
+        ["ГОРІЛКА 0,5Л", "alcohol-tobacco/alcohol-tobacco"],
+        ["КОРМ Д/КОТІВ СУХИЙ 1,5КГ", "household-shopping/pets"],
+        ["СЕРВЕТКИ ВОЛОГІ 72ШТ", "household-shopping/household-supplies"],
+        ["ПАКЕТ МАЙКА 35Х60", "household-shopping/household-supplies"],
+        ["ГЕЛЬ Д/ДУШУ 250МЛ", "household-shopping/household-supplies"]
+      ]
+    },
+    {
+      "merchant": "Дрогерія Чисто",
+      "set": "extension",
+      "items": [
+        ["ПОРОШОК ПРАЛЬН АВТОМАТ 3КГ", "household-shopping/household-supplies"],
+        ["ГУБКИ КУХ 5ШТ", "household-shopping/household-supplies"],
+        ["ПАКЕТИ Д/СМІТТЯ 35Л", "household-shopping/household-supplies"],
+        ["ШАМПУНЬ 400МЛ", "household-shopping/household-supplies"],
+        ["ДЕЗОДОРАНТ СПРЕЙ 150МЛ", "household-shopping/household-supplies"],
+        ["СВІЧКИ ЧАЙН 6ШТ", "household-shopping/household-supplies"],
+        ["БАТАРЕЙКИ AA 4ШТ", "household-shopping/household-supplies"]
+      ]
+    },
+    {
+      "merchant": "Аптека Здоров'я",
+      "set": "extension",
+      "items": [
+        ["БИНТ СТЕР 7Х14", "health/health-pharmacy"],
+        ["СПРЕЙ Д/ГОРЛА 30МЛ", "health/health-pharmacy"],
+        ["МАГНІЙ В6 №50", "health/health-pharmacy"],
+        ["ТЕРМОМЕТР ЕЛЕКТР", "health/health-pharmacy"],
+        ["АСКОРБІНКА З ГЛЮК", "health/health-pharmacy"],
+        ["ЧАЙ ТРАВ РОМАШКА Ф/П №20", "health/health-pharmacy"],
+        ["КРЕМ Д/РУК 75МЛ", "household-shopping/household-supplies"],
+        ["ДИТ ПІДГУЗКИ 4 46ШТ", "household-shopping/household-supplies"]
+      ]
+    },
+    {
+      "merchant": "Кіоск Ранковий",
+      "set": "extension",
+      "items": [
+        ["ЗАПАЛЬНИЧКА", "alcohol-tobacco/alcohol-tobacco"],
+        ["ВОДА МІН Н/ГАЗ 0,5Л", "groceries/groceries"],
+        ["ЖУВ ГУМКА М'ЯТА", "groceries/groceries"],
+        ["ЕНЕРГ НАПІЙ 0,25Л", "groceries/groceries"],
+        ["ТЮТЮН Д/НАГРІВ 20ШТ", "alcohol-tobacco/alcohol-tobacco"]
+      ]
+    },
+    {
+      "merchant": "Зоотовари Хвіст",
+      "set": "extension",
+      "items": [
+        ["КОРМ ВОЛОГ ПАУЧ 85Г", "household-shopping/pets"],
+        ["НАПОВН ДЕРЕВ 10Л", "household-shopping/pets"],
+        ["ШАМПУНЬ Д/ТВАРИН 250МЛ", "household-shopping/pets"],
+        ["ПОВІДЕЦЬ НЕЙЛ 2М", "household-shopping/pets"]
+      ]
+    },
+    {
+      "merchant": "Маркет Біля Дому",
+      "set": "extension",
+      "items": [
+        ["КОТЛЕТИ КУР ОХОЛ", "groceries/groceries"],
+        ["МАСЛО ВЕРШК 72,5% 200Г", "groceries/groceries"],
+        ["ПЕЛЬМЕНІ 800Г", "groceries/groceries"],
+        ["КЕФІР 1% 900Г", "groceries/groceries"],
+        ["ЛАВАШ ТОНК", "groceries/groceries"],
+        ["ПЕЧИВО ВІВС 300Г", "groceries/groceries"],
+        ["КОРМ Д/СОБАК 2КГ", "household-shopping/pets"],
+        ["ВИНО БІЛЕ НАПІВСОЛ 0,75", "alcohol-tobacco/alcohol-tobacco"]
+      ]
+    },
+    {
+      "merchant": "Спортмаркет Рух",
+      "set": "extension",
+      "items": [
+        ["ПРОТЕЇН БАТОНЧ 60Г", "sports-fitness/sports-fitness"],
+        ["СКАКАЛКА ШВИДК", "sports-fitness/sports-fitness"],
+        ["ПЛЯШКА Д/ВОДИ 0,7Л", "sports-fitness/sports-fitness"]
+      ]
+    },
+    {
+      "merchant": "Одяг Стиль",
+      "set": "extension",
+      "items": [
+        ["ШАПКА В'ЯЗАНА", "household-shopping/clothing-accessories"],
+        ["КУРТКА ЗИМ Р.M", "household-shopping/clothing-accessories"],
+        ["КРОСІВКИ 42", "household-shopping/clothing-accessories"]
+      ]
+    },
+    {
+      "merchant": "Електроніка Вольт",
+      "set": "extension",
+      "items": [
+        ["ЗАРЯДНИЙ ПРИСТРІЙ 20W", "household-shopping/electronics-appliances"],
+        ["МИША БЕЗДРОТ", "household-shopping/electronics-appliances"],
+        ["ФЛЕШКА 64ГБ", "household-shopping/electronics-appliances"]
+      ]
+    },
+    {
+      "merchant": "Кав'ярня Ранок",
+      "set": "extension",
+      "items": [
+        ["ФЛЕТ ВАЙТ 250", "eating-out/cafes-bars-restaurants"],
+        ["ЧИЗКЕЙК ШМАТ", "eating-out/cafes-bars-restaurants"],
+        ["ЧАЙ ЛИСТ ЧАЙНИК", "eating-out/cafes-bars-restaurants"]
       ]
     }
   ]

@@ -18,6 +18,10 @@ database. Both normalise names the same way, checked by the shared cases in
   of a Beta(1 + k, 0.25 + n - k) posterior, i.e. a weak prior that a name keeps
   its category (prior mean 0.8, worth 1.25 labels). One label gives 0.89, two
   that agree 0.92, four 0.95; a disagreement pulls it down fast (2 of 3: 0.71).
+- **Similar items** (`similar`, offline only): for a name the memory cannot
+  answer, the labelled names whose keys share the most character trigrams with
+  its key (Jaccard similarity at least `MIN_SIMILARITY`), each with its
+  majority category. The decision-model categoriser shows them as examples.
 """
 
 import unicodedata
@@ -32,12 +36,21 @@ _FOLD = str.maketrans(LATIN_LOOKALIKES, CYRILLIC_LETTERS)
 
 PRIOR_AGREEING = 1.0
 PRIOR_DISAGREEING = 0.25
+# The least trigram Jaccard similarity of two keys for one to be an example for the other.
+MIN_SIMILARITY = 0.35
 
 
 def name_key(name: str) -> str:
     """The normalised form under which item names are matched."""
     text = unicodedata.normalize("NFKC", name).lower().translate(_FOLD)
     return "".join(char for char in text if unicodedata.category(char)[0] in "LN")
+
+
+def trigrams(key: str) -> frozenset[str]:
+    """The character trigrams of a key (the key itself when shorter)."""
+    if len(key) < 3:
+        return frozenset({key}) if key else frozenset()
+    return frozenset(key[i : i + 3] for i in range(len(key) - 2))
 
 
 def confidence(agreeing: int, labels: int) -> float:
@@ -62,6 +75,9 @@ class LabelMemory:
     def __init__(self, allowed: Iterable[str] | None = None) -> None:
         self._votes: defaultdict[str, Counter[str]] = defaultdict(Counter)
         self._allowed = None if allowed is None else frozenset(allowed)
+        # A printed name per key (the first one seen), to show as an example.
+        self._names: dict[str, str] = {}
+        self._trigrams: dict[str, frozenset[str]] = {}
 
     def add(self, name: str, slug: str) -> None:
         if self._allowed is not None and slug not in self._allowed:
@@ -69,6 +85,8 @@ class LabelMemory:
         key = name_key(name)
         if key:
             self._votes[key][slug] += 1
+            self._names.setdefault(key, " ".join(name.split()))
+            self._trigrams.setdefault(key, trigrams(key))
 
     def suggest(self, name: str) -> MemorySuggestion | None:
         votes = self._votes.get(name_key(name))
@@ -79,3 +97,26 @@ class LabelMemory:
         if agreeing * 2 <= labels:
             return None
         return MemorySuggestion(slug, labels, agreeing, confidence(agreeing, labels))
+
+    def similar(self, name: str, limit: int) -> list[tuple[str, str]]:
+        """Up to `limit` labelled (name, majority category) pairs most like `name`, best first.
+
+        Names with the same key are left out (the memory itself answers those, or found no
+        majority); so are keys without a strict majority, and keys below `MIN_SIMILARITY`.
+        """
+        key = name_key(name)
+        grams = trigrams(key)
+        if not grams or limit < 1:
+            return []
+        scored = []
+        for other, other_grams in self._trigrams.items():
+            if other == key:
+                continue
+            similarity = len(grams & other_grams) / len(grams | other_grams)
+            if similarity < MIN_SIMILARITY:
+                continue
+            suggestion = self.suggest(self._names[other])
+            if suggestion is not None:
+                scored.append((-similarity, other, suggestion.slug))
+        scored.sort()
+        return [(self._names[other], slug) for _, other, slug in scored[:limit]]
