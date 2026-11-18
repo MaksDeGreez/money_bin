@@ -228,6 +228,110 @@ class ReceiptTest < ActiveSupport::TestCase
     assert receipt.valid?
   end
 
+  test "kind is fiscal, card_slip or not known yet" do
+    receipt = receipts(:new_receipt)
+    assert_nil receipt.kind
+    assert receipt.valid?
+    assert_equal %w[fiscal card_slip], Receipt.kinds.values
+
+    receipt.kind = "invoice"
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:kind], "is not included in the list"
+
+    receipt.kind = :card_slip
+    assert receipt.valid?
+    assert receipt.card_slip?
+  end
+
+  test "incomplete is false by default and never nil" do
+    assert_not Receipt.new.incomplete?
+
+    receipt = receipts(:new_receipt)
+    receipt.incomplete = nil
+    assert_not receipt.valid?
+  end
+
+  test "card_last4 is four digits when present" do
+    receipt = receipts(:new_receipt)
+
+    [ "123", "12345", "12a4", "١٢٣٤" ].each do |value|
+      receipt.card_last4 = value
+      assert_not receipt.valid?, value
+      assert_includes receipt.errors[:card_last4], "must be four digits"
+    end
+    receipt.card_last4 = "0042"
+    assert receipt.valid?
+  end
+
+  test "ingest_id is rcpt_ and six or more digits, and unique" do
+    receipt = receipts(:new_receipt)
+
+    [ "rcpt_12345", "RCPT_000001", "rcpt_00000a", "000001" ].each do |value|
+      receipt.ingest_id = value
+      assert_not receipt.valid?, value
+    end
+    receipt.ingest_id = "rcpt_1000000"
+    assert receipt.valid?
+
+    receipt.ingest_id = receipts(:market_receipt).ingest_id
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:ingest_id], "has already been taken"
+  end
+
+  test "qr_total fits decimal(15, 2) and is never rounded" do
+    receipt = receipts(:new_receipt)
+
+    receipt.qr_total = "12.345"
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:qr_total], "must have at most 2 decimal places (it is never rounded)"
+    receipt.qr_total = 10**13
+    assert_not receipt.valid?
+    receipt.qr_total = "12.30"
+    assert receipt.valid?
+  end
+
+  test "the QR ground truth is kept apart from what OCR read" do
+    receipt = receipts(:market_receipt)
+
+    assert receipt.tax_qr?
+    assert_equal [ receipt.total, receipt.issued_at ], [ receipt.qr_total, receipt.qr_issued_at ]
+    receipt.qr_total = BigDecimal("1.00")
+    assert_equal BigDecimal("1250.40"), receipt.total
+  end
+
+  test "tax_qr? is true when any QR value is present" do
+    receipt = receipts(:new_receipt)
+    assert_not receipt.tax_qr?
+
+    Receipt::QR_FIELDS.each do |field|
+      receipt = receipts(:new_receipt)
+      receipt[field] = field == :qr_total ? BigDecimal("0") : (field == :qr_issued_at ? Time.current : "1")
+      assert receipt.tax_qr?, field
+    end
+  end
+
+  test "index filters by kind and by tax QR" do
+    assert_equal [ receipts(:market_receipt) ], Receipt.fiscal.to_a
+    assert_equal [ receipts(:corner_receipt) ], Receipt.card_slip.to_a
+    assert_equal [ receipts(:new_receipt) ], Receipt.kind_unknown.to_a
+    assert_equal [ receipts(:market_receipt) ], Receipt.with_tax_qr.to_a
+
+    receipts(:new_receipt).update_column(:qr_receipt_number, "1")
+    assert_equal [ receipts(:market_receipt), receipts(:new_receipt) ].sort_by(&:id), Receipt.with_tax_qr.order(:id).to_a
+    assert_equal [ receipts(:corner_receipt) ], Receipt.without_tax_qr.to_a
+    assert_equal Receipt.count, Receipt.with_tax_qr.count + Receipt.without_tax_qr.count
+  end
+
+  test "a receipt is pristine while uploaded, without items and without a transaction" do
+    assert receipts(:new_receipt).pristine?
+    assert_not receipts(:corner_receipt).pristine?
+    assert_not receipts(:market_receipt).pristine?
+
+    receipt = receipts(:new_receipt)
+    receipt.items.create!(position: 1, name: "Tea", amount: BigDecimal("1"))
+    assert_not receipt.pristine?
+  end
+
   test "a transaction has at most one receipt" do
     receipt = receipts(:corner_receipt)
     receipt.ledger_transaction = transactions(:market_split)
@@ -305,6 +409,21 @@ class ReceiptTest < ActiveSupport::TestCase
 
     assert receipt.reload.extracted?
     assert_nil receipt.transaction_id
+  end
+
+  test "the database checks kind, card digits and ingest id" do
+    receipt = receipts(:new_receipt)
+
+    assert_violates("receipts_kind_allowed") { receipt.update_column(:kind, "invoice") }
+    assert_violates("receipts_card_last4_format") { receipt.update_column(:card_last4, "12a4") }
+    assert_violates("receipts_ingest_id_format") { receipt.update_column(:ingest_id, "rcpt_1") }
+    assert_violates("index_receipts_on_ingest_id", ActiveRecord::RecordNotUnique) do
+      receipt.update_column(:ingest_id, receipts(:market_receipt).ingest_id)
+    end
+    assert_violates("not-null") { Receipt.where(id: receipt).update_all(incomplete: nil) }
+    receipt.update_column(:ingest_id, nil)
+    receipts(:corner_receipt).update_column(:ingest_id, nil)
+    assert_equal 2, Receipt.where(ingest_id: nil).count, "many receipts may have no ingest id"
   end
 
   test "the database checks status, currency and fingerprint" do

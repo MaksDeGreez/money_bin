@@ -12,13 +12,24 @@
 # `currency` is what the OCR read from the receipt (nil when unknown). `batch` is a free label for a bulk
 # upload ("october-shopping").
 #
+# `kind` says what the paper is: `fiscal` (a cash register receipt) or `card_slip` (a card terminal slip);
+# nil until OCR reads it, and a person corrects it at review. `incomplete` marks a torn or cut-off receipt
+# whose total or date cannot be read. `card_last4` is the card's last four digits on a slip.
+#
+# QR ground truth: `qr_issued_at`, `qr_total`, `qr_fiscal_number` and `qr_receipt_number` are what the
+# tax-service QR code on a fiscal receipt says. They are kept apart from the OCR columns of the same names
+# (without `qr_`), which they are compared with, and only the receipt load writes them (ReceiptLoad); OCR
+# never does. `qr_payload` is the QR text itself. `ingest_id` is the stable number the receipt ingest tool
+# gave the receipt (`rcpt_000123`); nil for a receipt uploaded in the app.
+#
 # `sha256` is the fingerprint of the uploaded image bytes; it refuses the same photo twice.
 # - one image: the SHA-256 of its bytes, as 64 lower-case hex characters;
 # - several images: the SHA-256 of the per-image hex digests, sorted and joined together (no separator).
 #   Sorting makes it independent of the upload order. A digest always has 64 characters, so the joined
 #   text is unambiguous.
 # Receipt.fingerprint computes it from uploaded files, IO objects or blobs. It is set automatically when
-# images are attached and it is blank, and it is never recomputed: it identifies the original upload.
+# images are attached and it is blank, and it identifies the original upload. Only the receipt load changes
+# it, and only on a pristine receipt whose photos the ingest tool regrouped (ReceiptLoad::Writer).
 #
 # Photos can be attached as files, IO hashes, blobs, or signed blob ids (Strings), which Rails sends when
 # the files were uploaded ahead of the form (direct upload). A signed id that is invalid or expired is a
@@ -35,10 +46,19 @@ class Receipt < ApplicationRecord
   # carry scripts.
   IMAGE_CONTENT_TYPES = %w[image/jpeg image/png image/webp image/heic image/heif].freeze
   SHA256_FORMAT = /\A[0-9a-f]{64}\z/
+  INGEST_ID_FORMAT = /\Arcpt_[0-9]{6,}\z/
+  CARD_LAST4_FORMAT = /\A[0-9]{4}\z/
+  QR_FIELDS = %i[qr_issued_at qr_total qr_fiscal_number qr_receipt_number].freeze
   CHUNK_SIZE = 64.kilobytes
 
   enum :status, { uploaded: "uploaded", processing: "processing", extracted: "extracted", reviewed: "reviewed", failed: "failed" },
     validate: true
+  enum :kind, { fiscal: "fiscal", card_slip: "card_slip" }, validate: { allow_nil: true }
+
+  # Index filters. A receipt "with a tax QR" has at least one QR ground-truth value.
+  scope :kind_unknown, -> { where(kind: nil) }
+  scope :with_tax_qr, -> { where(QR_FIELDS.map { |field| arel_table[field].not_eq(nil) }.reduce(:or)) }
+  scope :without_tax_qr, -> { where(QR_FIELDS.index_with(nil)) }
 
   belongs_to :ledger_transaction, class_name: "Transaction", foreign_key: :transaction_id, optional: true, inverse_of: :receipt
   has_many :items, -> { order(:position) }, class_name: "ReceiptItem", inverse_of: :receipt, dependent: :destroy
@@ -54,6 +74,12 @@ class Receipt < ApplicationRecord
   validates :currency, format: { with: Account::CURRENCY_FORMAT, message: "must be three letters (ISO 4217)" }, allow_nil: true
   validates :total, numericality: { greater_than: -Transaction::AMOUNT_LIMIT, less_than: Transaction::AMOUNT_LIMIT }, allow_nil: true
   validates :total, decimal_places: { maximum: Transaction::MONEY_DECIMAL_PLACES }
+  validates :qr_total, numericality: { greater_than: -Transaction::AMOUNT_LIMIT, less_than: Transaction::AMOUNT_LIMIT }, allow_nil: true
+  validates :qr_total, decimal_places: { maximum: Transaction::MONEY_DECIMAL_PLACES }
+  validates :incomplete, inclusion: { in: [ true, false ] }
+  validates :card_last4, format: { with: CARD_LAST4_FORMAT, message: "must be four digits" }, allow_nil: true
+  validates :ingest_id, format: { with: INGEST_ID_FORMAT, message: "must be rcpt_ and at least six digits" },
+    uniqueness: true, allow_nil: true
   validates :transaction_id, uniqueness: { message: "already has a receipt" }, allow_nil: true
   validate :ledger_transaction_exists, if: -> { transaction_id.present? && will_save_change_to_transaction_id? }
   validate :images_are_photos
@@ -104,6 +130,17 @@ class Receipt < ApplicationRecord
       ActiveStorage::Blob.find_signed(attachable).tap { |blob| @invalid_image_ids += 1 if blob.nil? }
     end
     super(resolved)
+  end
+
+  # True when the tax-service QR code gave at least one ground-truth value.
+  def tax_qr?
+    QR_FIELDS.any? { |field| !self[field].nil? }
+  end
+
+  # Nothing has happened to the receipt since it was stored: no OCR result, no items, no transaction. Only
+  # such a receipt may be changed or removed by the receipt load.
+  def pristine?
+    uploaded? && transaction_id.nil? && !items.exists?
   end
 
   # The sum of the item amounts, as a BigDecimal.
