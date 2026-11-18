@@ -9,7 +9,7 @@ class TransactionsController < ApplicationController
   CATEGORISE_MESSAGES = {
     categorised: nil,
     stale: "Changed somewhere else since this page was loaded: nothing was saved. Here it is as it is now.",
-    changed: "This line has a category by now: nothing was saved. Here it is as it is now.",
+    changed: "This line has a category by now, or a new suggestion: nothing was saved. Here it is as it is now.",
     invalid: "Choose a category (not Uncategorised) first."
   }.freeze
 
@@ -44,15 +44,16 @@ class TransactionsController < ApplicationController
     end
   end
 
-  # One uncategorised line, categorised from the list: "Take" (the stored suggestion) or a category chosen in the
+  # One uncategorised line, categorised from the list: "Take" (the suggestion shown) or a category chosen in the
   # picker. Choosing the category that was suggested counts as taking the suggestion. The form carries the
-  # transaction's lock_version, so an edit made since the page was loaded wins (nothing is saved).
+  # transaction's lock_version and the suggestion it showed, so an edit made since the page was loaded, or a
+  # suggestion refreshed since, saves nothing (Transactions::Categorise checks both under row locks).
   def categorise
-    line = TransactionLine.includes(:category).find_by(id: params[:line_id], transaction_id: params[:id])
-    category_id = params[:take].present? ? line&.suggested_category_id : Integer(params.dig(:review, :category_id).to_s, 10, exception: false)
-    taken = line && category_id.present? && category_id == line.suggested_category_id
-    choice = Transactions::Categorise::Choice.new(line_id: line&.id, category_id:, origin: taken ? "suggestion" : "person",
-      probability: (line.suggestion_probability if taken), model_version: (line.suggestion_model_version if taken))
+    shown_category_id = integer(params[:shown_category_id])
+    category_id = params[:take].present? ? shown_category_id : integer(params.dig(:review, :category_id))
+    taken = category_id.present? && category_id == shown_category_id
+    choice = Transactions::Categorise::Choice.new(line_id: integer(params[:line_id]), category_id:,
+      origin: taken ? "suggestion" : "person", shown_category_id:, shown_model_version: params[:shown_model_version].presence)
     result = Transactions::Categorise.call(params[:id], lock_version: params[:lock_version].to_i, choices: [ choice ])
     @message = CATEGORISE_MESSAGES.fetch(result.status)
     @transaction = Transaction.includes(*list_preloads).find_by(id: params[:id])
@@ -68,6 +69,10 @@ class TransactionsController < ApplicationController
   end
 
   private
+    def integer(value)
+      Integer(value.to_s, 10, exception: false)
+    end
+
     def list_preloads
       [ :account, :payee, :receipt, { lines: [ { category: :parent }, :suggested_category, :runner_up_category ] } ]
     end

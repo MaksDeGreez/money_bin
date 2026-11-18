@@ -261,7 +261,10 @@ probabilities as the training path for the same rows.
 - `POST /categorise/transaction` in the ML service (`ml/README.md`) answers the three best categories of
   each transaction with their probabilities, and whether the payee's (or the MCC's) history weighed in. The
   artefact and the sentence encoder load lazily, once; a missing artefact is a 501 for this endpoint only.
-  It always runs on this machine; there is no hosted backend and no setting for one.
+  It always runs on this machine; there is no hosted backend and no setting for one, and the app's client
+  refuses to send transaction data to an `ML_SERVICE_URL` that is not on this machine (`MlClient::NotLocal`).
+  The served path scales each sentence vector to unit length as the training's embedding cache does
+  (`UnitEncoder`); without it the served features would differ from the fitted ones.
 - **Category mapping.** The model's classes are the export's English group and category names. The app owns
   the slugs, so it sends its category list with every request (as the item categoriser does), and the
   service matches each class to the listed category of the same group and name. A class the list does not

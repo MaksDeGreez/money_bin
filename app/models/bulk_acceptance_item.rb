@@ -30,23 +30,18 @@ class BulkAcceptanceItem < ApplicationRecord
   end
 
   private
+    # The suggestion the person confirmed in the preview must still be the one each line stores: Categorise
+    # checks that under the transaction's and the lines' row locks (a refresh by a new artefact meanwhile makes
+    # it another suggestion, `changed`).
     def decide
-      return "changed" unless suggestion_unchanged?
-
       choices = line_ids.map do |line_id|
-        Transactions::Categorise::Choice.new(line_id:, category_id:, origin: "bulk", probability:, model_version:)
+        Transactions::Categorise::Choice.new(line_id:, category_id:, origin: "bulk", shown_category_id: category_id,
+          shown_model_version: model_version)
       end
       case Transactions::Categorise.call(transaction_id, lock_version:, choices:).status
       when :categorised then "accepted"
       when :stale then "stale"
       else "changed"
       end
-    end
-
-    # The lines still carry the suggestion the person saw in the preview (a refresh by a new artefact meanwhile
-    # would make it another suggestion than the one confirmed).
-    def suggestion_unchanged?
-      lines = TransactionLine.where(id: line_ids, transaction_id:).pluck(:suggested_category_id, :suggestion_model_version)
-      lines.size == line_ids.size && lines.all? { |category, version| category == category_id && version == model_version }
     end
 end

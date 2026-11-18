@@ -11,6 +11,11 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     @line = transaction_lines(:subscription_line)
   end
 
+  # What the list's form carries about the suggestion it shows.
+  def shown(line = @line)
+    { shown_category_id: line.suggested_category_id, shown_model_version: line.suggestion_model_version }
+  end
+
   test "every page of it needs a signed-in session" do
     sign_out
 
@@ -60,6 +65,8 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
       assert_select "span", text: /then Eating out \/ Cafes.* · 5%/
       assert_select "button[name=take][value='1']", text: /Take/
       assert_select "input[name=lock_version][value=?]", @transaction.lock_version.to_s
+      assert_select "input[name=shown_category_id][value=?]", categories(:household_supplies).id.to_s
+      assert_select "input[name=shown_model_version][value=?]", @line.suggestion_model_version
       assert_select "select[name='review[category_id]']"
     end
     assert_select "tr[id^=review_transaction_line_]", 1
@@ -67,7 +74,7 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
 
   test "Take categorises the line with its suggestion and answers with the transaction's rows" do
     post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1",
-      filter: { status: "needs_review" } }, as: :turbo_stream
+      **shown, filter: { status: "needs_review" } }, as: :turbo_stream
 
     assert_response :success
     assert_select "turbo-stream[action=replace][target=?]", "list_transaction_#{@transaction.id}"
@@ -88,16 +95,28 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     seen = @transaction.lock_version
     @transaction.update!(comment: "edited elsewhere")
 
-    post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: seen, take: "1" }, as: :turbo_stream
+    post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: seen, take: "1", **shown }, as: :turbo_stream
 
     assert_response :unprocessable_content
     assert_match "Changed somewhere else", response.body
     assert_nil @line.reload.category
   end
 
+  test "Take saves the suggestion that was shown, never one refreshed since" do
+    form = shown
+    @line.update_columns(suggested_category_id: categories(:cafes).id, suggestion_model_version: "2026-12-01-abcdefabcdef")
+
+    post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1", **form },
+      as: :turbo_stream
+
+    assert_response :unprocessable_content
+    assert_match "a new suggestion", response.body
+    assert_nil @line.reload.category
+  end
+
   test "a line of another transaction or a category already chosen is not touched" do
     coffee_line = transaction_lines(:coffee_line)
-    post categorise_transaction_path(@transaction), params: { line_id: coffee_line.id, lock_version: @transaction.lock_version, take: "1" }
+    post categorise_transaction_path(@transaction), params: { line_id: coffee_line.id, lock_version: @transaction.lock_version, take: "1", **shown }
     assert_equal categories(:cafes), coffee_line.reload.category
     assert_nil @line.reload.category
   end

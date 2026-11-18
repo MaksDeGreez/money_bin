@@ -77,6 +77,19 @@ class MlClientTransactionsTest < ActiveSupport::TestCase
     assert assert_raises(MlClient::ConnectionError) { categorise }.transient?
   end
 
+  test "transaction data goes to an ML service on this machine only" do
+    stub_request(:any, /remote\.example\.test|10\.0\.0\.5/)
+    [ "http://remote.example.test:8100", "http://10.0.0.5:8100" ].each do |url|
+      error = assert_raises(MlClient::NotLocal) do
+        MlClient.new(base_url: url).categorise_transactions([ TRANSACTION ], categories: CATEGORIES)
+      end
+      assert_equal "ml_not_local", error.code
+    end
+    assert_not_requested :any, /remote\.example\.test|10\.0\.0\.5/
+    assert MlClient.new(base_url: "http://[::1]:8100").local?
+    assert MlClient.new(base_url: "http://localhost:8100").local?
+  end
+
   test "transaction_categoriser names the artefact" do
     stub_transaction_categoriser(version: "2026-12-01-abcdefabcdef")
 

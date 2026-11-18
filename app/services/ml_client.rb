@@ -105,12 +105,20 @@ class MlClient
     def code = "invalid_response"
   end
 
+  # Transaction data may go to an ML service on this machine only (ML_SERVICE_URL on a loopback host); nothing is
+  # sent otherwise. Permanent.
+  class NotLocal < Error
+    def code = "ml_not_local"
+  end
+
   NETWORK_ERRORS = [
     SocketError, IOError, EOFError, Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
     Errno::ENETUNREACH, Errno::EPIPE, Errno::EADDRNOTAVAIL, OpenSSL::SSL::SSLError
   ].freeze
   TIMEOUT_ERRORS = [ Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Timeout::Error, Errno::ETIMEDOUT ].freeze
 
+  # The hosts a request with transaction data may go to: this machine.
+  LOCAL_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
   # The ML service's limit on one /categorise/transaction request (ml/README.md).
   MAX_TRANSACTIONS = 500
   MONEY_STRING = /\A-?\d{1,13}(?:\.\d{1,2})?\z/
@@ -179,8 +187,11 @@ class MlClient
   # decimal String, signed; never a Float), currency and account_kind, any of them nil; `categories` the
   # candidate list (Categories::TransactionCandidates.payload). The answer may only name the slugs sent: any
   # other slug, a missing result or a probability outside 0..1 is an InvalidResponse. The service runs the model
-  # on this machine; nothing of the transactions goes further.
+  # on this machine; nothing of the transactions goes further. A service URL that is not on this machine raises
+  # NotLocal before anything is sent.
   def categorise_transactions(transactions, categories:)
+    raise NotLocal, "transaction data is sent only to an ML service on this machine, not to #{base_url.host}" unless local?
+
     transactions = Array(transactions)
     raise ArgumentError, "send 1 to #{MAX_TRANSACTIONS} transactions, got #{transactions.size}" unless transactions.size.between?(1, MAX_TRANSACTIONS)
 
@@ -210,6 +221,11 @@ class MlClient
     body = request(Net::HTTP::Get.new(url("/categorise/transaction")), read_timeout: categorise_timeout)
     require_keys(body, %w[model_name model_version fitted_at], "")
     TransactionModel.new(body:, model_name: body["model_name"], model_version: body["model_version"], fitted_at: body["fitted_at"])
+  end
+
+  # True when the service URL points at this machine (a loopback host).
+  def local?
+    LOCAL_HOSTS.include?(base_url.hostname.to_s.downcase)
   end
 
   private

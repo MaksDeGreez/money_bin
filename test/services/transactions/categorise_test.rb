@@ -9,9 +9,9 @@ class Transactions::CategoriseTest < ActiveSupport::TestCase
     @line = transaction_lines(:subscription_line)
   end
 
-  def take(line = @line, category: categories(:household_supplies), origin: "suggestion", lock_version: Transaction.find(line.transaction_id).lock_version)
-    choice = Choice.new(line_id: line.id, category_id: category.id, origin:, probability: (0.91 unless origin == "person"),
-      model_version: (VERSION unless origin == "person"))
+  def take(line = @line, category: categories(:household_supplies), origin: "suggestion", lock_version: Transaction.find(line.transaction_id).lock_version,
+    shown: line.reload.suggested_category_id, shown_version: line.suggestion_model_version)
+    choice = Choice.new(line_id: line.id, category_id: category.id, origin:, shown_category_id: shown, shown_model_version: shown_version)
     Transactions::Categorise.call(line.transaction_id, lock_version:, choices: [ choice ])
   end
 
@@ -99,7 +99,7 @@ class Transactions::CategoriseTest < ActiveSupport::TestCase
     [ categories(:groceries_group), categories(:uncategorised) ].each do |category|
       assert_equal :invalid, take(category:, origin: "person").status
     end
-    choice = Choice.new(line_id: @line.id, category_id: categories(:cafes).id, origin: "robot", probability: nil, model_version: nil)
+    choice = Choice.new(line_id: @line.id, category_id: categories(:cafes).id, origin: "robot")
     assert_equal :invalid, Transactions::Categorise.call(@transaction.id, lock_version: @transaction.lock_version, choices: [ choice ]).status
     assert_equal :invalid, Transactions::Categorise.call(@transaction.id, lock_version: @transaction.lock_version, choices: []).status
     assert_nil @line.reload.category
@@ -107,10 +107,26 @@ class Transactions::CategoriseTest < ActiveSupport::TestCase
 
   test "a transfer leg or a missing transaction is left alone" do
     leg = transactions(:withdrawal_out)
-    choice = Choice.new(line_id: 0, category_id: categories(:cafes).id, origin: "person", probability: nil, model_version: nil)
+    choice = Choice.new(line_id: 0, category_id: categories(:cafes).id, origin: "person")
 
     assert_equal :changed, Transactions::Categorise.call(leg.id, lock_version: leg.lock_version, choices: [ choice ]).status
     assert_equal :changed, Transactions::Categorise.call(0, lock_version: 0, choices: [ choice ]).status
+  end
+
+  test "a suggestion refreshed since it was shown saves nothing, taken or picked by hand" do
+    shown_version = @line.suggestion_model_version
+    @line.update_columns(suggested_category_id: categories(:cafes).id, suggestion_model_version: "2026-12-01-abcdefabcdef")
+
+    assert_equal :changed, take(shown: categories(:household_supplies).id, shown_version:).status
+    assert_equal :changed, take(category: categories(:groceries), origin: "person", shown: categories(:household_supplies).id, shown_version:).status
+    assert_nil @line.reload.category
+  end
+
+  test "a taken suggestion must be the one shown, and records the stored probability" do
+    assert_equal :invalid, take(category: categories(:cafes)).status
+    assert_not take(shown: nil, shown_version: nil).categorised?
+    assert take.categorised?
+    assert_equal 0.91, @line.reload.category_origin_probability
   end
 
   test "a taken suggestion without its probability is refused by the database too" do

@@ -72,6 +72,7 @@ from categoriser.embeddings import (
     ENCODERS,
     EmbeddingError,
     Encoder,
+    _unit,
 )
 from categoriser.export import ExportError
 from categoriser.features import FEATURE_VERSION
@@ -504,6 +505,32 @@ def history_weights(
     return result
 
 
+class UnitEncoder:
+    """An encoder as training sees it, without the on-disk cache.
+
+    Training always reads vectors through `categoriser.embeddings.CachedEncoder`, which scales every
+    vector to unit length and keeps it as float32; the model was fitted on those. Serving does the
+    same to what the encoder returns, so the features keep their scale (a test compares the two)."""
+
+    def __init__(self, encoder: Encoder) -> None:
+        self.encoder = encoder
+
+    @property
+    def key(self) -> str:
+        return self.encoder.key
+
+    def prepare(self) -> None:
+        prepare = getattr(self.encoder, "prepare", None)
+        if prepare is not None:
+            prepare()
+
+    def encode(self, texts: Sequence[str]) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+        vectors = _unit(np.asarray(self.encoder.encode(list(texts))))
+        return np.vstack([vector.astype(np.float32) for vector in vectors])
+
+
 class ServingModel:
     """A loaded artefact. `encoder_factory` builds the sentence encoder the first time one is needed
     (the real one loads its weights from the local Hugging Face cache only)."""
@@ -555,7 +582,7 @@ class ServingModel:
             if self.config.encoder is not None:
                 if self._encoder_factory is None:
                     raise ServingError("the artefact needs a sentence encoder and none is set up")
-                encoder = self._encoder_factory(self.config.encoder)
+                encoder = UnitEncoder(self._encoder_factory(self.config.encoder))
                 expected = (self.metadata.get("encoder") or {}).get("key")
                 if encoder.key != expected:
                     raise ServingError("the sentence encoder differs from the artefact's")

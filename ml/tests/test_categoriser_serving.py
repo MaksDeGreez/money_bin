@@ -15,6 +15,7 @@ import pytest
 from categoriser import common, score, selection, serving
 from categoriser.common import TrainingError, load_rows
 from categoriser.dataset import build_rows
+from categoriser.embeddings import CachedEncoder, EmbeddingCache
 from categoriser.export import load_export
 from categoriser.hybrid import HybridParams, RuleTables, _shares, combine
 from categoriser.serving import ServingError, TransactionInput, fit_artefact, load
@@ -216,12 +217,25 @@ def test_the_command_line_fits_and_reports_the_version(
 # --- Serving --------------------------------------------------------------------------------------
 
 
+class ScaledEncoder(FakeEncoder):
+    """The fake encoder with vectors far from unit length, as mean pooling gives them."""
+
+    def encode(self, texts: Any) -> np.ndarray:
+        return super().encode(texts) * 7.5 + 0.25
+
+
+def cached(encoder: Any, folder: Path) -> CachedEncoder:
+    """The encoder as training uses it: behind the on-disk cache (`selection.real_encoders`)."""
+    return CachedEncoder(encoder, EmbeddingCache(folder))
+
+
 @pytest.fixture(scope="module")
 def hybrid(selected: dict[str, Any]) -> dict[str, Any]:
-    """The real configuration's shape, fitted on the synthetic rows through `fit_artefact`."""
+    """The real configuration's shape, fitted on the synthetic rows through `fit_artefact`, with the
+    encoder behind the cache as in training."""
     export = load_export(selected["export"])
     rows, _counts = build_rows(export, load_taxonomy())
-    encoders = {"fake": FakeEncoder()}
+    encoders = {"fake": cached(ScaledEncoder(), selected["root"] / "cache")}
     result = fit_artefact(
         HYBRID,
         rows,
@@ -232,7 +246,7 @@ def hybrid(selected: dict[str, Any]) -> dict[str, Any]:
         stem_suffix="synthetic",
         described={},
     )
-    model = load(result["artefact_path"], encoder_factory=lambda _name: FakeEncoder())
+    model = load(result["artefact_path"], encoder_factory=lambda _name: ScaledEncoder())
     return {"export": export, "rows": rows, "model": model, "encoders": encoders, **result}
 
 
@@ -273,12 +287,22 @@ def test_serving_and_training_give_the_same_probabilities_for_the_same_rows(
     by_id = dict(_inputs_from_export(hybrid["export"]))
     model = hybrid["model"]
     served = model.probabilities([serving.row_of(by_id[row.legacy_id]) for row in rows])
-    training = fit_system(HYBRID, rows, seed=42, encoders={"fake": FakeEncoder()})
+    training = fit_system(HYBRID, rows, seed=42, encoders=hybrid["encoders"])
     np.testing.assert_allclose(served, training.probabilities(rows), rtol=0, atol=1e-12)
     assert model.labels == training.classes
     scored = model.score([by_id[row.legacy_id] for row in rows[:25]])
     best = np.argsort(-training.probabilities(rows[:25]), axis=1, kind="stable")[:, :3]
     assert [s.labels for s in scored] == [[training.classes[j] for j in r] for r in best]
+
+
+def test_served_vectors_are_scaled_as_the_cache_scales_them(tmp_path: Path) -> None:
+    texts = ["example market", "corner cafe demo", "example market"]
+    training = cached(ScaledEncoder(), tmp_path).encode(texts)
+    served = serving.UnitEncoder(ScaledEncoder()).encode(texts)
+    assert served.dtype == training.dtype == np.float32
+    np.testing.assert_array_equal(served, training)
+    np.testing.assert_allclose(np.linalg.norm(served, axis=1), 1.0, rtol=1e-6)
+    assert serving.UnitEncoder(ScaledEncoder()).encode([]).shape == (0, 0)
 
 
 def test_the_history_weights_are_the_hybrids_own(hybrid: dict[str, Any]) -> None:
@@ -357,6 +381,6 @@ def test_an_artefact_this_code_cannot_serve_is_refused(
     no_encoder = load(hybrid["artefact_path"])
     with pytest.raises(ServingError, match="needs a sentence encoder"):
         no_encoder.score([TransactionInput(merchant="a shop")])
-    other_encoder = load(hybrid["artefact_path"], lambda _name: FakeEncoder(key="other@2"))
+    other_encoder = load(hybrid["artefact_path"], lambda _name: ScaledEncoder(key="other@2"))
     with pytest.raises(ServingError, match="encoder differs"):
         other_encoder.score([TransactionInput(merchant="a shop")])

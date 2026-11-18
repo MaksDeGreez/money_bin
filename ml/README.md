@@ -1547,11 +1547,14 @@ pinned in `categoriser/embeddings.py`; download them once as described above
 without the weights the endpoint answers 501 `transaction_categoriser_unavailable`
 with the command to fetch them. Setting `HF_HUB_OFFLINE` is process-wide; a
 local OCR model is loaded at startup, before it. A served request computes the
-sentence vectors afresh (no on-disk cache), so they may differ from the
-training cache in the last digits.
+sentence vectors afresh (no on-disk cache) and scales each to unit length in
+float32, exactly as the training's cache stores them (`UnitEncoder`; a test
+compares the two); they may still differ from the cached ones in the last
+digits (another batch, another device).
 
 **What never leaves the machine.** Payees, comments, bank descriptions,
 merchants, amounts: the endpoint runs the model in this process. There is no
 hosted transaction categoriser and no setting that would add one; the serving
-code imports no HTTP client (a test checks it), and every test runs with the
-network refused.
+code imports no HTTP client (a test checks it), every test runs with the
+network refused, and the Rails client sends transaction data only to a service
+on a loopback host (`MlClient::NotLocal` otherwise).

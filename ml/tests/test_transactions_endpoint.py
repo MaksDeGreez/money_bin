@@ -27,7 +27,7 @@ from categoriser.taxonomy import DEFAULT_TAXONOMY, load_taxonomy
 from tests.categoriser_export import write_export
 from tests.categoriser_fakes import FakeEncoder
 from tests.conftest import PNG_BYTES
-from tests.test_categoriser_serving import HYBRID
+from tests.test_categoriser_serving import HYBRID, ScaledEncoder, cached
 
 
 def _slug(text: str) -> str:
@@ -58,7 +58,7 @@ def artefact(tmp_path_factory: pytest.TempPathFactory) -> Path:
         HYBRID,
         rows,
         seed=42,
-        encoders={"fake": FakeEncoder()},
+        encoders={"fake": cached(ScaledEncoder(), root / "cache")},
         taxonomy_path=DEFAULT_TAXONOMY,
         out_dir=root / "models",
         stem_suffix="synthetic",
@@ -73,7 +73,7 @@ class CountingFactory:
 
     def __call__(self, _name: str) -> FakeEncoder:
         self.built += 1
-        return FakeEncoder()
+        return ScaledEncoder()
 
 
 @pytest.fixture
@@ -186,7 +186,7 @@ def test_no_artefact_is_a_501_that_leaves_the_rest_of_the_service_working(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(transactions, "DEFAULT_MODELS_DIR", tmp_path / "nothing-here")
-    app = create_app(Settings())
+    app = create_app(Settings(transaction_categoriser_model=None))
     with TestClient(app) as client:
         for method in (client.get, lambda url: client.post(url, json=body(GROCER))):
             response = method("/categorise/transaction")
@@ -208,7 +208,8 @@ def test_the_newest_artefact_of_the_default_folder_is_used(
     newest = folder / "transaction-categoriser-20990101T000000Z-new.serving.joblib"
     newest.write_bytes(artefact.read_bytes())
     monkeypatch.setattr(transactions, "DEFAULT_MODELS_DIR", folder)
-    holder = TransactionCategoriser(Settings(), lambda _name: FakeEncoder())
+    unset = Settings(transaction_categoriser_model=None)
+    holder = TransactionCategoriser(unset, lambda _: ScaledEncoder())
     assert holder.artefact_path() == newest
     assert holder.info().model_name == "transaction-categoriser"
 

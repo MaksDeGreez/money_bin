@@ -815,7 +815,9 @@ decided), the artefact (`suggestion_model_version`: its fit date and file hash) 
 time, `TransactionSuggestionRun` records its progress and failure), sends every transaction with an
 uncategorised line whose suggestion is missing or from another artefact to the ML service in batches of 200,
 and writes the suggestion columns of the lines still uncategorised with `update_all`: never a category, an
-amount or a `lock_version`, so it cannot disturb a person's edit. A new artefact therefore refreshes every
+amount or a `lock_version`, so it cannot disturb a person's edit. `MlClient#categorise_transactions` sends
+transaction data only to an ML service on this machine (`ML_SERVICE_URL` on a loopback host); any other URL
+raises `MlClient::NotLocal` (`ml_not_local`) before anything is sent. A new artefact therefore refreshes every
 suggestion; the same artefact asks nothing again. A transaction with no text and no MCC is skipped. Lines a
 person categorised keep their last suggestion, for the record. Suggestions here are independent of
 `CATEGORISE_BACKEND`: that switch is about receipt labelling.
@@ -828,8 +830,10 @@ write:
 
 - only an uncategorised line is written: a category already set (by anyone) is never overwritten, the answer
   is "has a category by now";
-- the form carries the transaction's `lock_version`; under the transaction's row lock a newer version saves
-  nothing ("changed somewhere else") and the row is shown as it is now;
+- the form carries the transaction's `lock_version` and the suggestion it showed (category and artefact);
+  under row locks on the transaction and its lines (a suggestion refresh, which writes the lines, waits) a
+  newer version saves nothing ("changed somewhere else"), and so does a suggestion refreshed since it was
+  shown ("Take" saves exactly the suggestion on screen, never a newer one); the row is shown as it is now;
 - the lines are saved through their transaction (nested autosave), so the line rules hold and the version
   moves;
 - **status:** `needs_review` becomes `confirmed` when no line is uncategorised any more and nothing else
@@ -837,7 +841,8 @@ write:
   (categorising books nothing); a confirmed one stays confirmed (`Transaction#status_after_categorising`);
 - **provenance:** `category_origin` is `suggestion` when the chosen category is the stored suggestion (taken
   with "Take" or picked by hand: it was on screen), `person` otherwise, and `bulk` from a bulk acceptance;
-  a taken suggestion records its probability and artefact (required by a check). A retraining tells the
+  a taken suggestion records its probability and artefact as stored on the line, verified under the lock
+  (required by a check). A retraining tells the
   model's own accepted output from a person's labels by this (`docs/decisions/0006-transaction-categoriser.md`,
   "Self-training"). Categories set elsewhere (receipts, manual entry, the import) have no origin.
 
@@ -854,7 +859,8 @@ write:
    an outcome is skipped, and the categorising (`Transactions::Categorise`, origin `bulk`) and the outcome are
    written in one database transaction. An item whose transaction was edited after the preview (a newer
    `lock_version`) is `stale`, one whose lines have a category by now or carry another suggestion (a refresh
-   by a new artefact) is `changed`: both are skipped and counted, never overwritten. A second acceptance over
+   by a new artefact; checked under the lines' row locks, so a refresh cannot slip in between) is `changed`:
+   both are skipped and counted, never overwritten. An item whose transaction was deleted goes with it. A second acceptance over
    the same rows finds them stale or changed. The page follows the progress live; an unexpected error marks
    it `failed`, and "Resume" carries on where it stopped.
 

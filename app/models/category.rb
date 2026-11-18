@@ -116,7 +116,8 @@ class Category < ApplicationRecord
       uses = {
         "child categories" => children, "transaction lines" => transaction_lines,
         "receipt items" => receipt_items, "suggested receipt items" => suggested_receipt_items,
-        "receipts" => receipts, "suggested receipts" => suggested_receipts
+        "receipts" => receipts, "suggested receipts" => suggested_receipts,
+        "suggested transaction lines" => suggested_transaction_lines, "runner-up transaction lines" => runner_up_transaction_lines
       }.filter_map { |name, relation| name if relation.exists? }
       return if uses.empty?
 
