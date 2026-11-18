@@ -6,95 +6,208 @@ local quantised build (`mlx-community/Qwen3-VL-8B-Instruct-4bit`), the hosted id
 `anthropic/claude-4.6-sonnet-20260217`). For the pre-fill rule they are one model: the same weights
 answer much the same, so a person correcting one's answer leans towards all of them.
 
-**The identity of a name** (`identity`), step by step:
+The rule must not be bypassed by a spelling, so two names count as **different models only with
+proof**, and everything unexplained counts as **unknown** (the record is left out and counted).
 
-1. Case is ignored and surrounding spaces dropped.
-2. A backend prefix (`mlx:`, `openrouter:`, ...) and a routing suffix after `:` (`:free`,
-   `:nitro`, `:thinking`) are dropped.
-3. Only the last path segment counts: the publisher or host (`mlx-community/`, `qwen/`, `openai/`)
-   does not change the model.
-4. A date at the end is dropped (`-2025-04-14`, `-20260217`, a four-digit release such as `-2507`),
-   and so is a llama.cpp quantisation (`-Q4_K_M`).
-5. The rest is split into tokens at `-`, `_`, `.` and spaces; tokens that only describe the build
-   are dropped: quantisation and number formats (`4bit`, `8bit`, `bf16`, `fp8`, `int4`, `mxfp4`,
-   `w4a16`, `awq`, `gptq`, `dwq`), packaging (`mlx`, `gguf`, `hf`) and the instruction-tuning word
-   (`instruct`, `chat`, `it`).
-6. The identity is the sorted list of the remaining tokens, so the order of the words does not
-   matter (`claude-4.6-sonnet` and `claude-sonnet-4-6` are one model).
+**Reading a name** (`identity`):
 
-So the same base model is the same whatever its quantisation, host, publisher or dated slug, while a
-different size of a family (`8b` against `235b-a22b`), a different family or generation (`qwen2.5`
-against `qwen3`), or a different tier (`gpt-4.1` against `gpt-4.1-mini`) is a different model.
+1. Case is ignored; a backend prefix (`mlx:`, `openrouter:`, ...), a revision (`@main`), a file
+   extension (`.gguf`) and a llama.cpp quantisation (`-Q4_K_M`) are dropped; only the last path
+   segment counts (the publisher or host does not change the model); a routing suffix after `:`
+   (`:free`, `:nitro`, `:thinking`) is dropped, any other `:` part (an Ollama size tag, `:7b`) is
+   kept as words.
+2. The name is cut at `-`, `_`, `.`, spaces, and between letters and digits (`qwen2.5vl` and
+   `qwen-2.5-vl` both give `qwen 2 5 vl`), keeping sizes whole (`7b`, `235b`, `a22b`, `16e`).
+3. Words that describe a build, not a model, are dropped: quantisation and number formats (`4bit`,
+   `bf16`, `fp8`, `int4`, `mxfp4`, `w4a16`, `awq`, `gptq`, `dwq`, `bnb`, `qat`, `mixed`,
+   `dynamic`), packaging (`mlx`, `gguf`, `hf`, `unsloth`), `instruct`, `chat`, `it`, `latest`,
+   `preview`, `exp`, a reasoning effort (`high`, `low`), and every number of three or more digits
+   (dates and releases: `2025 04 14`, `20260217`, `2507`, `001`).
 
-**When in doubt, leave it out.** A name is *uncertain* when it is a path on disk (a local folder
-model: its folder name says nothing reliable) or leaves no token. For the rule:
+What is left is the model's **family** (its first word: `qwen`, `llama`, `gemma`, `gpt`, `claude`,
+`o`), its **sizes** (`8b`, `235b`, `a22b`), its **versions** (small numbers: `2 5`, `3`, `4 1`) and
+its other words, among them **tier words** that name a different model of a family (`mini`, `nano`,
+`pro`, `flash`, `lite`, `sonnet`, `opus`, `haiku`, `vl`, `thinking`, `coder`, `scout`, ...).
 
-- a record pre-filled by `source:hand` or `source:dps_xml` (and an imported record, with no
-  `prefilled_by`) counts for every model;
-- a record pre-filled by `source:unknown-model`, by any other `source:` value, by an uncertain name,
-  or by a model when the run's own model name is uncertain, is left out of every run (reason
-  `unknown`);
-- otherwise it is left out of a run whose model name or model version has the same identity as
-  `prefilled_by` or `prefilled_model_version` (reason `same_model`).
+**Comparing two names** (`compare`): different families, two different size sets, two different
+version lists, or a tier word on one side only prove different models (`different`); the same words
+and versions (a size or a version given on one side only does not matter) are the same model
+(`same`); anything else (a word the rules do not know) is `unknown`. A name that is a path on disk,
+whose version is `local` (a model loaded from a folder: `ml/app/backends/mlx.py` reports that), or
+that leaves no word, is `unknown` too.
 
-Categories follow the same rules with `categories_prefilled_by` (`source:unknown`: left out for
-every categoriser).
+**The rule** (`prefill_exclusion`): a record pre-filled by `source:hand` or `source:dps_xml` (or an
+imported record, with no `prefilled_by`) counts for every model. It is left out of a run as
+`same_model` when any of the record's names (`prefilled_by`, `prefilled_model_version`) is the same
+model as any of the run's (`model_name`, `model_version`), and as `unknown` when the record says
+`source:unknown-model` (or another `source:` value), or when not every pair is proved different. So
+8B against 235B-A22B, Qwen2.5 against Qwen3, `gpt-4.1` against `gpt-4.1-mini` are different models,
+and a name the rules cannot read leaves the receipt out. Categories follow the same rules with
+`categories_prefilled_by` (`source:unknown`: left out for every categoriser).
 """
 
 import re
 from dataclasses import dataclass
 
-BACKEND_PREFIXES = ("mlx:", "openrouter:", "stub:", "local:", "hosted:")
+BACKEND_PREFIXES = ("mlx:", "openrouter:", "stub:", "local:", "hosted:", "ollama:")
 COUNTS_FOR_EVERY_MODEL = frozenset({"source:hand", "source:dps_xml"})
-BUILD_TOKENS = frozenset(
-    {"mlx", "gguf", "hf", "awq", "gptq", "dwq", "instruct", "chat", "it", "bit", "quant"}
+ROUTING_SUFFIXES = frozenset(
+    {"free", "nitro", "floor", "online", "thinking", "extended", "beta", "latest"}
 )
-BUILD_PATTERN = re.compile(r"\A(?:\d+bit|q\d\w*|[a-z]*fp\d+|bf\d+|int\d+|w\d+a\d+)\Z")
-DATE_SUFFIX = re.compile(r"[-_](?:\d{4}-\d{2}-\d{2}|\d{8}|\d{4})\Z")
-# A llama.cpp quantisation at the end (`-Q4_K_M`, `.IQ3_XS`), whose `_` would split it into tokens.
+BUILD_WORDS = frozenset(
+    {
+        "mlx",
+        "gguf",
+        "hf",
+        "awq",
+        "gptq",
+        "dwq",
+        "bnb",
+        "qat",
+        "mixed",
+        "dynamic",
+        "unsloth",
+        "instruct",
+        "chat",
+        "it",
+        "latest",
+        "preview",
+        "exp",
+        "high",
+        "low",
+        "bit",
+        "quant",
+        "quantized",
+    }
+)
+BUILD_PATTERN = re.compile(r"\A(?:\d+bit|[a-z]*fp\d+|bf\d+|int\d+|w\d+a\d+|q\d+(?:_[a-z0-9]+)*)\Z")
+TIER_WORDS = frozenset(
+    {
+        "mini",
+        "nano",
+        "micro",
+        "small",
+        "medium",
+        "large",
+        "pro",
+        "flash",
+        "lite",
+        "max",
+        "plus",
+        "turbo",
+        "ultra",
+        "sonnet",
+        "opus",
+        "haiku",
+        "vl",
+        "omni",
+        "thinking",
+        "reasoning",
+        "coder",
+        "math",
+        "scout",
+        "maverick",
+        "vision",
+        "audio",
+        "embed",
+        "embedding",
+        "guard",
+    }
+)
 GGUF_SUFFIX = re.compile(r"[-_.]i?q\d+(?:_[a-z0-9]+)*\Z")
+MIXED_BITS = re.compile(r"[-_]mixed[-_]\d+[-_]\d+bit")
+DATE = re.compile(r"(?<!\d)\d{4}[-_.]\d{2}[-_.]\d{2}(?!\d)")
+SIZE = re.compile(r"\A(?:\d+(?:\.\d+)?[bm]|a\d+b|\d+e)\Z")
+PIECE = re.compile(r"a\d+b(?![a-z])|\d+[bm](?![a-z])|\d+e(?![a-z])|[a-z]+|\d+")
 # A model version that is a revision, not a name: a commit hash or a fixed word.
-NOT_A_NAME = re.compile(r"\A(?:[0-9a-f]{7,64}|local|not-started|not-configured)\Z")
+REVISION = re.compile(r"\A(?:[0-9a-f]{7,64}|not-started|not-configured)\Z")
 
 
 @dataclass(frozen=True)
 class Identity:
-    tokens: tuple[str, ...]
+    family: str
+    sizes: frozenset[str]
+    versions: tuple[str, ...]
+    words: frozenset[str]
     certain: bool
+
+    @property
+    def tiers(self) -> frozenset[str]:
+        return self.words & TIER_WORDS
+
+
+UNKNOWN = Identity("", frozenset(), (), frozenset(), certain=False)
 
 
 def is_path(name: str) -> bool:
-    return name.startswith(("/", "~", "./", "../")) or "\\" in name
+    text = name.strip()
+    return text.startswith(("/", "~/", "./", "../")) or text == "~" or "\\" in text
+
+
+def _pieces(text: str) -> list[str]:
+    pieces: list[str] = []
+    for coarse in re.split(r"[-_.\s]+", text):
+        if not coarse or coarse in BUILD_WORDS or BUILD_PATTERN.match(coarse):
+            continue
+        pieces.extend(PIECE.findall(coarse))
+    return [
+        piece
+        for piece in pieces
+        if piece not in BUILD_WORDS and not (piece.isdigit() and len(piece) >= 3)
+    ]
 
 
 def identity(name: str) -> Identity:
     text = name.strip()
-    if is_path(text):
-        return Identity((), certain=False)
+    if not text or is_path(text):
+        return UNKNOWN
     text = text.casefold()
     for prefix in BACKEND_PREFIXES:
         if text.startswith(prefix):
             text = text[len(prefix) :]
-    text = text.rsplit("/", 1)[-1].split(":", 1)[0]
-    previous = None
-    while previous != text:
-        previous = text
-        text = GGUF_SUFFIX.sub("", DATE_SUFFIX.sub("", text))
-    tokens = [
-        token
-        for token in re.split(r"[-_.\s]+", text)
-        if token and token not in BUILD_TOKENS and not BUILD_PATTERN.match(token)
-    ]
-    return Identity(tuple(sorted(tokens)), certain=bool(tokens))
+    text = text.split("@", 1)[0].rsplit("/", 1)[-1]
+    text = re.sub(r"\.gguf\Z", "", text)
+    if ":" in text:
+        base, suffix = text.split(":", 1)
+        text = base if suffix in ROUTING_SUFFIXES else f"{base}-{suffix}"
+    text = GGUF_SUFFIX.sub("", MIXED_BITS.sub("", DATE.sub("", text)))
+    pieces = _pieces(text)
+    if not pieces or not pieces[0].isalpha():
+        return UNKNOWN
+    rest = pieces[1:]
+    return Identity(
+        family=pieces[0],
+        sizes=frozenset(piece for piece in rest if SIZE.match(piece)),
+        versions=tuple(piece for piece in rest if piece.isdigit()),
+        words=frozenset(piece for piece in rest if not piece.isdigit() and not SIZE.match(piece)),
+        certain=True,
+    )
 
 
-def identities(*names: str | None) -> list[Identity]:
-    """The identities of the names that are names (not empty, not a revision hash)."""
-    return [
-        identity(name)
-        for name in names
-        if isinstance(name, str) and name.strip() and not NOT_A_NAME.match(name.strip().casefold())
-    ]
+def compare(a: Identity, b: Identity) -> str:
+    """`same`, `different` (proved) or `unknown`; see the module docstring."""
+    if not a.certain or not b.certain:
+        return "unknown"
+    if a.family != b.family:
+        return "different"
+    if a.sizes and b.sizes and a.sizes != b.sizes:
+        return "different"
+    if a.versions and b.versions and a.versions != b.versions:
+        return "different"
+    if a.tiers != b.tiers:
+        return "different"
+    if a.words == b.words:
+        return "same"
+    return "unknown"
+
+
+def _identities(*values: str | None) -> list[Identity]:
+    """The identities of the names among `values` (revision hashes skipped); a version `local`
+    (a model loaded from a folder) makes the whole set unknown."""
+    texts = [value.strip() for value in values if isinstance(value, str) and value.strip()]
+    if any(text.casefold() == "local" for text in texts):
+        return [UNKNOWN]
+    return [identity(text) for text in texts if not REVISION.match(text.casefold())]
 
 
 def prefill_exclusion(
@@ -113,10 +226,13 @@ def prefill_exclusion(
         return None
     if value.startswith("source:") or value == unknown_marker:
         return "unknown"
-    prefill = identities(value, prefilled_version)
-    run = identities(*run_names)
-    if not run or any(not item.certain for item in (*prefill, *run)):
+    prefill = _identities(value, prefilled_version)
+    run = _identities(*run_names)
+    if not prefill or not run:
         return "unknown"
-    if any(a.tokens == b.tokens for a in prefill for b in run):
+    outcomes = [compare(a, b) for a in prefill for b in run]
+    if "same" in outcomes:
         return "same_model"
-    return None
+    if all(outcome == "different" for outcome in outcomes):
+        return None
+    return "unknown"
