@@ -73,6 +73,9 @@ group :test do
 
   # Line coverage report and the minimum gate (see test/test_helper.rb)
   gem "simplecov", require: false
+
+  # Checks API requests and responses against docs/openapi.yaml [https://github.com/interagent/committee]
+  gem "committee", "~> 5.6"
 end
 
 group :development do

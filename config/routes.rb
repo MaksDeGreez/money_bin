@@ -18,6 +18,11 @@ Rails.application.routes.draw do
   namespace :api, defaults: { format: :json } do
     namespace :v1 do
       resource :status, only: :show, controller: :status
+      resources :transactions, only: %i[ index show ]
+      resources :accounts, only: :index
+      resources :categories, only: :index
+      resource :summary, only: :show
+      resources :receipts, only: %i[ index show ]
     end
   end
 
