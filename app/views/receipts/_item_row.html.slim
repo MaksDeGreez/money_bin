@@ -1,0 +1,30 @@
+/ One editable item of the review form, in reading order: name, quantity, unit price, discount, amount,
+/ category, remove. `index` is the row's key in items_attributes ("NEW_ROW" in the template, which
+/ line_items_controller.js replaces with a fresh key). A stored item carries its id; removing it sets
+/ _destroy and hides the row, so the save removes it. The suggestion (if any) sits under the category.
+= f.fields_for :items, item, child_index: index, include_id: false do |row|
+  .line-row.line-row-receipt id=(item.id ? dom_id(item) : nil) hidden=item.marked_for_destruction? data-line-items-target="row" data-suggestion-id=item.suggested_category_id data-suggestion-confidence=item.confidence
+    - if item.id
+      = row.hidden_field :id
+    = row.hidden_field :_destroy, value: (item.marked_for_destruction? ? "1" : "0"), data: { line_items_destroy: true }
+    .line-cell.line-cell-name
+      = row.text_field :name, "aria-label": "Name, #{label}", placeholder: "Name", autocomplete: "off", class: "form-control-compact"
+    .line-cell.line-cell-num
+      = row.money_field :quantity, places: ReceiptItem::QUANTITY_DECIMAL_PLACES, "aria-label": "Quantity, #{label}", placeholder: "Qty", class: "form-control-compact"
+    .line-cell.line-cell-num
+      = row.money_field :unit_price, "aria-label": "Unit price, #{label}", placeholder: "Price", class: "form-control-compact"
+    .line-cell.line-cell-num
+      = row.money_field :discount, "aria-label": "Discount, #{label}", placeholder: "Discount", class: "form-control-compact"
+    .line-cell.line-cell-num
+      = row.money_field :amount, "aria-label": "Amount, #{label}", placeholder: "Amount", class: "form-control-compact", data: { money_totals_amount: true }
+    .line-cell.line-cell-category
+      = row.category_select :category_id, category_choices, "aria-label": "Category, #{label}", suggestion: item.suggested_category, class: "combobox-compact"
+      - if item.suggested_category
+        p.line-suggestion
+          span = "Suggested: #{item.suggested_category.name}#{" · #{receipt_confidence(item.confidence)}" if item.confidence}"
+          = ui_button "Use", variant: :link, size: :sm, tabindex: -1, data: { action: "receipt-review#useSuggestion" }
+    .line-cell.line-cell-remove
+      = ui_button variant: :ghost, size: :icon, class: "h-9 w-9", "aria-label": "Remove #{label}", data: { action: "line-items#remove" } do
+        = ui_icon "x"
+    - if item.errors.any?
+      p.line-row-errors = item.errors.full_messages.to_sentence

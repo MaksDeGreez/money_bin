@@ -55,4 +55,10 @@ class UiHelperTest < ActionView::TestCase
     assert_equal :signal, ui_flash_tone(:warning)
     assert_equal :neutral, ui_flash_tone(:other)
   end
+
+  test "ui_kbd renders each key as a key cap" do
+    html = ui_kbd("Ctrl", "S", class: "hidden")
+
+    assert_dom_equal '<span class="kbd-group hidden"><kbd class="kbd">Ctrl</kbd><kbd class="kbd">S</kbd></span>', html
+  end
 end

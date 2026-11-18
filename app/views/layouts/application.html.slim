@@ -4,7 +4,7 @@ html lang="en"
     = render "layouts/head"
   body.min-h-screen.bg-page.text-ink-body
     header.border-b.border-hairline
-      .mx-auto.flex.h-14.max-w-6xl.items-center.justify-between.gap-4.px-6 class="sm:px-10"
+      .mx-auto.flex.h-14.items-center.justify-between.gap-4.px-6 class=(content_for?(:wide_page) ? "max-w-[96rem] sm:px-10" : "max-w-6xl sm:px-10")
         = link_to root_path, class: "flex items-center gap-2 no-underline"
           = image_tag "logo.png", alt: "", class: "h-8 w-8 shrink-0"
           span.font-display.text-sm.font-semibold.text-ink-display Money Bin
@@ -12,11 +12,13 @@ html lang="en"
           - if authenticated?
             nav.flex.items-center.gap-1 aria-label="Main"
               = ui_link_button "Receipts", receipts_path, variant: :ghost, size: :sm, "aria-current": (controller_path.start_with?("receipts") ? "page" : nil)
+              = ui_link_button "Add expense", new_transaction_path, variant: :ghost, size: :sm, "aria-current": (controller_path == "transactions" && action_name.in?(%w[new create]) ? "page" : nil)
               = ui_link_button "API tokens", settings_api_tokens_path, variant: :ghost, size: :sm
               = ui_link_button "Sidekiq", "/sidekiq", variant: :ghost, size: :sm, data: { turbo: false }
             span.hidden.text-xs.text-ink-muted class="sm:inline" = Current.user.email_address
             = ui_button_to "Sign out", session_path, method: :delete, variant: :ghost, size: :sm, form: { data: { turbo: false } }
           = render "ui/theme_toggle"
-    main#main-content.mx-auto.max-w-6xl.px-6.py-8 class="sm:px-10"
+    / A page that sets content_for(:wide_page) (the receipt page: photos next to a form) gets more width.
+    main#main-content.mx-auto.px-6.py-8 class=(content_for?(:wide_page) ? "max-w-[96rem] sm:px-10" : "max-w-6xl sm:px-10")
       = render "ui/flash"
       = yield

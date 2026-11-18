@@ -64,7 +64,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
       assert_select "td", text: "2026-10-03 18:40"
       assert_select "td.data-grid-num", text: "1 250.40 UAH"
       assert_select "td.data-grid-num", text: "3"
-      assert_select "td span[title=?]", "Transaction ##{transactions(:market_split).id}"
+      assert_select "td a[title=?]", "Transaction ##{transactions(:market_split).id}"
     end
     assert_select "nav.count-tabs a", text: /Not read yet\s*1/
     assert_select "nav.count-tabs a", text: /OCR failed\s*1/
@@ -84,6 +84,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "the filters keep their state in the URL, in the form, the links and the counts" do
+    receipts(:corner_receipt).update_columns(kind: "card_slip")
     get receipts_path(batch: "october-shopping", kind: "card_slip")
 
     assert_select "tbody tr", 1
@@ -101,7 +102,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
   test "each filter narrows the list" do
     {
       { status: "failed" } => [ :failed_receipt ],
-      { kind: "fiscal" } => [ :market_receipt ],
+      { kind: "fiscal" } => [ :market_receipt, :corner_receipt ],
       { kind: "unknown" } => [ :new_receipt, :failed_receipt ],
       { qr: "with" } => [ :market_receipt, :failed_receipt ],
       { qr: "without" } => [ :corner_receipt, :new_receipt ],
@@ -165,7 +166,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
 
   # --- Receipt page ---------------------------------------------------------------------------------------
 
-  test "a receipt page shows its photos and its stored data" do
+  test "a receipt page shows its photos and, for an accepted receipt, the review form with Accept again" do
     receipt = receipts(:market_receipt)
 
     get receipt_path(receipt)
@@ -173,34 +174,50 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h1", "rcpt_000041"
     photo = active_storage_attachments(:market_photo)
-    assert_select "a.photo-frame[href=?][target=_blank]", receipt_photo_path(receipt, photo, :full) do
+    assert_select ".review-photos a.photo-frame[href=?][target=_blank]", receipt_photo_path(receipt, photo, :full) do
       assert_select "img[src=?][alt=?]", receipt_photo_path(receipt, photo, :page), "Photo 1 of 1 of rcpt_000041"
     end
     assert_select "##{dom_id(receipt, :status)}", text: "Accepted"
-    assert_select "##{dom_id(receipt, :data)}" do
-      assert_select ".data-row", text: /Merchant\s*Example Market/
-      assert_select ".data-row", text: /Fiscal number\s*4000000001/
-      assert_select ".data-row", text: /Ingest number\s*rcpt_000041/
-      assert_select "tbody tr", text: /Hard cheese 1 kg\s*1\s*1 010.00\s*50.00\s*960.00\s*Groceries/
-      assert_select ".data-row", text: /Items sum\s*1 250.40 UAH/
-      assert_select ".badge", text: "Items match the total"
+    assert_select "##{dom_id(receipt, :data)} form##{dom_id(receipt, :review_form)}[action=?]", receipt_path(receipt) do
+      assert_select "input[name='receipt[merchant_name]'][value=?]", "Example Market"
+      assert_select "input[name='receipt[fiscal_number]'][value=?]", "4000000001"
+      assert_select "input[name='receipt[lock_version]'][value=?]", "0"
+      assert_select "input[name='receipt[transaction_lock_version]'][value=?]", "0"
+      assert_select "input[name='receipt[items_attributes][1][name]'][value=?]", "Hard cheese 1 kg"
+      assert_select "input[name='receipt[items_attributes][1][quantity]'][value=?]", "1"
+      assert_select "input[name='receipt[items_attributes][1][unit_price]'][value=?]", "1010.00"
+      assert_select "input[name='receipt[items_attributes][1][discount]'][value=?]", "50.00"
+      assert_select "input[name='receipt[items_attributes][1][amount]'][value=?]", "960.00"
+      assert_select "select[name='receipt[items_attributes][1][category_id]'] option[selected][value=?]", categories(:groceries).id.to_s
+      assert_select "[data-money-totals-target=sum]", "1 250.40 UAH"
+      assert_select "[data-money-totals-target=difference]", "0.00 UAH"
       assert_select ".badge", text: "Match", count: 4
+      assert_select "button[name=intent][value=accept]", text: /Accept again/
+      assert_select "button[name=intent][value=save]", false, "an accepted receipt changes only by accepting it again"
+      assert_select "a[href=?]", transaction_path(transactions(:market_split)), text: /transaction #/
     end
     assert_select "[data-controller=live-refresh] turbo-cable-stream-source"
   end
 
-  test "a receipt page shows suggestions with their confidence, the card digits and QR mismatches" do
+  test "a receipt page shows suggestions with their confidence and the QR values next to their fields" do
     receipt = receipts(:corner_receipt)
     receipt.update_columns(qr_total: BigDecimal("150.00"), qr_issued_at: receipt.issued_at + 30.seconds)
 
     get receipt_path(receipt)
 
-    assert_select "tbody tr", text: /Sandwich.*Suggested: Takeaway & fast food\s*\(62%\)/m
-    assert_select ".badge", text: "Items match the total"
-    assert_select ".data-row", text: /Card\s*•••• 4242/
-    assert_select "tr", text: /Total\s*150.00\s*152.50\s*Mismatch/
-    assert_select "tr", text: /Issued at\s*2026-10-08 12:05\s*2026-10-08 12:05\s*Match/
-    assert_select "tr", text: /Fiscal number.*Not in the QR code/m, count: 0
+    assert_select "[data-suggestion-id=?][data-suggestion-confidence=?]", categories(:takeaway).id.to_s, "0.62" do
+      assert_select "input[value=?]", "Sandwich"
+      assert_select ".line-suggestion", text: /Suggested: Takeaway & fast food · 62%/
+      assert_select ".combobox[data-combobox-suggestion-value=?]", categories(:takeaway).id.to_s
+    end
+    assert_select "[data-money-totals-target=difference]", "0.00 UAH"
+    assert_select ".field", text: /Total.*QR code:\s*150.00 UAH.*Mismatch.*Use the QR value/m do
+      assert_select "button[data-receipt-review-value-param=?][data-receipt-review-field-param=?]", "150.00", "receipt_total"
+    end
+    assert_select ".field", text: /Date and time.*QR code:\s*2026-10-08 12:05.*Match/m
+    assert_select ".field", text: /Fiscal number.*QR code/m, count: 0
+    assert_select "button[name=intent][value=save]", text: /Save/
+    assert_select "button[name=intent][value=accept]", text: /\AAccept/
   end
 
   test "the items' gap to the printed total is shown with its sign" do
@@ -209,7 +226,22 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
 
     get receipt_path(receipt)
 
-    assert_select ".data-row", text: /Difference\s*7.50 UAH\s*Items missing/
+    assert_select "[data-money-totals-target=difference]", "7.50 UAH"
+    assert_select "[data-money-totals-target=total]", "160.00 UAH"
+  end
+
+  test "a receipt being read again shows its stored data read-only, without the form" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(ocr_requested_at: 1.minute.ago)
+
+    get receipt_path(receipt)
+
+    assert_select "form##{dom_id(receipt, :review_form)}", false
+    assert_select "##{dom_id(receipt, :data)}" do
+      assert_select ".data-row", text: /Merchant\s*Corner Shop/
+      assert_select "tbody tr", text: /Sandwich.*Suggested: Takeaway & fast food\s*\(62%\)/m
+      assert_select ".data-row", text: /Items sum\s*152.50 UAH/
+    end
   end
 
   test "a failed receipt shows the stored failure and offers to read it again" do
@@ -483,6 +515,189 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_content
     assert_select ".callout a[href=?]", receipt_path(existing)
     assert_select ".field-error", text: /already uploaded/
+  end
+
+  # --- Review form: save, accept, enter by hand ------------------------------------------------------------
+
+  def review_params(receipt, **changes)
+    items = receipt.items.each_with_index.to_h do |item, index|
+      [ index.to_s, { id: item.id, name: item.name, quantity: item.quantity&.to_s("F"), unit_price: item.unit_price&.to_s("F"),
+                      discount: item.discount.to_s("F"), amount: item.amount.to_s("F"), category_id: item.category_id.to_s, _destroy: "0" } ]
+    end
+    { lock_version: receipt.lock_version, kind: receipt.kind, merchant_name: receipt.merchant_name, total: receipt.total&.to_s("F"),
+      currency: receipt.currency, items_attributes: items }.merge(changes)
+  end
+
+  test "Save stores the corrections and comes back to the receipt with the filter" do
+    receipt = receipts(:corner_receipt)
+
+    patch receipt_path(receipt, status: "extracted"), params: { intent: "save", receipt: review_params(receipt, merchant_name: "Corner Shop 2") }
+
+    assert_redirected_to receipt_path(receipt, status: "extracted")
+    assert_equal "Saved.", flash[:notice]
+    assert_equal "Corner Shop 2", receipt.reload.merchant_name
+    assert receipt.extracted?
+  end
+
+  test "Accept books the receipt and lands on its transaction, which offers the next receipt to review" do
+    receipt = receipts(:corner_receipt)
+    receipts(:new_receipt).update_columns(status: "extracted")
+
+    assert_difference -> { Transaction.count }, 1 do
+      patch receipt_path(receipt), params: { intent: "accept", receipt: review_params(receipt, account_id: accounts(:card_uah).id) }
+    end
+
+    transaction = receipt.reload.ledger_transaction
+    assert_redirected_to transaction_path(transaction, accepted: 1)
+    follow_redirect!
+    assert_select "h1", "Transaction ##{transaction.id}"
+    assert_select ".callout", text: /Needs review:\s*a line has no category/
+    assert_select "tbody tr", text: /Groceries \/ Groceries\s*-57.50 UAH/
+    assert_select "tbody tr", text: /No category\s*-95.00 UAH/
+    assert_select "a[href=?]", receipt_path(receipt), text: /Back to Receipt ##{receipt.id}/
+    assert_select "a#next-receipt[autofocus][href=?]", receipt_path(receipts(:new_receipt)), text: /Next receipt to review/
+  end
+
+  test "a refused save renders the form again with the typed values, the errors and the unsaved flag" do
+    receipt = receipts(:corner_receipt)
+    params = review_params(receipt, total: "152,505")
+    params[:items_attributes]["0"][:amount] = "60,004"
+
+    patch receipt_path(receipt), params: { intent: "save", receipt: params }
+
+    assert_response :unprocessable_content
+    assert_select "form##{dom_id(receipt, :review_form)}[data-form-guard-dirty-value=true][data-form-guard-errors-value=true]" do
+      assert_select "input[name='receipt[total]'][value=?][aria-invalid=true]", "152.505"
+      assert_select "input[name='receipt[items_attributes][0][amount]'][value=?][aria-invalid=true]", "60.004"
+      assert_select ".line-row-errors", text: /Amount must have at most 2 decimal places/
+      assert_select "[role=alert]", text: /Nothing was saved/
+    end
+    assert_equal BigDecimal("152.50"), receipt.reload.total
+  end
+
+  test "a save from a stale page is a conflict that keeps the typed values and links to the current version" do
+    receipt = receipts(:corner_receipt)
+    stale = review_params(receipt, merchant_name: "Typed in an old tab")
+    receipt.update!(merchant_name: "Saved elsewhere")
+
+    patch receipt_path(receipt), params: { intent: "save", receipt: stale }
+
+    assert_response :conflict
+    assert_select "input[name='receipt[merchant_name]'][value=?]", "Typed in an old tab"
+    assert_select "input[name='receipt[lock_version]'][value=?]", "0"
+    assert_select "[role=alert]", text: /changed somewhere else/
+    assert_select "[role=alert] a[target=_blank][href=?]", receipt_path(receipt)
+    assert_equal "Saved elsewhere", receipt.reload.merchant_name
+  end
+
+  test "a refused accept says why next to the account and saves nothing" do
+    receipt = receipts(:corner_receipt)
+
+    patch receipt_path(receipt), params: { intent: "accept", receipt: review_params(receipt, merchant_name: "Typed") }
+
+    assert_response :unprocessable_content
+    assert_select "select#receipt_account_id[aria-invalid=true]"
+    assert_select ".field-error", text: "Not accepted: choose the account to book it on."
+    assert_select "input[name='receipt[merchant_name]'][value=?]", "Typed"
+    assert_equal "Corner Shop", receipt.reload.merchant_name
+  end
+
+  test "the form offers the active accounts, the receipt's currency first, the last one used chosen" do
+    get receipt_path(receipts(:corner_receipt))
+
+    assert_select "select#receipt_account_id" do
+      assert_select "optgroup[label='In UAH'] option", 2
+      assert_select "optgroup[label='Other currencies'] option", text: "Savings USD (USD)"
+      assert_select "option", text: /Old e-wallet/, count: 0
+      assert_select "option[selected][value=?]", accounts(:card_uah).id.to_s
+    end
+  end
+
+  test "the category picker submits a category from the taxonomy, never free text" do
+    get receipt_path(receipts(:corner_receipt))
+
+    assert_select "[data-suggestion-id] .combobox" do
+      assert_select "input.combobox-input[role=combobox]:not([name])"
+      assert_select "select[hidden][tabindex='-1'][name$='[category_id]']" do
+        assert_select "option[value='']", "No category"
+        assert_select "optgroup[label='Eating out'] option[value=?]", categories(:takeaway).id.to_s, text: "Takeaway & fast food"
+        assert_select "optgroup[label=Uncategorised]", false
+      end
+    end
+  end
+
+  test "a card slip shows its category and no items; a receipt with items switching to a slip asks to remove them" do
+    receipt = receipts(:corner_receipt)
+
+    get receipt_path(receipt)
+    assert_select "[data-receipt-review-target=slipOnly][hidden]", 2
+    assert_select "input[name='receipt[remove_items]']", text: nil
+    assert_select ".callout", text: /Remove its 3 items when saving/
+
+    receipt.items.delete_all
+    receipt.update_columns(kind: "card_slip", card_last4: "4242", category_id: categories(:cafes).id)
+    get receipt_path(receipt)
+    assert_select "[data-receipt-review-target=slipOnly]:not([hidden])", 2
+    assert_select "[data-receipt-review-target=itemsOnly][hidden]"
+    assert_select "input[name='receipt[card_last4]'][value='4242']"
+    assert_select "select[name='receipt[category_id]'] option[selected][value=?]", categories(:cafes).id.to_s
+    assert_select "input[name='receipt[remove_items]']", false
+  end
+
+  test "a receipt about to be accepted warns about the same date and amount on the account" do
+    receipt = receipts(:corner_receipt)
+    same = Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 8), amount: "-152.50", source: :bank,
+                               lines_attributes: [ { amount: "-152.50" } ])
+
+    get receipt_path(receipt)
+
+    assert_select ".callout", text: /Possibly booked already/ do
+      assert_select "a[href=?]", transaction_path(same)
+    end
+  end
+
+  test "Enter by hand opens the review form on a failed receipt" do
+    receipt = receipts(:failed_receipt)
+    get receipt_path(receipt)
+    assert_select "form[action=?]", enter_by_hand_receipt_path(receipt), text: /Enter by hand/
+
+    post enter_by_hand_receipt_path(receipt)
+
+    assert_redirected_to receipt_path(receipt)
+    assert receipt.reload.extracted?
+    follow_redirect!
+    assert_select "form##{dom_id(receipt, :review_form)}"
+    assert_select "p", text: "Entered by hand; waiting for review."
+    assert_select "input[name='receipt[items_attributes][0][name]']", 1, "one empty row to start typing in"
+  end
+
+  test "Enter by hand on an unread receipt with a waiting request asks first, and a reviewed receipt is refused" do
+    receipt = receipts(:new_receipt)
+    receipt.update_columns(ocr_requested_at: 1.minute.ago)
+    get receipt_path(receipt)
+    assert_select "form[action=?][data-turbo-confirm*=?]", enter_by_hand_receipt_path(receipt), "withdrawn"
+
+    post enter_by_hand_receipt_path(receipts(:market_receipt))
+    assert_match "Not entered by hand", flash[:alert]
+    assert receipts(:market_receipt).reload.reviewed?
+  end
+
+  test "the review actions need a signed-in session" do
+    sign_out
+    receipt = receipts(:corner_receipt)
+
+    patch receipt_path(receipt), params: { intent: "save", receipt: review_params(receipt, merchant_name: "x") }
+    assert_redirected_to new_session_path
+    post enter_by_hand_receipt_path(receipts(:failed_receipt))
+    assert_redirected_to new_session_path
+    assert_equal "Corner Shop", receipt.reload.merchant_name
+    assert receipts(:failed_receipt).reload.failed?
+  end
+
+  test "the receipt list links a booked receipt to its transaction" do
+    get receipts_path
+
+    assert_select "tr##{dom_id(receipts(:market_receipt))} a[href=?]", transaction_path(transactions(:market_split))
   end
 
   private

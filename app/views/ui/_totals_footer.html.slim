@@ -1,0 +1,19 @@
+/ The footer of a form that adds up amounts: the figures (recalculated in the browser as the person types,
+/ by money_totals_controller.js through each figure's `target`), a note, and the form's buttons as the block.
+/ It sticks to the bottom of the window while the form is in view. The figures rendered here are the
+/ server's, from what was saved; the browser's replace them only once the person types.
+/   = render "ui/totals_footer", note: "Enter adds a row.",
+/     figures: [ { label: "Items", value: "152.50 UAH", target: "sum" }, { label: "Total", value: "—", target: "total", hidden: true } ] do
+/     = f.submit "Save"
+.totals-footer
+  dl.totals-figures
+    - figures.each do |figure|
+      = tag.div class: "totals-figure", hidden: figure[:hidden], data: figure[:data] do
+        dt.totals-figure-label = figure[:label]
+        dd.totals-figure-value data-money-totals-target=figure[:target] = figure[:value]
+  .totals-actions
+    p.totals-status role="status" data-money-totals-target="status"
+    .flex.flex-wrap.items-center.justify-end.gap-2
+      = yield
+  - if local_assigns[:note]
+    p.totals-note = note

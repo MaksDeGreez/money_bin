@@ -1,0 +1,12 @@
+/ Under a review field: what the tax QR code says for it (ground truth), whether the saved value matches,
+/ and a button that copies the QR value into the field (receipt_review_controller.js). Nothing when the QR
+/ code says nothing about the field. The QR columns themselves are never written by the form.
+- if qr
+  p.field-qr
+    span
+      | QR code:
+      =< receipt_qr_value(qr.field, qr.value, currency)
+    = receipt_qr_mark(qr.state) if qr.state == :match || qr.state == :mismatch
+    - unless qr.state == :match
+      = ui_button "Use the QR value", variant: :link, size: :sm,
+        data: { action: "receipt-review#copyQr", receipt_review_value_param: qr.copy, receipt_review_field_param: target }

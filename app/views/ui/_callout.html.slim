@@ -1,6 +1,7 @@
-/ Highlighted block for notes, tips and warnings.
+/ Highlighted block for notes, tips and warnings. `hidden` and `data` pass through (a callout a Stimulus
+/ controller shows later).
 /   = render "ui/callout", tone: :signal do
 /     p Heads up.
 - tone = local_assigns.fetch(:tone, :neutral)
-.callout class=ui_classes(UiHelper::CALLOUT_TONES.fetch(tone), local_assigns[:class])
+= tag.div class: ui_classes("callout", UiHelper::CALLOUT_TONES.fetch(tone), local_assigns[:class]), hidden: local_assigns[:hidden], data: local_assigns[:data] do
   = yield

@@ -14,13 +14,18 @@ Rails.application.routes.draw do
     resources :api_tokens, only: %i[ index create destroy ]
   end
 
-  # Receipts: the list, one receipt, the upload, and OCR requests. Photos are served by the app behind
-  # sign-in (Receipts::PhotosController), never by Rails' own Active Storage routes, which are not drawn.
-  resources :receipts, only: %i[ index show new create ] do
+  # Receipts: the list, one receipt with its review form, the upload, and OCR requests. Photos are served by
+  # the app behind sign-in (Receipts::PhotosController), never by Rails' own Active Storage routes, which are
+  # not drawn. PATCH saves the review form (and accepts it, with intent=accept).
+  resources :receipts, only: %i[ index show new create update ] do
     post :read, on: :member
+    post :enter_by_hand, on: :member
     post :read_all, on: :collection
     get "photos/:id/:size", to: "receipts/photos#show", as: :photo, constraints: { id: /\d+/, size: /thumb|page|full/ }, format: false
   end
+
+  # One transaction (read-only), and an expense entered by hand. There is no transactions list yet.
+  resources :transactions, only: %i[ show new create ]
 
   # The REST API for AI agents and scripts: personal API tokens only (Api::BaseController).
   # JSON only: `format: false` drops the `.:format` suffix, so `/api/v1/transactions.xml` is not routed.

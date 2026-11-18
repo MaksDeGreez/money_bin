@@ -1,0 +1,179 @@
+/ The review form of a receipt (docs/domain.md, "Review"): the header fields with the QR ground truth next to
+/ them, the items (or, for a card slip, one category), live totals, and Save / Accept. Receipts::Review
+/ stores it; `review` is set after a refused save, and its form_receipt then holds the typed values.
+/
+/ Live refreshes (Receipts::LiveUpdate) must not overwrite typed work: form_guard_controller.js skips them
+/ while the form has unsaved changes, and the server refuses a save whose lock_version is stale.
+ruby:
+  form_receipt = review&.form_receipt || receipt
+  transaction = receipt.ledger_transaction
+  version = review ? review.version : receipt.lock_version
+  transaction_version = review ? review.transaction_version : transaction&.lock_version
+  editable = receipt.reviewable?
+  slip = form_receipt.card_slip?
+  items = form_receipt.association(:items).loaded? ? form_receipt.items.to_a : form_receipt.items.includes(:suggested_category).to_a
+  items = [ form_receipt.items.build(discount: 0) ] if items.empty? && !slip && editable && !review
+  account = review&.account || Account.default_for(form_receipt.currency)
+  qr = review_qr_fields(form_receipt)
+  currency = form_receipt.currency
+  field_errors = form_receipt.errors.attribute_names.excluding(:base).any? || items.any? { |item| item.errors.any? }
+section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
+  = render "receipts/ocr_state", receipt: receipt
+  = form_with model: form_receipt, scope: :receipt, url: receipt_path(receipt, filter.to_params), method: :patch,
+    id: dom_id(receipt, :review_form), class: "review-form", novalidate: true,
+    data: { controller: "form-guard receipt-review money-totals",
+      form_guard_dirty_value: review.present?, form_guard_errors_value: review.present?,
+      money_totals_qr_total_value: (form_receipt.qr_total && JsonFormat.money(form_receipt.qr_total)),
+      action: "input->money-totals#update line-items:changed->money-totals#update receipt-review:kind->money-totals#update" } do |f|
+    = f.hidden_field :lock_version, value: version
+    - if transaction
+      = hidden_field_tag "receipt[transaction_lock_version]", transaction_version
+
+    - if form_receipt.errors[:base].any? || field_errors
+      = render "ui/callout", tone: :danger do
+        .space-y-2.text-sm role="alert"
+          - form_receipt.errors[:base].each do |message|
+            p = message
+          - if field_errors
+            p Some fields need a fix: they are marked below. Nothing was saved.
+          - if review&.conflict?
+            p = link_to "Open the current version in a new tab", receipt_path(receipt, filter.to_params), target: "_blank", rel: "noopener", data: { turbo_prefetch: false }
+
+    = render "ui/callout", tone: :signal, hidden: true, data: { form_guard_target: "notice" } do
+      p.text-sm role="status"
+        | This receipt changed somewhere else while you were editing (OCR, or another tab). Your typing stays here;
+        |  a save tells you if it conflicts.
+
+    fieldset.review-section
+      legend.sr-only Receipt
+      .review-fields
+        .field
+          = f.label :kind, "Kind"
+          = f.select :kind, [ [ "Fiscal receipt", "fiscal" ], [ "Card slip", "card_slip" ] ], { include_blank: "Not known yet" },
+            data: { receipt_review_target: "kind", action: "receipt-review#kindChanged" }
+          = f.error_for :kind
+        .field
+          = f.label :merchant_name, "Merchant"
+          = f.text_field :merchant_name, autocomplete: "off"
+          = f.error_for :merchant_name
+        .field
+          = f.label :issued_at, "Date and time (Kyiv)"
+          = f.datetime_local_field :issued_at, value: review_issued_at_value(form_receipt), step: 1
+          = render "receipts/qr_hint", qr: qr[:issued_at], target: f.field_id(:issued_at), currency: currency
+          = f.error_for :issued_at
+        .field
+          = f.label :total, "Total"
+          = f.money_field :total, data: { money_totals_total: true }
+          = render "receipts/qr_hint", qr: qr[:total], target: f.field_id(:total), currency: currency
+          = f.error_for :total
+        .field
+          = f.label :currency, "Currency"
+          = f.text_field :currency, maxlength: 3, autocomplete: "off", class: "uppercase"
+          = f.error_for :currency
+        .field
+          = f.label :fiscal_number, "Fiscal number"
+          = f.text_field :fiscal_number, autocomplete: "off"
+          = render "receipts/qr_hint", qr: qr[:fiscal_number], target: f.field_id(:fiscal_number), currency: currency
+          = f.error_for :fiscal_number
+        .field
+          = f.label :receipt_number, "Receipt number"
+          = f.text_field :receipt_number, autocomplete: "off"
+          = render "receipts/qr_hint", qr: qr[:receipt_number], target: f.field_id(:receipt_number), currency: currency
+          = f.error_for :receipt_number
+        .field hidden=!slip data-receipt-review-target="slipOnly"
+          = f.label :card_last4, "Card digits (last four)"
+          = f.text_field :card_last4, maxlength: 4, inputmode: "numeric", autocomplete: "off"
+          = f.error_for :card_last4
+        .field
+          - if receipt.reviewed? && transaction
+            span.block.text-sm.font-medium.text-ink-display Account
+            p.text-sm
+              | Booked on
+              =< transaction.account.name
+              | ,
+              =< link_to "transaction ##{transaction.id}", transaction_path(transaction)
+          - else
+            = label_tag "receipt_account_id", "Account to book on"
+            .form-select-wrapper
+              = select_tag "receipt[account_id]", account_choices(currency, account), include_blank: "Choose an account",
+                id: "receipt_account_id", class: "form-control form-control-select", "aria-invalid": (form_receipt.errors[:account_id].any? || nil)
+              = ui_icon "chevron-down", class: "form-select-chevron"
+            - form_receipt.errors[:account_id].first&.then do |message|
+              p.field-error = message
+        .field.self-end
+          label.form-check-label
+            = f.check_box :incomplete
+            span Incomplete: torn or cut off
+
+    / A card slip: no items, one category for the whole total.
+    section.review-section hidden=!slip data-receipt-review-target="slipOnly" aria-labelledby=dom_id(receipt, :slip_heading)
+      h2.text-base id=dom_id(receipt, :slip_heading) Card slip
+      p.text-sm.text-ink-muted Booked as one line: the whole total in one category.
+      .field.mt-3.max-w-sm
+        = f.label :category_id, "Category"
+        = f.category_select :category_id, category_choices, "aria-label": "Category of the slip", suggestion: form_receipt.suggested_category
+        - if form_receipt.suggested_category
+          p.field-hint = "Suggested: #{form_receipt.suggested_category.name}#{" (#{receipt_confidence(form_receipt.suggested_category_confidence)})" if form_receipt.suggested_category_confidence}"
+        = f.error_for :category_id
+      - stored_items = items.count { |item| item.id && !item.marked_for_destruction? }
+      - if stored_items.positive?
+        = render "ui/callout", tone: :signal, class: "mt-4" do
+          label.form-check-label
+            = check_box_tag "receipt[remove_items]", "1", false, class: "form-check"
+            span = "Remove its #{pluralize(stored_items, 'item')} when saving: a card slip has no items."
+
+    / The items, edited in place (line_items_controller.js adds and removes rows).
+    section.review-section hidden=slip data-receipt-review-target="itemsOnly" data-controller="line-items" data-action="keydown->line-items#keydown" aria-labelledby=dom_id(receipt, :items_heading)
+      .flex.flex-wrap.items-end.justify-between.gap-3
+        h2.text-base id=dom_id(receipt, :items_heading) Items
+        - if items.any?(&:suggested_category_id)
+          .flex.items-end.gap-2
+            .field
+              = label_tag "suggestion_threshold", "Accept suggestions from (%)", class: "text-xs"
+              = number_field_tag "suggestion_threshold", 90, min: 0, max: 100, step: 1, class: "form-control form-control-compact w-20",
+                data: { receipt_review_target: "threshold" }
+            = ui_button variant: :secondary, size: :sm, data: { action: "receipt-review#acceptSuggestions" } do
+              = ui_icon "check-check"
+              span Accept suggestions
+      p.text-xs.text-ink-muted.mt-1 role="status" data-receipt-review-target="suggestionStatus"
+      .line-editor.mt-3
+        .line-editor-head.line-row-receipt aria-hidden="true"
+          span Name
+          span.text-right Qty
+          span.text-right Unit price
+          span.text-right Discount
+          span.text-right Amount
+          span Category
+          span
+        div data-line-items-target="body"
+          - items.each_with_index do |item, index|
+            = render "receipts/item_row", f:, item:, index:, label: "row #{index + 1}"
+        template data-line-items-target="template"
+          = render "receipts/item_row", f:, item: ReceiptItem.new(discount: 0), index: "NEW_ROW", label: "new row"
+      = ui_button variant: :ghost, size: :sm, class: "mt-2", data: { action: "line-items#add", line_items_target: "addButton" } do
+        = ui_icon "plus"
+        span Add a row
+
+    - if receipt.extracted? && !review&.conflict?
+      = render "receipts/duplicates", check: Receipt::DuplicateCheck.new(form_receipt, account:)
+
+    ruby:
+      items_sum = form_receipt.kept_items.sum(BigDecimal("0")) { |item| item.amount || 0 }
+      figures = [
+        { label: "Items", value: receipt_money(items_sum, currency), target: "sum", hidden: slip, data: { receipt_review_target: "itemsOnly" } },
+        { label: "Total", value: (form_receipt.total ? receipt_money(form_receipt.total, currency) : "—"), target: "total" },
+        { label: "Difference", value: (form_receipt.total ? receipt_money(form_receipt.total - items_sum, currency) : "—"),
+          target: "difference", hidden: slip, data: { receipt_review_target: "itemsOnly" } }
+      ]
+      figures << { label: "QR total", value: receipt_money(form_receipt.qr_total, currency), target: "qrTotal" } if form_receipt.qr_total
+    = render "ui/totals_footer", figures:,
+      note: "Enter in the last row adds a row. Enter in an empty category takes its suggestion. ⌘ works for Ctrl." do
+      - if receipt.extracted?
+        = f.button nil, name: "intent", value: "save", variant: :secondary, disabled: !editable,
+          data: { form_guard_target: "save", turbo_submits_with: "Saving…" } do
+          span Save
+          = ui_kbd "Ctrl", "S", class: "hidden sm:inline-flex"
+      = f.button nil, name: "intent", value: "accept", variant: :primary, disabled: !editable,
+        data: { form_guard_target: "accept", turbo_submits_with: "Booking…" } do
+        span = receipt.reviewed? ? "Accept again" : "Accept"
+        = ui_kbd "Ctrl", "Enter", class: "hidden sm:inline-flex"

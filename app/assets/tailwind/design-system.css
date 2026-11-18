@@ -305,4 +305,82 @@
   .callout-accent { @apply bg-accent-faded; }
   .callout-signal { @apply bg-signal-faded; }
   .callout-danger { @apply bg-danger-faded; }
+
+  /* Key caps for keyboard shortcuts (ui_kbd) */
+  .kbd-group { @apply inline-flex items-center gap-0.5; }
+  .kbd {
+    @apply inline-flex h-5 min-w-5 items-center justify-center rounded border border-current px-1 font-sans text-[0.65rem] font-medium leading-none opacity-70;
+  }
+
+  /* Compact fields inside an editable row, and right-aligned numbers (UiFormBuilder#money_field) */
+  .form-control-compact { @apply h-9 px-2; }
+  .form-control-num { @apply text-right tabular-nums; }
+
+  /* Combobox: a type-to-filter picker over a hidden select (UiFormBuilder#category_select, combobox_controller.js) */
+  .combobox { @apply relative; }
+  .combobox-compact .combobox-input { @apply h-9 px-2; }
+  .combobox-listbox {
+    @apply absolute left-0 z-30 mt-1 max-h-72 w-full min-w-[16rem] overflow-y-auto rounded-md border border-hairline bg-page py-1 shadow-lg;
+  }
+  .combobox-option { @apply flex cursor-pointer items-baseline justify-between gap-3 px-3 py-1.5 text-sm text-ink-body; }
+  .combobox-option[aria-selected="true"] { @apply bg-accent-faded text-ink-display; }
+  .combobox-option-group { @apply shrink-0 text-xs text-ink-muted; }
+  .combobox-empty { @apply px-3 py-1.5 text-sm text-ink-muted; }
+
+  /* A record next to its photos (the receipt page): the photo column stays in view while the form scrolls */
+  .review-layout { @apply grid gap-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]; }
+  .review-photos { @apply lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:overflow-y-auto; }
+  .review-panel { @apply min-w-0 space-y-6; }
+  .review-form { @apply space-y-6; }
+  .review-section { @apply space-y-3 border-t border-hairline pt-5; }
+  .review-fields { @apply grid gap-4 sm:grid-cols-2; }
+  /* Under a field: the QR code's value for it, its mark and "Use the QR value" */
+  .field-qr { @apply flex flex-wrap items-center gap-2 text-xs text-ink-muted; }
+
+  /* Editable rows (line_items_controller.js): a grid per row that lays itself out by the editor's width.
+     Narrow: name and remove, then the numbers, then the category. Wide: one line, under a header row. */
+  .line-editor { container-type: inline-size; }
+  .line-editor-head { @apply hidden gap-2 px-0.5 pb-1 text-xs font-medium uppercase tracking-wider text-ink-muted; }
+  .line-row { @apply grid items-start gap-2 border-b border-hairline py-2; }
+  .line-row-errors { @apply text-xs text-danger-display; grid-column: 1 / -1; }
+  .line-suggestion { @apply mt-1 flex flex-wrap items-center gap-x-2 text-xs text-ink-muted; }
+
+  .line-row-receipt { grid-template-columns: repeat(4, minmax(0, 1fr)) 2.25rem; }
+  .line-row-receipt > .line-cell-name { grid-area: 1 / 1 / 2 / 5; }
+  .line-row-receipt > .line-cell-remove { grid-area: 1 / 5 / 2 / 6; }
+  .line-row-receipt > .line-cell-num { grid-row: 2; }
+  .line-row-receipt > .line-cell-category { grid-area: 3 / 1 / 4 / 6; }
+
+  .line-row-simple { grid-template-columns: minmax(0, 1fr) 7rem 2.25rem; }
+  .line-row-simple > .line-cell-name { grid-area: 1 / 1 / 2 / 2; }
+  .line-row-simple > .line-cell-num { grid-area: 1 / 2 / 2 / 3; }
+  .line-row-simple > .line-cell-remove { grid-area: 1 / 3 / 2 / 4; }
+  .line-row-simple > .line-cell-category { grid-area: 2 / 1 / 3 / 4; }
+
+  @container (min-width: 46rem) {
+    .line-editor-head.line-row-receipt { display: grid; }
+    .line-row-receipt { grid-template-columns: minmax(7rem, 1fr) 4.5rem 6rem 5.5rem 6.5rem minmax(9rem, 13rem) 2.25rem; }
+    .line-row-receipt > .line-cell-name, .line-row-receipt > .line-cell-remove,
+    .line-row-receipt > .line-cell-num, .line-row-receipt > .line-cell-category { grid-area: auto; }
+  }
+
+  @container (min-width: 34rem) {
+    .line-editor-head.line-row-simple { display: grid; }
+    .line-row-simple { grid-template-columns: minmax(8rem, 1fr) 8rem minmax(10rem, 16rem) 2.25rem; }
+    .line-row-simple > .line-cell-name, .line-row-simple > .line-cell-remove,
+    .line-row-simple > .line-cell-num, .line-row-simple > .line-cell-category { grid-area: auto; }
+  }
+
+  /* The footer of a form that adds up amounts (ui/_totals_footer): figures, status, buttons; sticks to the
+     bottom of the window while the form is in view */
+  .totals-footer {
+    @apply sticky bottom-0 z-20 flex flex-col gap-2 border-t border-hairline bg-page py-3;
+  }
+  .totals-figures { @apply flex flex-wrap gap-x-6 gap-y-1; }
+  .totals-figure { @apply flex items-baseline gap-2; }
+  .totals-figure-label { @apply text-xs text-ink-muted; }
+  .totals-figure-value { @apply text-sm font-medium tabular-nums text-ink-display; }
+  .totals-actions { @apply flex flex-wrap items-center justify-between gap-3; }
+  .totals-status { @apply min-h-4 text-xs text-ink-muted; }
+  .totals-note { @apply text-xs text-ink-muted; }
 }

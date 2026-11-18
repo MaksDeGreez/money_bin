@@ -102,6 +102,12 @@ module UiHelper
     lucide_icon(name.to_s, class: classes, **attrs)
   end
 
+  # A keyboard shortcut, as a key cap: `ui_kbd "Ctrl", "S"` renders "Ctrl S" with each key boxed.
+  def ui_kbd(*keys, **attrs)
+    classes = ui_classes("kbd-group", attrs.delete(:class))
+    tag.span(class: classes, **attrs) { safe_join(keys.map { |key| tag.kbd(key, class: "kbd") }) }
+  end
+
   # Flash keys mapped to callout tones.
   def ui_flash_tone(key)
     case key.to_s

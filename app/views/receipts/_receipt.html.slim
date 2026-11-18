@@ -23,5 +23,5 @@ tr id=dom_id(receipt)
   td.data-grid-num = receipt.items_count
   td.whitespace-nowrap
     - if (transaction = receipt.ledger_transaction)
-      span title="Transaction ##{transaction.id}"
+      = link_to transaction_path(transaction), title: "Transaction ##{transaction.id}", class: "data-grid-link"
         = "#{l(transaction.occurred_on)} · #{receipt_money(transaction.amount)}"
