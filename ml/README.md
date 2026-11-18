@@ -79,9 +79,9 @@ mlx-vlm, is left out of the coverage measurement.
 | `MLX_OCR_MAX_TOKENS`           | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer. A receipt with 40 items needs about 2,000. |
 | `MLX_OCR_IMAGE_MAX_SIDE`       | `2048`                                      | 256 to 4096                 | Each photo is scaled down so that its longer side is at most this many pixels. |
 | `MLX_OCR_CONSTRAINED_DECODING` | `true`                                      | `true`, `false`             | Constrain the model's answer to the JSON schema (see "The mlx backend"). |
-| `OPENROUTER_API_KEY`           | none                                        | an OpenRouter API key       | The `openrouter` backend's key. A secret: keep it in the git-ignored `.env`. Without it the service starts and `/ocr` answers 501 `openrouter_key_missing`. |
+| `OPENROUTER_API_KEY`           | none                                        | an OpenRouter API key       | The `openrouter` backend's key. A secret: keep it in the git-ignored `.env`. Without it the service starts and `/ocr` answers 501 `openrouter_key_missing` (`openrouter_key_invalid` for a key with spaces or control characters). |
 | `OPENROUTER_OCR_MODEL`         | none                                        | a model id from openrouter.ai/models | The `openrouter` backend's model. No default: without it the service does not start. |
-| `OPENROUTER_TIMEOUT`           | `60`                                        | seconds, above 0, at most 600 | How long to wait for one answer (connecting has a fixed 10-second limit). |
+| `OPENROUTER_TIMEOUT`           | `100`                                       | seconds, above 0, at most 600 | The time for one receipt: reading the endpoint list when it is due, the call and the repair call together. A call is not started with less than 5 seconds left. Keep it under the Rails client's `ML_SERVICE_OCR_TIMEOUT` (120), so the client never gives up on a call that is still paid for. |
 | `OPENROUTER_MAX_TOKENS`        | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer, as `MLX_OCR_MAX_TOKENS`. |
 | `OPENROUTER_OCR_IMAGE_MAX_SIDE` | `2048`                                     | 256 to 4096                 | As `MLX_OCR_IMAGE_MAX_SIDE`, for the photos sent to the hosted model. |
 | `OPENROUTER_STRUCTURED_OUTPUT` | `true`                                      | `true`, `false`             | Ask for the answer's JSON schema when the endpoints support it (see "The openrouter backend"). |
@@ -256,12 +256,12 @@ Every error has the same shape:
 | 422    | `empty_image`             | An image file is empty.                        |
 | 422    | `image_unreadable`        | An image has the right signature but cannot be decoded (a cut-off file). |
 | 422    | `ocr_parse_failed`        | The model's answer was not valid receipt JSON, even after one repair pass. |
-| 424    | `openrouter_auth_failed`, `openrouter_payment_required`, `openrouter_refused`, `openrouter_no_zdr_endpoint`, `openrouter_bad_request`, `openrouter_provider_unverified` | `openrouter` only: OpenRouter refused the request (HTTP 401, 402, 403, 404, another 4xx), or the answer came from a provider outside the zero-retention list. Permanent. |
+| 424    | `openrouter_auth_failed`, `openrouter_payment_required`, `openrouter_refused`, `openrouter_no_matching_endpoint`, `openrouter_bad_request`, `openrouter_provider_unverified` | `openrouter` only: OpenRouter refused the request (HTTP 401, 402, 403, 404, another 4xx, also when reported inside an answer with HTTP 200), or an answer came from a provider outside the zero-retention list (then nothing more is sent until the service restarts). Permanent. |
 | 501    | `backend_not_implemented` | The selected backend cannot do this (`/categorise` on `mlx` and `openrouter`). |
-| 501    | `openrouter_model_missing`, `openrouter_key_missing`, `openrouter_model_unknown`, `openrouter_model_without_images`, `openrouter_no_zdr_endpoint` | `openrouter` only: a setting is missing, or the model is unknown, takes no images or has no strict zero-retention endpoint. |
+| 501    | `openrouter_model_missing`, `openrouter_key_missing`, `openrouter_key_invalid`, `openrouter_model_unknown`, `openrouter_model_without_images`, `openrouter_no_zdr_endpoint` | `openrouter` only: a setting is missing, or the model is unknown, takes no images or has no strict zero-retention endpoint. |
 | 502    | `openrouter_upstream_error`, `openrouter_unreachable`, `openrouter_bad_response` | `openrouter` only: the hosted service failed (HTTP 408 or 5xx, an error in the answer), cannot be reached, or answered in an unexpected shape. Transient. |
 | 503    | `openrouter_rate_limited`, `openrouter_catalogue_unavailable` | `openrouter` only: rate limited (HTTP 429), or the list of zero-retention endpoints cannot be read (nothing is sent then). Transient. |
-| 504    | `openrouter_timeout`      | `openrouter` only: no answer within `OPENROUTER_TIMEOUT`. Transient. |
+| 504    | `openrouter_timeout`      | `openrouter` only: no answer within the receipt's `OPENROUTER_TIMEOUT`. Transient. |
 | 500    | `internal_error`          | An unexpected error. Details go to the log.    |
 
 The Rails job retries a 5xx other than 501 and treats a 4xx or 501 as
@@ -343,12 +343,16 @@ nothing. The code enforces it; no setting can switch it off:
    endpoints whose `safety_retention` flag is explicitly `false`: a Safety
    Retention endpoint may keep prompts flagged by the provider's safety
    classifiers, and OpenRouter's `zdr` request flag alone still lets requests
-   reach them on a default self-serve account.
+   reach them on a default self-serve account. A slug that would also match a
+   retaining endpoint of the model (in `only`, `vendor` also matches
+   `vendor/eu`) is not used.
 2. Every request carries `provider: {"only": [those endpoints], "zdr": true,
-   "data_collection": "deny", "allow_fallbacks": true, "require_parameters":
-   ...}`. `zdr` and `data_collection` come from a constant.
-3. The provider each answer names must be one of those endpoints' providers;
-   any other answer is discarded (424 `openrouter_provider_unverified`).
+   "data_collection": "deny", "allow_fallbacks": true}`. `zdr` and
+   `data_collection` come from a constant applied last.
+3. The provider each answer names must be one of those endpoints' providers
+   (compared without case); any other answer is discarded (424
+   `openrouter_provider_unverified`), and from then on the backend sends
+   nothing until the service is restarted (`ocr_run` stops the run).
 
 A model that is unknown, takes no images or has no such endpoint stops the
 service at start-up. When the list cannot be read, no request is sent (503).
@@ -370,7 +374,8 @@ code too.
   `User-Agent: ocr-client`, and httpx's `Host`, `Content-Length`,
   `Accept-Encoding`, `Connection`. No `HTTP-Referer` or `X-Title` (the
   attribution headers that would name the app). The client ignores proxy
-  variables and `.netrc`, and follows no redirect.
+  variables and `.netrc`, follows no redirect, and drops cookies before every
+  request (no `Cookie` header ever goes out).
 
 The limits: what is printed on the receipt goes with the photo, including the
 masked card number of a card slip (`**** 1234`). It is not blurred: finding it
@@ -381,14 +386,17 @@ sexual abuse material. The network sees the machine's IP address.
 
 The key is read as a secret (`SecretStr`), sent only in the chat request's
 `Authorization` header, and never logged, put in an error or written to a run
-folder. The tests use an obvious fake key and a fake transport: they never
-reach the network.
+folder. A key with spaces or control characters is refused before it reaches
+the HTTP client, whose errors would quote the header. The tests use an obvious
+fake key and a fake transport, and a fixture makes every socket connection in
+the test run fail, so no test can reach the network.
 
 ### Structured output
 
 When some of the allowed endpoints support structured outputs, the request
 asks for the answer's JSON schema (`response_format` with `json_schema`,
-strict) and is limited to those endpoints; otherwise it asks for plain JSON.
+strict) and `only` names just those endpoints; otherwise it asks for plain
+JSON.
 The answer is parsed and checked either way. `OPENROUTER_STRUCTURED_OUTPUT=false`
 turns the schema off. Each call records which was used.
 
@@ -396,7 +404,13 @@ turns the schema off. Each call records which was used.
 
 Every OpenRouter answer carries `usage`: prompt and completion tokens and
 `cost`, the amount charged in credits (US dollars). The answer is parsed with
-numbers as `Decimal`, so the cost keeps its exact digits. Each call records its
+numbers as `Decimal`, so the cost keeps its exact digits, and costs are added
+with enough precision to stay exact (`app/decimals.py`; a cost of more than 50
+digits counts as unknown). A call whose answer was lost after it was sent (a
+read timeout, a cut connection, an unreadable answer) may still have been
+charged: it counts as a call with an unknown cost, so the receipt's cost is
+null rather than too low. A call refused with an error status is counted as
+not charged. Each call records its
 latency, tokens, cost, the provider that served it, the model it ran
 (`model`) and whether structured output was used; the evaluation scripts sum
 them (below).

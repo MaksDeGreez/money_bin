@@ -59,15 +59,18 @@ So the backend does not rely on the account setting alone:
 
 1. Before the first call, and again when the list is an hour old, it reads the public model list and the
    ZDR list (two GETs without the key, without any receipt data), and keeps the configured model's
-   endpoints whose `safety_retention` is explicitly `false`. A model that is unknown, takes no images or
+   endpoints whose `safety_retention` is explicitly `false`, minus any slug that would also match a
+   retaining endpoint of the model (in `only`, `vendor` also matches `vendor/eu`; none such exists in the
+   list today, but the guard costs nothing). A model that is unknown, takes no images or
    has no such endpoint stops the service at start-up (HTTP 501 if asked anyway). A list that cannot be
    read means no call: 503 `openrouter_catalogue_unavailable`.
 2. Every request carries `provider: {"only": [those endpoint slugs], "zdr": true, "data_collection":
    "deny", ...}`. The two privacy fields come from a constant applied last, and no setting reaches them:
    there is nothing to switch off.
 3. Every answer names the provider that served it. An answer from a provider outside the list (or without
-   one) is discarded with 424 `openrouter_provider_unverified`, so a routing change cannot pass
-   unnoticed.
+   one) is discarded with 424 `openrouter_provider_unverified`, and from then on the backend sends
+   nothing until the service is restarted (an evaluation run stops): a photo may already have gone to the
+   wrong place, and a person has to look before any more do.
 
 The owner should still set the account's privacy settings to "ZDR only" for every model group and leave
 prompt logging off: it closes the same door twice and also covers any request made outside this code.
@@ -92,10 +95,14 @@ metadata (time, model, token counts, cost) for billing; that is not the content.
   and httpx's own `Host`, `Content-Length`, `Accept-Encoding` and `Connection`. No `HTTP-Referer` or
   `X-Title` (OpenRouter's optional attribution headers, which would name the app), nothing that names
   the owner or the machine. The client reads nothing from the environment (`trust_env=False`: no proxy
-  variables, no `.netrc`) and follows no redirect. The network still sees the machine's IP address.
+  variables, no `.netrc`), follows no redirect, and drops cookies before every request, so a cookie set
+  on an anonymous catalogue read never ties it to the keyed chat request. The network still sees the
+  machine's IP address.
 - **The key** (`OPENROUTER_API_KEY`) is read in `ml/app/config.py` as a secret (`SecretStr`), sent only in
   the chat request's `Authorization` header (the catalogue is read without it), and never logged, put in
-  an error, or written to a run folder. Upstream error bodies are never passed on: they can echo the
+  an error, or written to a run folder. A key with spaces or control characters (a pasted line break) is
+  refused (501 `openrouter_key_invalid`) before it reaches the HTTP stack, whose own errors and debug
+  logs would quote the header. Upstream error bodies are never passed on: they can echo the
   request; the service answers with its own short message.
 
 What leaves the machine is still the photo: whatever is printed on the receipt (the shop, the items, the
@@ -115,11 +122,13 @@ terminal layout.
 ### Structured output when the endpoints support it
 
 When some of the allowed endpoints list `structured_outputs` and `response_format`, the request asks for
-the answer's JSON schema (`response_format: json_schema`, strict) and is limited to those endpoints with
-`require_parameters: true`; otherwise it asks for plain JSON and the shared parser takes the object out
+the answer's JSON schema (`response_format: json_schema`, strict) and `only` names just those
+endpoints; otherwise it asks for plain JSON and the shared parser takes the object out
 of the text. Every call records which was used. `OPENROUTER_STRUCTURED_OUTPUT=false` turns it off (to
 compare with free generation, or when a provider refuses the schema). Either way the answer is parsed and
-checked, as with the local model's constrained decoding.
+checked, as with the local model's constrained decoding. `require_parameters` is not sent: `only` already
+names endpoints that support the schema, and the flag would also drop any endpoint that does not list
+`temperature` or `max_tokens`, turning a usable model into a misleading "no endpoint" error.
 
 ### Errors follow the service contract
 
@@ -127,19 +136,22 @@ The Rails job retries a 5xx other than 501 and treats a 4xx or 501 as permanent:
 
 | Situation | Status | Code |
 | --- | --- | --- |
-| `OPENROUTER_OCR_MODEL` / `OPENROUTER_API_KEY` missing | 501 | `openrouter_model_missing` / `openrouter_key_missing` |
+| `OPENROUTER_OCR_MODEL` / `OPENROUTER_API_KEY` missing; a malformed key | 501 | `openrouter_model_missing` / `openrouter_key_missing`; `openrouter_key_invalid` |
 | model unknown, without image input, or without a strict ZDR endpoint | 501 | `openrouter_model_unknown`, `openrouter_model_without_images`, `openrouter_no_zdr_endpoint` |
 | ZDR list cannot be read | 503 | `openrouter_catalogue_unavailable` |
 | OpenRouter 429 | 503 | `openrouter_rate_limited` |
-| OpenRouter 408 or 5xx, an error in the answer | 502 | `openrouter_upstream_error` |
-| no answer in `OPENROUTER_TIMEOUT` | 504 | `openrouter_timeout` |
+| OpenRouter 408 or 5xx | 502 | `openrouter_upstream_error` |
+| the receipt's `OPENROUTER_TIMEOUT` runs out | 504 | `openrouter_timeout` |
 | OpenRouter cannot be reached | 502 | `openrouter_unreachable` |
 | an answer that is not a chat completion | 502 | `openrouter_bad_response` |
 | OpenRouter 401 / 402 / 403 | 424 | `openrouter_auth_failed` / `openrouter_payment_required` / `openrouter_refused` |
-| OpenRouter 404 (no endpoint fits the preferences now) | 424 | `openrouter_no_zdr_endpoint` |
+| OpenRouter 404 (no allowed endpoint can serve the request now) | 424 | `openrouter_no_matching_endpoint` |
 | any other OpenRouter 4xx | 424 | `openrouter_bad_request` |
 | an answer from a provider outside the list | 424 | `openrouter_provider_unverified` |
 | the answer unreadable after the repair pass | 422 | `ocr_parse_failed` (as for the local model) |
+
+An error reported inside an answer with HTTP 200 (at the top level or in the choice) is mapped by its
+numeric code in the same way, and to 502 without one.
 
 424 (Failed Dependency) is a 4xx, so the job marks the receipt failed at once instead of paying for five
 attempts that would be refused the same way. A missing key starts the service anyway (it logs the
@@ -149,8 +161,12 @@ problem and `/ocr` answers 501), so the receipt page shows the reason instead of
 
 OpenRouter puts `usage` (prompt and completion tokens, and `cost`, the amount charged in credits, which
 are US dollars) in every answer without any request option. The answer is parsed with JSON numbers as
-`Decimal`, so the cost keeps its exact digits, and costs are added as `Decimal`. A receipt's cost is the
-sum of its calls, null when any call did not report one (a partial sum would understate it). Each call
+`Decimal`, so the cost keeps its exact digits, and costs are added as `Decimal` with enough precision to
+stay exact (`ml/app/decimals.py`; a cost of more than 50 digits counts as unknown). A receipt's cost is
+the sum of its calls, null when any call did not report one (a partial sum would understate it). A call
+whose answer was lost after it was sent (a read timeout, a cut connection, an unreadable answer) may
+have been charged, so it counts as a call with an unknown cost; a call refused with an error status
+counts as not charged. Token counts are null, not zero, when a call did not report them. Each call
 also records its latency, the upstream provider, the served model and whether structured output was used.
 
 `ocr_run` writes this per receipt into `predictions.jsonl` (also for a receipt that failed after a call:
@@ -185,6 +201,9 @@ backend. Nothing in this backend reads the database; it sees only the photos it 
   that visible in stored results and runs.
 - Hosted providers scale large images themselves, and they count image tokens differently, so the same
   photo costs different amounts on different models. The cost is measured, not estimated.
-- A receipt that needs the repair pass makes two calls and costs about twice as much. With the default
-  `OPENROUTER_TIMEOUT` of 60 seconds a receipt can take up to two minutes, the Rails client's default OCR
-  timeout; raise `ML_SERVICE_OCR_TIMEOUT` if timeouts show up.
+- A receipt that needs the repair pass makes two calls and costs about twice as much.
+  `OPENROUTER_TIMEOUT` (100 seconds by default) is one budget for the whole receipt, kept under the
+  Rails client's 120-second OCR timeout: the client should not give up and retry (sending the photos
+  again, and paying again) while the service is still waiting for a call. httpx's read timeout restarts
+  when data arrives, so the budget is close but not exact; a provider that trickles its answer could
+  overrun it. A 504 is still retried by the job, which sends the photos again.

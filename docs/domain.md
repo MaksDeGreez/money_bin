@@ -437,7 +437,7 @@ What is stored where:
   no response body. `code` is the service's own code (`validation_error`, `too_many_images`,
   `image_too_large`, `unsupported_media_type`, `image_unreadable`, `ocr_parse_failed`,
   `backend_not_implemented`, `internal_error`, and with the hosted backend `openrouter_*` codes such as
-  `openrouter_rate_limited` or `openrouter_no_zdr_endpoint`, listed in `ml/README.md`), or `ml_unreachable`,
+  `openrouter_rate_limited` or `openrouter_provider_unverified`, listed in `ml/README.md`), or `ml_unreachable`,
   `ml_timeout`, `invalid_response`, `no_images` or `image_missing`. `message` is one line of at most 300
   characters. There is no separate column for the reason: `ocr_raw` already means "what the OCR step
   left".
