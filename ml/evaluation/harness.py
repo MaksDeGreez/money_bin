@@ -205,6 +205,7 @@ def run_values(runs: list[Run]) -> set[str]:
                 for entry in run.combined_from
                 for key in ("run_id", "backend", "model_name")
             ),
+            *run.declared_sources,
         ):
             if isinstance(value, str) and value:
                 values.add(public_name(value))

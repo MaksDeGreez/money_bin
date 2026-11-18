@@ -52,9 +52,6 @@ class ResultsShapeError(Exception):
 @dataclass
 class Context:
     run_values: frozenset[str] = field(default_factory=frozenset)
-    # Words a table may show besides the fixed ones: the `source` values of item-category runs,
-    # which the results JSON already holds as checked keys.
-    words: frozenset[str] = field(default_factory=frozenset)
 
 
 Check = Callable[[Any, str, Context], None]
@@ -357,8 +354,22 @@ CALIBRATION_FIELDS = {
     "brier": ESTIMATE,
 }
 CALIBRATION = obj({**CALIBRATION_FIELDS, "scores_calibrated": boolean()})
+# `by_source` keys: the known sources, `unstated`, `other`, or a source a `run.json` declares.
+FIXED_SOURCES = frozenset({"memory", "model", "decision", "combined", "unstated", "other"})
 SOURCE_WORD = re.compile(r"\A[a-z][a-z_]{0,29}\Z")
-SOURCE_KEY = pattern(SOURCE_WORD, nullable=False)
+
+
+def source_key() -> Check:
+    def check(value: Any, path: str, ctx: Context) -> None:
+        if not isinstance(value, str) or not SOURCE_WORD.match(value):
+            _fail(path, "does not have the allowed form")
+        if value not in FIXED_SOURCES and value not in ctx.run_values:
+            _fail(path, "must be a known source or one a run.json declares")
+
+    return check
+
+
+SOURCE_KEY = source_key()
 SOURCE_BLOCK = obj(
     {
         "items": integer(),
@@ -590,7 +601,7 @@ def check_cell(value: Any, ctx: Context) -> None:
     if isinstance(value, str) and (
         CELL.match(value)
         or value in CELL_WORDS
-        or value in ctx.words
+        or value in FIXED_SOURCES
         or LABEL.match(value)
         or (value in ctx.run_values and PARAMETER.match(value))
     ):
@@ -614,22 +625,14 @@ class ResultsWriter:
         self.ctx = Context(frozenset(value for value in run_values if isinstance(value, str)))
         self.staged: dict[str, str] = {}
 
-    def allow_words(self, words: Iterable[str]) -> None:
-        """Let tables show these words (each a short lower-case word, as a `source` key is)."""
-        allowed = set()
-        for word in words:
-            if not isinstance(word, str) or not SOURCE_WORD.match(word):
-                raise ResultsShapeError("results: a table word has not the allowed form")
-            allowed.add(word)
-        self.ctx = Context(self.ctx.run_values, self.ctx.words | frozenset(allowed))
-
     def _stage(self, relative: str, text: str) -> None:
         path = (self.root / relative).resolve()
         if self.root.resolve() not in path.parents:
             raise ResultsShapeError("results: a file name leaves the results folder")
         if len(path.name.encode()) > MAX_FILE_NAME_BYTES:
             raise ResultsShapeError("results: a file name is too long")
-        if relative in self.staged:
+        if relative.casefold() in {name.casefold() for name in self.staged}:
+            # Compared without case: the owner's disk does not tell `A.json` from `a.json`.
             raise ResultsShapeError("results: two files would have the same name")
         self.staged[relative] = text
 

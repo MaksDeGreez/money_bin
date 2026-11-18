@@ -532,7 +532,6 @@ def write_tables(
         "auto_accept": auto_accept(categories),
         "item_category_comparisons": item_category_comparisons(category_comparisons),
     }
-    writer.allow_words(source for result in categories for source in result["by_source"])
     for name, (headers, rows) in tables.items():
         writer.write_table(name, TITLES[name], headers, rows, NOTES[name])
     return list(tables)

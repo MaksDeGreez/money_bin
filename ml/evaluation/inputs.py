@@ -22,6 +22,10 @@ SOURCES = ("dps_xml", "manual")
 # `source` of an item-category line: an open set (`memory`, `model`, `decision`, `combined`, ...),
 # any short lower-case word.
 CATEGORY_SOURCE = re.compile(r"\A[a-z][a-z_]{0,29}\Z")
+# The `source` values every run may use; others must be declared in `run.json`'s `sources`.
+KNOWN_CATEGORY_SOURCES = frozenset({"memory", "model", "decision", "combined"})
+# Text in `combined_from`: a run id, a backend or a model name; no spaces or control characters.
+COMBINED_TEXT = re.compile(r"\A[^\s\x00-\x1f]{1,200}\Z")
 
 
 @dataclass(frozen=True)
@@ -69,15 +73,41 @@ class Run:
             [entry for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
         )
 
+    @property
+    def is_combined(self) -> bool:
+        """A run says it combines others by `combined_from` in `run.json`, or by a line whose
+        `source` is `combined`."""
+        return "combined_from" in self.meta or any(
+            record.get("source") == "combined" for record in self.records
+        )
+
     def categoriser_names(self) -> list[tuple[str | None, ...]]:
         """The (name, version) of every categoriser behind this run: its own, and for a combined
-        run each one it combines (an entry without a usable `model_name` gives an empty name,
-        which the pre-fill rule treats as unknown)."""
+        run each one it combines. An entry without a usable `model_name`, or a combined run that
+        names no part, gives an empty name, which the pre-fill rule treats as unknown."""
         names: list[tuple[str | None, ...]] = [(self.model_name, self.model_version)]
         for entry in self.combined_from:
             name = entry.get("model_name")
-            names.append((name if isinstance(name, str) else "", None))
+            version = entry.get("model_version")
+            names.append(
+                (
+                    name if isinstance(name, str) else "",
+                    version if isinstance(version, str) else None,
+                )
+            )
+        if self.is_combined and not self.combined_from:
+            names.append(("", None))
         return names
+
+    @property
+    def declared_sources(self) -> frozenset[str]:
+        """The `source` values `run.json` declares (`sources`), besides the known ones."""
+        value = self.meta.get("sources")
+        if not isinstance(value, list):
+            return frozenset()
+        return frozenset(
+            item for item in value if isinstance(item, str) and CATEGORY_SOURCE.match(item)
+        )
 
 
 @dataclass(frozen=True)
@@ -165,8 +195,11 @@ def _check_category_record(record: dict[str, Any], name: str, number: int) -> No
     for candidate in candidates:
         if not isinstance(candidate, dict) or not isinstance(candidate.get("category_slug"), str):
             raise UsageError(f"{name}: line {number} has a candidate without a category_slug")
-        if not _finite_or_none(candidate.get("score")):
-            raise UsageError(f"{name}: line {number} has a candidate score that is not a number")
+        score = candidate.get("score")
+        if not _finite_or_none(score) or (score is not None and not 0 <= score <= 1):
+            raise UsageError(
+                f"{name}: line {number} has a candidate score that is not between 0 and 1"
+            )
     if not _finite_or_none(record.get("seconds")):
         raise UsageError(f"{name}: line {number} has seconds that are not a finite number")
     source_value = record.get("source")
@@ -201,6 +234,13 @@ def read_run(folder: Path) -> Run:
         not isinstance(combined, list) or not all(isinstance(entry, dict) for entry in combined)
     ):
         raise UsageError(f"{run_id}: run.json's combined_from is not a list of objects")
+    for entry in combined or []:
+        for key in ("run_id", "backend", "model_name", "model_version"):
+            value = entry.get(key)
+            if value is not None and (
+                not isinstance(value, str) or len(value) > 200 or not COMBINED_TEXT.match(value)
+            ):
+                raise UsageError(f"{run_id}: run.json's combined_from has a bad {key}")
     name = f"{run_id}/predictions.jsonl"
     records = list(read_jsonl(folder / "predictions.jsonl"))
     seen: set[tuple[str, Any]] = set()

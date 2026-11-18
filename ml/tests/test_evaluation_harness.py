@@ -1169,7 +1169,7 @@ def test_an_item_without_a_prediction_has_source_none(category_inputs: dict[str,
         "\n".join(json.dumps(line) for line in lines if line.get("position") != 3)
     )
     run_harness(category_inputs)
-    assert result(category_inputs, "cats")["by_source"]["none"]["items"] == 1
+    assert result(category_inputs, "cats")["by_source"]["unstated"]["items"] == 1
 
 
 def combined_run(runs: Path, combined_from: Any) -> None:
@@ -1298,3 +1298,77 @@ def test_errors_name_folders_not_paths(tmp_path: Path) -> None:
     with pytest.raises(UsageError) as error:
         discover_runs(tmp_path / "private" / "runs")
     assert str(tmp_path) not in str(error.value)
+
+
+# --- third review --------------------------------------------------------------------------
+
+
+def rewrite_lines(folder: Path, change: Any) -> None:
+    lines = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    change(lines)
+    (folder / "predictions.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+
+
+def test_undeclared_sources_become_other(category_inputs: dict[str, Path]) -> None:
+    folder = category_inputs["runs"] / "cats"
+
+    def change(lines: list[dict]) -> None:
+        lines[1]["source"] = "silpo"
+        lines[2]["source"] = "rules"
+
+    rewrite_lines(folder, change)
+    meta = json.loads((folder / "run.json").read_text())
+    meta["sources"] = ["rules"]
+    (folder / "run.json").write_text(json.dumps(meta))
+    run_harness(category_inputs)
+    assert sorted(result(category_inputs, "cats")["by_source"]) == ["memory", "other", "rules"]
+    assert "silpo" not in all_text(category_inputs["out"])
+
+
+def test_scores_outside_zero_and_one_are_refused(tmp_path: Path) -> None:
+    line = fx.category_line("rcpt_000001", 1, [(G, 82)])
+    fx.write_run(tmp_path, "cats", [line], task="item_categories")
+    with pytest.raises(UsageError, match="between 0 and 1"):
+        discover_runs(tmp_path)
+
+
+@pytest.mark.parametrize("combined_from", [[], None])
+def test_a_combined_run_that_names_no_part_is_unknown(
+    category_inputs: dict[str, Path], combined_from: Any
+) -> None:
+    combined_run(category_inputs["runs"], combined_from)
+    run_harness(category_inputs)
+    counts = result(category_inputs, "cats-combined")["counts"]
+    assert counts["receipts_excluded_prefilled_unknown"] == 1
+
+
+def test_a_combined_part_with_a_local_version_is_unknown(
+    category_inputs: dict[str, Path],
+) -> None:
+    combined_run(
+        category_inputs["runs"],
+        [{"run_id": "x", "backend": "mlx", "model_name": "other-model", "model_version": "local"}],
+    )
+    run_harness(category_inputs)
+    counts = result(category_inputs, "cats-combined")["counts"]
+    assert counts["receipts_excluded_prefilled_unknown"] == 1
+
+
+def test_bad_combined_from_entries_are_refused_on_reading(tmp_path: Path) -> None:
+    combined_run(tmp_path, [{"run_id": "has a space"}])
+    with pytest.raises(UsageError, match="bad run_id"):
+        discover_runs(tmp_path)
+
+
+def test_file_names_differing_only_by_case_are_refused(inputs: dict[str, Path]) -> None:
+    # Two folders; their run ids differ only by case (the folders could not, on this disk).
+    for folder, run_id, model in (
+        ("a", "Run-X", "openai/gpt-4o"),
+        ("b", "run-x", "openai/o4-mini"),
+    ):
+        path = fx.write_run(inputs["runs"], folder, fx.standard_predictions(), model=model)
+        meta = json.loads((path / "run.json").read_text())
+        meta["run_id"] = run_id
+        (path / "run.json").write_text(json.dumps(meta))
+    with pytest.raises(ResultsShapeError, match="same name"):
+        run_harness(inputs)

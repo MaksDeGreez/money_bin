@@ -58,7 +58,7 @@ from categoriser.metrics import (
 )
 from evaluation.bootstrap import interval, rng_for
 from evaluation.common import COST_PER_1000_PLACES, COST_PER_RECEIPT_PLACES, timing_summary
-from evaluation.inputs import ReceiptInfo, Run
+from evaluation.inputs import KNOWN_CATEGORY_SOURCES, ReceiptInfo, Run
 from evaluation.truth import GroundTruth
 
 SLUG = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -66,7 +66,10 @@ NONE_LABEL = "_none"
 OTHER_LABEL = "_other"
 AUTO_ACCEPT_PRECISION = 0.95
 CALIBRATION_BINS = 10
-NO_SOURCE = "none"
+# `by_source` keys besides the run's sources: items with no prediction or no stated source, and
+# lines whose source is neither known nor declared in `run.json`.
+NO_SOURCE = "unstated"
+OTHER_SOURCE = "other"
 
 
 def clean_slug(value: Any, known: frozenset[str] | None = None) -> str:
@@ -400,16 +403,23 @@ def score_run(
         rows, seed=seed_for(seed, run.run_id, "calibration"), resamples=resamples
     )
     result["calibration"]["scores_calibrated"] = _scores_calibrated(run)
-    sources = sorted({row.source or NO_SOURCE for row in rows})
+    allowed = KNOWN_CATEGORY_SOURCES | run.declared_sources
+
+    def source_of(row: Row) -> str:
+        if not row.source:
+            return NO_SOURCE
+        return row.source if row.source in allowed else OTHER_SOURCE
+
+    sources = sorted({source_of(row) for row in rows})
     result["by_source"] = {
         source: {
             **headline_block(
-                [row for row in rows if (row.source or NO_SOURCE) == source],
+                [row for row in rows if source_of(row) == source],
                 seed=seed_for(seed, run.run_id, "source", source),
                 resamples=resamples,
             ),
             "calibration": calibration(
-                [row for row in rows if (row.source or NO_SOURCE) == source],
+                [row for row in rows if source_of(row) == source],
                 seed=seed_for(seed, run.run_id, "calibration", source),
                 resamples=resamples,
             ),
