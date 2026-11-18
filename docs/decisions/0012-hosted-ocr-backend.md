@@ -59,7 +59,9 @@ So the backend does not rely on the account setting alone:
 
 1. Before the first call, and again when the list is an hour old, it reads the public model list and the
    ZDR list (two GETs without the key, without any receipt data), and keeps the configured model's
-   endpoints whose `safety_retention` is explicitly `false`, minus any slug that would also match a
+   endpoints whose `safety_retention` is explicitly `false`, minus the endpoints of any provider that also
+   has a retaining endpoint for the model (an answer names its provider, not its endpoint, so the check in
+   step 3 could not tell them apart), minus any slug that would also match a
    retaining endpoint of the model (in `only`, `vendor` also matches `vendor/eu`; none such exists in the
    list today, but the guard costs nothing). A model that is unknown, takes no images or
    has no such endpoint stops the service at start-up (HTTP 501 if asked anyway). A list that cannot be
@@ -97,9 +99,9 @@ metadata (time, model, token counts, cost) for billing; that is not the content.
   and httpx's own `Host`, `Content-Length`, `Accept-Encoding` and `Connection`. No `HTTP-Referer` or
   `X-Title` (OpenRouter's optional attribution headers, which would name the app), nothing that names
   the owner or the machine. The client reads nothing from the environment (`trust_env=False`: no proxy
-  variables, no `.netrc`), follows no redirect, and drops cookies before every request, so a cookie set
-  on an anonymous catalogue read never ties it to the keyed chat request. The network still sees the
-  machine's IP address.
+  variables, no `.netrc`), follows no redirect and keeps no cookie. The anonymous catalogue reads and
+  the keyed chat requests go through separate clients, so no cookie or connection ties one to the other.
+  The network still sees the machine's IP address.
 - **The key** (`OPENROUTER_API_KEY`) is read in `ml/app/config.py` as a secret (`SecretStr`), sent only in
   the chat request's `Authorization` header (the catalogue is read without it), and never logged, put in
   an error, or written to a run folder. A key with spaces or control characters (a pasted line break) is
@@ -204,8 +206,12 @@ backend. Nothing in this backend reads the database; it sees only the photos it 
 - Hosted providers scale large images themselves, and they count image tokens differently, so the same
   photo costs different amounts on different models. The cost is measured, not estimated.
 - A receipt that needs the repair pass makes two calls and costs about twice as much.
-  `OPENROUTER_TIMEOUT` (100 seconds by default) is one budget for the whole receipt, kept under the
+  `OPENROUTER_TIMEOUT` (100 seconds by default) is a hard deadline for the whole receipt, kept under the
   Rails client's 120-second OCR timeout: the client should not give up and retry (sending the photos
-  again, and paying again) while the service is still waiting for a call. httpx's read timeout restarts
-  when data arrives, so the budget is close but not exact; a provider that trickles its answer could
-  overrun it. A 504 is still retried by the job, which sends the photos again.
+  again, and paying again) while the service is still waiting for a call. Each call's connect, upload
+  and read limits are shares of the time left, and the answer is read in chunks and abandoned once the
+  deadline passes (httpx's read limit restarts with every chunk, so a trickling answer would otherwise
+  run on). A call is not started with less than 10 seconds left, and a repair call not with less than
+  the first call took: it would most likely be paid for and lost. A 504 is still retried by the job,
+  which sends the photos again. A halt (above) is not shown by `/health`; the log shows it, and every
+  `/ocr` answers 424 until the service is restarted.

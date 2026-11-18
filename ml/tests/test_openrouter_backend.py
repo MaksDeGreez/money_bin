@@ -910,8 +910,10 @@ def test_the_real_client_sends_only_these_headers(monkeypatch: pytest.MonkeyPatc
     assert chat.headers["authorization"] == f"Bearer {FAKE_KEY}"
     assert chat.headers["user-agent"] == USER_AGENT
     assert chat.headers["content-type"] == "application/json"
-    assert 90 < chat.extensions["timeout"]["read"] <= 100
-    assert chat.extensions["timeout"]["connect"] == 10.0
+    # The receipt's 100 seconds, shared: 10 to connect, 20 to upload, the rest to read.
+    assert 60 < chat.extensions["timeout"]["read"] <= 70
+    assert 19 < chat.extensions["timeout"]["write"] <= 20
+    assert 9 < chat.extensions["timeout"]["connect"] <= 10
     body = json.loads(chat.content)
     assert body["provider"]["zdr"] is True
     assert b"rcpt_000123" not in chat.content
@@ -923,8 +925,10 @@ def test_the_real_client_reads_nothing_from_the_environment() -> None:
     transport = backend._transport_or_new()
 
     assert isinstance(transport, HttpxTransport)
-    assert transport._client.trust_env is False
-    assert transport._client.follow_redirects is False
+    for client in (transport._public, transport._chat):
+        assert client.trust_env is False
+        assert client.follow_redirects is False
+    assert transport._public is not transport._chat
     backend.stop()
 
 
@@ -1005,8 +1009,11 @@ def test_after_an_unverified_provider_nothing_more_is_sent() -> None:
     assert len(transport.posts) == 1
 
 
-def test_a_receipt_has_one_time_budget() -> None:
-    backend, transport = make_backend(openrouter_timeout=4)
+def test_a_receipt_has_one_time_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.backends.openrouter as module
+
+    monkeypatch.setattr(module, "MIN_CALL_SECONDS", 30.0)
+    backend, transport = make_backend(openrouter_timeout=20)
 
     with pytest.raises(BackendError) as error:
         backend.extract_receipt([jpeg()])
@@ -1240,3 +1247,88 @@ def test_bounded_refuses_what_is_not_a_price() -> None:
     assert bounded(Decimal("0.25")) == Decimal("0.25")
     for value in ("NaN", "Infinity", "1E+51", "1E-51", "1" * 51):
         assert bounded(Decimal(value)) is None
+
+
+def test_a_repair_call_needs_as_long_as_the_first_call_took(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.backends.openrouter as module
+
+    # Deadline at 100; the first call runs from 1 to 61 (60 s); 39 s are left.
+    ticks = iter([0.0, 1.0, 61.0, 61.0])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(ticks))
+    backend, transport = make_backend(FakeTransport(HttpResponse(200, chat_answer("bad"))))
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert error.value.code == "openrouter_timeout"
+    assert len(transport.posts) == 1
+    assert error.value.diagnostics["cost_usd"] == "0.000123456789"
+
+
+def test_the_real_client_abandons_an_answer_past_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.backends.openrouter as module
+
+    # The deadline is taken at 0; every later reading is past it.
+    readings = [0.0]
+    monkeypatch.setattr(module.time, "perf_counter", lambda: readings.pop(0) if readings else 101.0)
+
+    def trickle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=iter([b" ", b" ", b"{}"]))
+
+    transport = HttpxTransport(httpx.MockTransport(trickle))
+
+    with pytest.raises(httpx.ReadTimeout):
+        transport.post_json(CHAT_URL, {}, api_key=FAKE_KEY, timeout=100)
+    transport.close()
+
+
+def test_a_provider_with_any_retaining_endpoint_is_not_used() -> None:
+    zdr = {
+        "data": [
+            endpoint("alpha", "Alpha"),
+            endpoint("alpha-eu", "Alpha", safety_retention=True),
+            endpoint("beta/fp8", "Beta"),
+        ]
+    }
+
+    catalogue = read_catalogue(FakeTransport(zdr=zdr), MODEL, structured=True, now=0.0)
+
+    assert catalogue.endpoints == ("beta/fp8",)
+
+
+@pytest.mark.parametrize(
+    "odd",
+    [
+        {"model_id": MODEL, "safety_retention": True},
+        {"model_id": MODEL, "safety_retention": False, "tag": "", "provider_name": None},
+    ],
+)
+def test_an_unidentifiable_retaining_entry_blocks_the_model(odd: dict[str, Any]) -> None:
+    zdr = {"data": [endpoint("alpha", "Alpha"), odd]}
+
+    with pytest.raises(BackendConfigError):
+        read_catalogue(FakeTransport(zdr=zdr), MODEL, structured=True, now=0.0)
+
+
+def test_an_answer_without_a_message_is_a_transient_failure() -> None:
+    backend, transport = make_backend(
+        FakeTransport(HttpResponse(200, json.dumps({"choices": [{}]})))
+    )
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert (error.value.status_code, error.value.code) == (502, "openrouter_upstream_error")
+    # Not a wrong provider: the backend still works.
+    transport.answers = [HttpResponse(200, chat_answer())]
+    assert backend.extract_receipt([jpeg()]).receipt.total == Decimal("71.40")
+
+
+def test_a_negative_cost_counts_as_unknown() -> None:
+    backend, _ = make_backend(FakeTransport(HttpResponse(200, chat_answer(cost="-0.5"))))
+
+    assert backend.extract_receipt([jpeg()]).diagnostics["cost_usd"] is None

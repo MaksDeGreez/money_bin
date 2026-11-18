@@ -39,6 +39,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from io import BytesIO
 from typing import Any, Protocol
 
@@ -73,8 +74,11 @@ CATALOGUE_TTL_SECONDS = 3600.0
 # Opening a connection. The whole receipt has its own limit (OPENROUTER_TIMEOUT).
 CONNECT_TIMEOUT_SECONDS = 10.0
 CATALOGUE_TIMEOUT_SECONDS = 10.0
-# A call is not started with less time than this left for the receipt.
-MIN_CALL_SECONDS = 5.0
+# The most of a chat call's time that sending the photos may take.
+UPLOAD_TIMEOUT_SECONDS = 20.0
+# A call is not started with less time than this left for the receipt, nor a
+# repair call with less than the first call took: it would be paid and lost.
+MIN_CALL_SECONDS = 10.0
 # The photos are sent as JPEG at this quality: the print stays sharp.
 JPEG_QUALITY = 90
 # A generic client name: it names neither this app, nor its owner, nor the machine.
@@ -113,46 +117,78 @@ class Transport(Protocol):
     def close(self) -> None: ...  # pragma: no cover
 
 
+class _NoCookies(CookieJar):
+    """A cookie jar that never keeps a cookie: no request ever carries one."""
+
+    def __init__(self) -> None:
+        super().__init__(policy=DefaultCookiePolicy(allowed_domains=[]))
+
+
+def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
+    return httpx.Client(
+        transport=transport,
+        trust_env=False,
+        follow_redirects=False,
+        # The jar itself, not a copy: httpx copies the cookies of a `Cookies` object
+        # into a fresh jar of its own, which would keep cookies again.
+        cookies=_NoCookies(),
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+
+
 class HttpxTransport:
-    """The real transport: one httpx client, no environment, no redirects.
+    """The real transport: httpx, no environment, no redirects, no cookies.
 
     `trust_env=False`: no proxy settings and no `.netrc` credentials from the
     environment. Only the headers set here (plus httpx's own Host,
-    Content-Length, Accept-Encoding and Connection) are sent. Cookies are
-    dropped before every request, so a cookie set on an anonymous catalogue
-    read never travels with the keyed chat request.
+    Content-Length, Accept-Encoding and Connection) are sent. The anonymous
+    catalogue reads and the keyed chat requests use two separate clients (no
+    shared connection), and neither keeps a cookie.
+
+    A chat request has a hard deadline: `timeout` seconds from its start. The
+    connect, upload and read limits of httpx are shares of it, and the answer
+    is read in chunks and abandoned as soon as the deadline passes (httpx's
+    read limit applies between chunks, so a slowly trickling answer would
+    otherwise run on).
     """
 
     def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
-        self._client = httpx.Client(
-            transport=transport,
-            trust_env=False,
-            follow_redirects=False,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-        )
-
-    def _timeout(self, seconds: float) -> httpx.Timeout:
-        return httpx.Timeout(seconds, connect=min(CONNECT_TIMEOUT_SECONDS, seconds))
+        self._public = _client(transport)
+        self._chat = _client(transport)
 
     def get(self, url: str, *, timeout: float) -> HttpResponse:
-        self._client.cookies.clear()
-        response = self._client.get(url, timeout=self._timeout(timeout))
+        response = self._public.get(
+            url, timeout=httpx.Timeout(timeout, connect=min(CONNECT_TIMEOUT_SECONDS, timeout))
+        )
         return HttpResponse(response.status_code, response.text)
 
     def post_json(
         self, url: str, body: Mapping[str, Any], *, api_key: str, timeout: float
     ) -> HttpResponse:
-        self._client.cookies.clear()
-        response = self._client.post(
+        deadline = time.perf_counter() + timeout
+        connect = min(CONNECT_TIMEOUT_SECONDS, timeout * 0.1)
+        upload = min(UPLOAD_TIMEOUT_SECONDS, timeout * 0.2)
+        limits = httpx.Timeout(
+            connect=connect, write=upload, pool=connect, read=timeout - connect - upload
+        )
+        with self._chat.stream(
+            "POST",
             url,
             content=json.dumps(body, ensure_ascii=False).encode(),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            timeout=self._timeout(timeout),
-        )
-        return HttpResponse(response.status_code, response.text)
+            timeout=limits,
+        ) as response:
+            chunks = []
+            for chunk in response.iter_bytes():
+                chunks.append(chunk)
+                if time.perf_counter() > deadline:
+                    raise httpx.ReadTimeout("deadline passed", request=response.request)
+            text = b"".join(chunks).decode("utf-8", errors="replace")
+            return HttpResponse(response.status_code, text)
 
     def close(self) -> None:
-        self._client.close()
+        self._public.close()
+        self._chat.close()
 
 
 @dataclass(frozen=True)
@@ -423,24 +459,46 @@ def read_catalogue(
     listed = [
         item
         for item in _data(_get_json(transport, ZDR_ENDPOINTS_URL, timeout))
-        if isinstance(item, dict)
-        and item.get("model_id") in ids
-        and isinstance(item.get("tag"), str)
-        and item["tag"]
+        if isinstance(item, dict) and item.get("model_id") in ids
     ]
-    # Only an explicit `false` counts: a missing flag is not proof.
-    retaining = [item["tag"] for item in listed if item.get("safety_retention") is not False]
-    endpoints = [
+    # Only an explicit `false` with a slug and a provider name counts: anything
+    # else is not proof, and is treated as an endpoint that may retain.
+    strict = [
         item
         for item in listed
         if item.get("safety_retention") is False
+        and isinstance(item.get("tag"), str)
+        and item["tag"]
+        and isinstance(item.get("provider_name"), str)
+    ]
+    retaining = [item for item in listed if not any(item is other for other in strict)]
+    retaining_tags = [item["tag"] for item in retaining if isinstance(item.get("tag"), str)]
+    retaining_names = {
+        _provider_key(item["provider_name"])
+        for item in retaining
+        if isinstance(item.get("provider_name"), str)
+    }
+    endpoints = [
+        item
+        for item in strict
         # In `provider.only` a slug also matches the endpoints whose slugs extend it
         # (`vendor` matches `vendor/eu`): a slug that would also reach a retaining
         # endpoint of the model is not used.
-        and not any(
-            other == item["tag"] or other.startswith(item["tag"] + "/") for other in retaining
+        if not any(
+            other == item["tag"] or other.startswith(item["tag"] + "/") for other in retaining_tags
         )
+        # An answer names its provider, not its endpoint: a provider that also has a
+        # retaining endpoint for the model could not be checked afterwards.
+        and _provider_key(item["provider_name"]) not in retaining_names
     ]
+    if any(
+        not (isinstance(item.get("tag"), str) and item["tag"])
+        and not isinstance(item.get("provider_name"), str)
+        for item in retaining
+    ):
+        # A retaining entry with neither a slug nor a provider name could be any of
+        # them: nothing can be shown to be safe.
+        endpoints = []
     if not endpoints:
         raise BackendConfigError(
             "openrouter_no_zdr_endpoint",
@@ -462,11 +520,7 @@ def read_catalogue(
         model_version=str(entry.get("canonical_slug") or entry.get("id")),
         endpoints=tags,
         structured_endpoints=structured_tags if structured else (),
-        providers=frozenset(
-            _provider_key(item["provider_name"])
-            for item in endpoints
-            if isinstance(item.get("provider_name"), str)
-        ),
+        providers=frozenset(_provider_key(item["provider_name"]) for item in endpoints),
         read_at=now,
     )
 
@@ -655,7 +709,8 @@ class OpenRouterBackend(Backend):
         self._check_not_halted()
         started = time.perf_counter()
         remaining = deadline - started
-        if remaining < MIN_CALL_SECONDS:
+        needed = max([MIN_CALL_SECONDS, *(call.seconds for call in calls)])
+        if remaining < needed:
             raise _out_of_time()
         structured = bool(catalogue.structured_endpoints)
 
@@ -717,7 +772,11 @@ class OpenRouterBackend(Backend):
         )
         calls.append(call)
         embedded = _embedded_error(document, choice)
-        usable = isinstance(choice, dict) and embedded is None
+        usable = (
+            isinstance(choice, dict)
+            and embedded is None
+            and isinstance(choice.get("message"), dict)
+        )
         if not usable and call.provider is None:
             # An error reported with HTTP 200 before any provider answered.
             raise embedded or _upstream_failed()
@@ -734,8 +793,7 @@ class OpenRouterBackend(Backend):
         if not usable:
             raise embedded or _upstream_failed()
         assert isinstance(choice, dict)
-        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
-        return _text_of(message.get("content"))
+        return _text_of(choice["message"].get("content"))
 
     def _check_not_halted(self) -> None:
         if self._halted:

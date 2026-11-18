@@ -43,10 +43,11 @@ class Settings(BaseSettings):
     # the backend refuses to start without one, so no model is picked silently.
     openrouter_ocr_model: str | None = None
     # Seconds for one receipt: the endpoint list (when it is due to be read
-    # again), the call and the repair call together. A call is not started with
-    # less than 5 seconds left. The default stays under the Rails client's OCR
+    # again), the call and the repair call together, as a hard deadline. A call
+    # is not started with less than 10 seconds left (a repair call: less than
+    # the first call took). The default stays under the Rails client's OCR
     # timeout (120 s), so the client never gives up on a call that is still paid.
-    openrouter_timeout: float = Field(default=100.0, gt=0, le=600)
+    openrouter_timeout: float = Field(default=100.0, ge=10, le=600)
     # The most tokens the model may write for one answer (as MLX_OCR_MAX_TOKENS).
     openrouter_max_tokens: int = Field(default=3072, gt=0)
     # The longer side photos are scaled to before they are sent (as

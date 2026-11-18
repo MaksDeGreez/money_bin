@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 from decimal import Decimal, localcontext
+from typing import Any
 
 # The most digits, and the largest exponent either way, of one reported cost.
 # Anything beyond is not a price but a malformed answer.
@@ -9,12 +10,13 @@ MAX_DIGITS = 50
 
 
 def bounded(value: Decimal) -> Decimal | None:
-    """`value` when it is finite with at most `MAX_DIGITS` digits and a modest exponent."""
+    """`value` when it is finite, not negative, with at most `MAX_DIGITS` digits and a modest
+    exponent."""
     if not value.is_finite():
         return None
     _sign, digits, exponent = value.as_tuple()
     assert isinstance(exponent, int)
-    if len(digits) > MAX_DIGITS or abs(exponent) > MAX_DIGITS:
+    if value < 0 or len(digits) > MAX_DIGITS or abs(exponent) > MAX_DIGITS:
         return None
     return value
 
@@ -32,3 +34,8 @@ def exact_sum(values: Iterable[Decimal]) -> Decimal:
         context.Emax = max(context.Emax, highest + len(str(len(terms))) + 1)
         context.Emin = min(context.Emin, lowest)
         return sum(terms, Decimal("0"))
+
+
+def wide_context() -> Any:
+    """A decimal context wide enough for any division or rounding of an exact sum."""
+    return localcontext(prec=400, Emax=10_000, Emin=-10_000)

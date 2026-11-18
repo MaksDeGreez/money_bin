@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from app.decimals import exact_sum
+from app.decimals import exact_sum, wide_context
 
 FILE_MODE = 0o600
 DIR_MODE = 0o700
@@ -102,7 +102,7 @@ def _cost(value: Any) -> Decimal | None:
         return None
     # A receipt's cost is a sum of bounded call costs, so it may be longer than
     # one call's: only a finite value is required here.
-    return cost if cost.is_finite() else None
+    return cost if cost.is_finite() and cost >= 0 else None
 
 
 def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
@@ -129,8 +129,9 @@ def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
     total = exact_sum(known)
     per_receipt = per_1000 = None
     if known:
-        per_receipt = format((total / len(known)).quantize(COST_PER_RECEIPT_PLACES), "f")
-        per_1000 = format((total * 1000 / len(known)).quantize(COST_PER_1000_PLACES), "f")
+        with wide_context():
+            per_receipt = format((total / len(known)).quantize(COST_PER_RECEIPT_PLACES), "f")
+            per_1000 = format((total * 1000 / len(known)).quantize(COST_PER_1000_PLACES), "f")
     return {
         "total_usd": format(total, "f"),
         "receipts_with_cost": len(known),

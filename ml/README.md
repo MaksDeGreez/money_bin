@@ -81,7 +81,7 @@ mlx-vlm, is left out of the coverage measurement.
 | `MLX_OCR_CONSTRAINED_DECODING` | `true`                                      | `true`, `false`             | Constrain the model's answer to the JSON schema (see "The mlx backend"). |
 | `OPENROUTER_API_KEY`           | none                                        | an OpenRouter API key       | The `openrouter` backend's key. A secret: keep it in the git-ignored `.env`. Without it the service starts and `/ocr` answers 501 `openrouter_key_missing` (`openrouter_key_invalid` for a key with spaces or control characters). |
 | `OPENROUTER_OCR_MODEL`         | none                                        | a model id from openrouter.ai/models | The `openrouter` backend's model. No default: without it the service does not start. |
-| `OPENROUTER_TIMEOUT`           | `100`                                       | seconds, above 0, at most 600 | The time for one receipt: reading the endpoint list when it is due, the call and the repair call together. A call is not started with less than 5 seconds left. Keep it under the Rails client's `ML_SERVICE_OCR_TIMEOUT` (120), so the client never gives up on a call that is still paid for. |
+| `OPENROUTER_TIMEOUT`           | `100`                                       | seconds, 10 to 600          | A hard deadline for one receipt: reading the endpoint list when it is due, the call and the repair call together, connecting and uploading included; an answer still arriving at the deadline is abandoned. A call is not started with less than 10 seconds left, a repair call not with less than the first call took. Keep it under the Rails client's `ML_SERVICE_OCR_TIMEOUT` (120), so the client does not retry (and pay again) while a call is still running. |
 | `OPENROUTER_MAX_TOKENS`        | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer, as `MLX_OCR_MAX_TOKENS`. |
 | `OPENROUTER_OCR_IMAGE_MAX_SIDE` | `2048`                                     | 256 to 4096                 | As `MLX_OCR_IMAGE_MAX_SIDE`, for the photos sent to the hosted model. |
 | `OPENROUTER_STRUCTURED_OUTPUT` | `true`                                      | `true`, `false`             | Ask for the answer's JSON schema when the endpoints support it (see "The openrouter backend"). |
@@ -345,7 +345,10 @@ nothing. The code enforces it; no setting can switch it off:
    classifiers, and OpenRouter's `zdr` request flag alone still lets requests
    reach them on a default self-serve account. A slug that would also match a
    retaining endpoint of the model (in `only`, `vendor` also matches
-   `vendor/eu`) is not used.
+   `vendor/eu`) is not used, nor is any endpoint of a provider that also has a
+   retaining endpoint for the model (an answer names its provider, not its
+   endpoint, so step 3 could not tell them apart). A retaining entry with
+   neither a slug nor a provider name blocks the model.
 2. Every request carries `provider: {"only": [those endpoints], "zdr": true,
    "data_collection": "deny", "allow_fallbacks": true}`. `zdr` and
    `data_collection` come from a constant applied last.
@@ -355,7 +358,8 @@ nothing. The code enforces it; no setting can switch it off:
    nothing until the service is restarted (`ocr_run` stops the run). Chat
    calls go one at a time, from sending to this check, so no request slips
    out while another one's answer is being checked; the Rails OCR queue reads
-   one receipt at a time anyway.
+   one receipt at a time anyway. `/health` does not show the halt; the log
+   does, and every `/ocr` answers 424 until the restart.
 
 A model that is unknown, takes no images or has no such endpoint stops the
 service at start-up. When the list cannot be read, no request is sent (503).
@@ -377,8 +381,9 @@ code too.
   `User-Agent: ocr-client`, and httpx's `Host`, `Content-Length`,
   `Accept-Encoding`, `Connection`. No `HTTP-Referer` or `X-Title` (the
   attribution headers that would name the app). The client ignores proxy
-  variables and `.netrc`, follows no redirect, and drops cookies before every
-  request (no `Cookie` header ever goes out).
+  variables and `.netrc`, follows no redirect, and keeps no cookie (no
+  `Cookie` header ever goes out). The anonymous catalogue reads and the keyed
+  chat requests use separate clients, so they share no connection.
 
 The limits: what is printed on the receipt goes with the photo, including the
 masked card number of a card slip (`**** 1234`). It is not blurred: finding it
@@ -469,7 +474,9 @@ reason, structured output). A receipt that failed after a call keeps its
 accounting: it was paid for. `run.json` adds `cost_usd` (`total_usd`,
 `per_receipt_usd`, `per_1000_receipts_usd`, `receipts_with_cost`,
 `receipts_without_cost`, `complete`), `upstream_providers` (calls per
-provider), and in `settings` the endpoints the requests were limited to. The
+provider), `stopped` (why a run ended early, such as
+`openrouter_provider_unverified`, or null) with `counts.attempted`, and in
+`settings` the endpoints the requests were limited to. The
 averages are over the receipts that made a call and reported a cost, rounded
 for the report (a millionth of a dollar per receipt, a ten-thousandth per
 1,000); the totals are exact.

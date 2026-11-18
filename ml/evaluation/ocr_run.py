@@ -41,7 +41,7 @@ from typing import Any, TextIO
 from pydantic import ValidationError
 
 from app.backends import BACKENDS, Backend, BackendError, ImageInput, create_backend
-from app.backends.openrouter import OpenRouterBackend, missing_settings
+from app.backends.openrouter import OpenRouterBackend, key_is_valid, missing_settings
 from app.config import Settings
 from app.main import MAX_IMAGES
 from app.ocr.images import ImageDecodeError
@@ -292,6 +292,8 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         missing = missing_settings(settings)
         if missing:
             raise UsageError(f"set {' and '.join(missing)} in the environment")
+        if not key_is_valid(settings):
+            raise UsageError("OPENROUTER_API_KEY has a space or a control character")
 
     started_at = datetime.now(UTC)
     statuses: Counter[str] = Counter()
@@ -299,6 +301,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     repaired = 0
     peak_memory = 0.0
     records: list[dict[str, Any]] = []
+    stopped: str | None = None
     try:
         load_started = time.perf_counter()
         try:
@@ -324,6 +327,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
                 took = "" if record["seconds"] is None else f" {record['seconds']:.1f} s"
                 print(f"{number}/{len(selected)} {record['status']}{took}", file=out)
                 if record["error"] == "openrouter_provider_unverified":
+                    stopped = record["error"]
                     print(
                         "stopped: an answer came from a provider outside the zero-retention "
                         "list; check the account's settings before another run",
@@ -352,7 +356,14 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         "started_at": started_at.isoformat(),
         "finished_at": datetime.now(UTC).isoformat(),
         "load_seconds": load_seconds,
-        "counts": {"receipts": len(selected), "repaired": repaired, **statuses},
+        "counts": {
+            "receipts": len(selected),
+            "attempted": len(records),
+            "repaired": repaired,
+            **statuses,
+        },
+        # Why the run ended before the last receipt, or null.
+        "stopped": stopped,
         "seconds_per_receipt": timing_summary(seconds),
         "peak_memory_gb": peak_memory,
     }

@@ -35,7 +35,7 @@ OPENROUTER_VARIABLES = (
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test may open a network connection: every socket connect fails."""
+    """No test may reach the network: every socket connect and name lookup fails."""
     import socket
 
     def refuse(*args: Any, **kwargs: Any) -> Any:
@@ -44,6 +44,7 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket.socket, "connect_ex", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
 
 
 @pytest.fixture(autouse=True)

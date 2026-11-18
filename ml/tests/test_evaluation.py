@@ -84,7 +84,14 @@ def test_a_run_writes_predictions_and_a_summary(ingest: Path, tmp_path: Path) ->
     assert records[0]["receipt"]["total"] == "123.45"
     assert records[1]["images"] == ["full", "full"]
     assert records[3]["error"] == "image_count"
-    assert summary["counts"] == {"receipts": 5, "repaired": 0, "ok": 4, "skipped": 1}
+    assert summary["counts"] == {
+        "receipts": 5,
+        "attempted": 5,
+        "repaired": 0,
+        "ok": 4,
+        "skipped": 1,
+    }
+    assert summary["stopped"] is None
     assert summary["seconds_per_receipt"]["count"] == 4
     assert summary["prompt_version"] is None
     assert summary["settings"]["crops"] is False
@@ -658,6 +665,8 @@ def test_a_hosted_run_stops_after_an_unverified_provider(
     assert len(transport.posts) == 1
     assert "stopped: an answer came from a provider outside" in console
     assert summary["upstream_providers"] == {"Gamma": 1}
+    assert summary["stopped"] == "openrouter_provider_unverified"
+    assert summary["counts"]["attempted"] == 1
 
 
 def test_tests_cannot_reach_the_network() -> None:
@@ -665,3 +674,19 @@ def test_tests_cannot_reach_the_network() -> None:
 
     with pytest.raises(OSError, match="must not use the network"):
         socket.create_connection(("192.0.2.1", 443), timeout=0.1)
+    with pytest.raises(OSError, match="must not use the network"):
+        socket.getaddrinfo("example.com", 443)
+
+
+def test_a_hosted_run_with_a_malformed_key_is_a_usage_error(
+    ingest: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "two words")
+    monkeypatch.setenv("OPENROUTER_OCR_MODEL", "example/vision-model")
+    args = ocr_run.parse_args(
+        ["--ingest", str(ingest), "--out", str(tmp_path / "runs"), "--backend", "openrouter"]
+    )
+
+    with pytest.raises(UsageError, match="space or a control character") as error:
+        ocr_run.run(args, io.StringIO())
+    assert "two words" not in str(error.value)
