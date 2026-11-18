@@ -27,7 +27,8 @@ runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-o
 ## Status
 
 Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
-owner signs in, sees the receipts, uploads new ones and has them read by OCR, AI agents authenticate with personal API tokens and read the ledger through a read-only
+owner signs in, sees the receipts, uploads new ones and has them read by OCR, corrects them in a review form and
+accepts them into the ledger, enters an expense by hand, AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
 with a local vision model (`OCR_BACKEND=mlx`, Apple silicon), and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
@@ -66,7 +67,8 @@ processes in `Procfile.dev` with foreman:
 | `ml`      | the ML service (`uvicorn app.main:app`)      | 8100 |
 
 Without `uv` (or without `ml/`), `bin/dev` starts everything except the ML service. Useful URLs:
-`/` (home), `/session/new` (sign in), `/receipts` (receipts, upload, OCR), `/settings/api_tokens` (API tokens), `/sidekiq` (background jobs,
+`/` (home), `/session/new` (sign in), `/receipts` (receipts, upload, OCR, review), `/transactions/new` (an expense by
+hand), `/transactions/:id` (one transaction), `/settings/api_tokens` (API tokens), `/sidekiq` (background jobs,
 signed in only), `/api/v1/status` (API check; the whole read API is under `/api/v1`, see "The read
 API"), `/up` (health check), <http://127.0.0.1:8100/docs> (ML
 service API docs).
@@ -355,9 +357,34 @@ only. Details: [`ml/README.md`](ml/README.md); reasons:
 `/receipts` lists every receipt, 50 to a page, newest first, with a thumbnail, its status, kind, tax QR
 data, merchant, date, total and items. The filter (batch, status, kind, tax QR, incomplete) is a GET form,
 so a filtered list is a URL; the counts per status above the list follow the other filters. A receipt page
-shows its photos (each opens the full photo) next to what is stored: the fields, the items with their sum
-against the printed total, and the tax QR values next to the OCR values with a match / mismatch mark.
+shows its photos (each opens the full photo; the photo column stays in view while the form scrolls) next to
+the review form, or to the stored data, read-only, while OCR is queued or running or has not read it.
 `/receipts/new` uploads one to three photos of one receipt.
+
+The review form (rules: [`docs/domain.md`](docs/domain.md), "Review"):
+
+- the header fields (kind, merchant, date and time in Kyiv time, total, currency, fiscal and receipt
+  numbers, card digits, incomplete) with the tax QR value next to each field it covers, a match / mismatch
+  mark and "Use the QR value"; the account to book on (the receipt's currency first, the last one used
+  chosen);
+- the items, edited in place: name, quantity, unit price, discount, amount and a category picker that
+  filters as you type (part of a category or group name). A suggested category shows its confidence; Enter
+  in an empty category field takes it, and "Accept suggestions" takes every one at or above a typed
+  confidence. A card slip has no items, only one category for its total;
+- live totals (items, total, difference, QR total) in exact hundredths as you type; the saved figures are
+  the server's;
+- **Save** (Ctrl+S or Cmd+S) stores the corrections; **Accept** (Ctrl+Enter or Cmd+Enter) saves and books
+  the receipt as a transaction whose lines are the item amounts summed per category, and opens it, with
+  "Next receipt to review" focused; an accepted receipt offers **Accept again**. Enter in the last row adds
+  a row. A warning links to a transaction or receipt with the same date and amount;
+- a form that was opened before OCR read the receipt again, or before another tab saved it, is refused
+  and keeps your values on screen; live refreshes wait while the form has unsaved changes, and leaving the
+  page asks first;
+- "Enter by hand" opens an unread or failed receipt in the form, empty.
+
+`/transactions/new` is the same form without a receipt: an account, a payee, a date, an optional time
+and rows of name, amount and category. Saving books one expense whose lines are the rows summed per
+category; the rows themselves are not kept. Incomes and transfers are not entered there.
 
 OCR runs in Sidekiq (`bin/dev` starts it) with the ML service (`OCR_BACKEND`, see `ml/README.md`):
 
