@@ -579,7 +579,10 @@ answer, which the OCR evaluation reads), `ocr_model_*`, the QR ground truth (`qr
 
 **What an acceptance does.** "Accept" saves and then runs `Receipts::Accept` with the chosen account, in
 one database transaction: a refusal (no account, `CurrencyMismatch`, `NothingToBook`, `TotalMismatch`, a
-slip with items) leaves nothing saved and shows the reason on the form, with the typed values. The page then
+slip with items) leaves nothing saved and shows the reason on the form, with the typed values (a row
+marked for removal stays marked). A successful save or acceptance refreshes the receipt's other open pages and
+the list (`Receipts::LiveUpdate`); a form there with unsaved changes is not refreshed, and its save is refused
+as stale. The page then
 opens the transaction (`/transactions/:id`): its lines, its status, why it needs review, and "Next receipt
 to review" (the next `extracted` receipt of the list's filter after this one, wrapping around), which has the
 focus. A `reviewed` receipt changes only through "Accept again" (save and rebook together), never by a plain
@@ -594,8 +597,9 @@ save without it is refused next to the kind. Switching to another kind clears a 
 **Entering by hand.** `Receipts::EnterByHand` ("Enter by hand" on an `uploaded` or `failed` receipt) makes
 the receipt `extracted`, so the form opens on it. It invents nothing: an unread receipt starts with no
 items, and a failed one keeps the items of an earlier successful read, if it has any. `ocr_raw` becomes
-`{"entered_by_hand": {"started_at": ..., "previous_error": ...}}` (the failure it replaces, if any) and
-`ocr_model_name` and `ocr_model_version` are cleared: no model produced what follows. A waiting OCR request
+`{"entered_by_hand": {"started_at": ..., "previous_error": ...}}` (the failure it replaces, if any);
+`ocr_model_name` and `ocr_model_version` stay as they were (nil for a receipt no model read, the model of the
+kept items for a failed one): none is invented. A waiting OCR request
 is withdrawn under the row lock the OCR job also takes, so a job queued earlier later finds an `extracted`
 receipt with no request and leaves it alone. A receipt being read is refused.
 

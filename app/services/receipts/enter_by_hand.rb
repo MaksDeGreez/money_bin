@@ -7,8 +7,8 @@ module Receipts
   # The receipt becomes `extracted`, so the review form opens on it. It gets no items it did not have: an
   # unread receipt starts empty, and a failed one keeps the items of an earlier successful read, if any.
   # `ocr_raw` records that a person started it, `{ "entered_by_hand" => { "started_at", "previous_error" } }`
-  # (the OCR failure it replaces, if any), and `ocr_model_name` and `ocr_model_version` are cleared: no model
-  # produced what follows, and none is invented.
+  # (the OCR failure it replaces, if any). `ocr_model_name` and `ocr_model_version` stay as they are: nil for a
+  # receipt no model read, and for a failed one with items, the model that read those items. None is invented.
   #
   # A waiting OCR request is withdrawn (`ocr_requested_at` cleared) under the same row lock that
   # ReceiptOcrJob takes when it starts, so a queued job later finds an `extracted` receipt with no request and
@@ -26,8 +26,7 @@ module Receipts
         end
 
         started = { "started_at" => Time.current.iso8601, "previous_error" => receipt.ocr_error }.compact
-        receipt.update!(status: :extracted, ocr_requested_at: nil, ocr_raw: { "entered_by_hand" => started },
-                        ocr_model_name: nil, ocr_model_version: nil)
+        receipt.update!(status: :extracted, ocr_requested_at: nil, ocr_raw: { "entered_by_hand" => started })
       end
       LiveUpdate.changed(receipt)
       receipt

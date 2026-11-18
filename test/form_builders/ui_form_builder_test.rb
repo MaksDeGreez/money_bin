@@ -113,4 +113,14 @@ class UiFormBuilderTest < ActionView::TestCase
     assert_equal item.suggested_category_id.to_s, select.at_css("option[selected]")["value"]
     assert root.at_css("ul[role=listbox][hidden]#item_category_id_listbox")
   end
+
+  test "category_select keeps a category that is not among the choices" do
+    item = receipt_items(:market_soap)
+    html = UiFormBuilder.new(:item, item, self, {}).category_select(:category_id, [ [ "Groceries", [ [ "Groceries", 1 ] ] ] ])
+
+    fragment = Nokogiri::HTML5.fragment(html)
+    assert_equal item.category_id.to_s, fragment.at_css("select option[selected]")["value"]
+    assert_equal "Household supplies", fragment.at_css("input[role=combobox]")["value"]
+  end
 end
+

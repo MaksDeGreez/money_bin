@@ -101,6 +101,12 @@ class UiFormBuilder < ActionView::Helpers::FormBuilder
     label = options.delete(:"aria-label") || options.delete(:aria_label)
     selected = object.public_send(method)
     selected_name = groups.flat_map(&:last).find { |_, id| id.to_s == selected.to_s }&.first if selected.present?
+    # A category that is not among the choices (the import's "Uncategorised", say) stays chosen, never cleared
+    # by a save that did not touch it.
+    if selected.present? && selected_name.nil? && (current = Category.includes(:parent).find_by(id: selected))
+      selected_name = current.name
+      groups += [ [ current.parent&.name || "Other", [ [ current.name, current.id ] ] ] ]
+    end
     select_id = options[:id] || field_id(method)
     invalid = errors_for(method).any?
 

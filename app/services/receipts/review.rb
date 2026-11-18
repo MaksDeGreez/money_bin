@@ -83,23 +83,44 @@ module Receipts
         next false unless valid?
 
         @receipt.updated_at = Time.current
+        @removed_items = @receipt.items.select(&:marked_for_destruction?)
         @receipt.save!
         @transaction = Accept.call(Receipt.find(@receipt.id), account: @account) if accept?
         true
       rescue Accept::Error => error
         accept_refused(error)
         raise ActiveRecord::Rollback
+      rescue ActiveRecord::RecordInvalid => error
+        # A booking the models refuse (the items sum past the amount limit, say): a reason on the form, not a 500.
+        @receipt.errors.add(:base, "Not accepted: #{error.record.errors.full_messages.to_sentence}.")
+        raise ActiveRecord::Rollback
       rescue ActiveRecord::StaleObjectError
         refuse_detached(CONFLICT, conflict: true)
         raise ActiveRecord::Rollback
       end
-      return false unless saved
+      unless saved
+        restore_removed_items
+        return false
+      end
 
       @version = Receipt.where(id: @receipt.id).pick(:lock_version).to_s
+      LiveUpdate.changed(@receipt)
       true
     end
 
     private
+      # The save destroyed the rows marked for removal and dropped them from the items in memory; the rollback
+      # brought them back in the database only. They go back on the form, still marked, so the page shows
+      # them as removed (hidden, _destroy=1) and the next save removes them again instead of keeping them.
+      def restore_removed_items
+        return if @removed_items.blank? || @form_receipt != @receipt
+
+        target = @receipt.association(:items).target
+        missing = @removed_items.reject { |item| target.include?(item) }
+        missing.each(&:mark_for_destruction)
+        @receipt.association(:items).target = (target + missing).sort_by { |item| item.position || Float::INFINITY }
+      end
+
       def stale?
         return true if @version != @receipt.lock_version.to_s
         return false unless @receipt.transaction_id
@@ -190,8 +211,13 @@ module Receipts
 
         @row_items = {}
         if detached
+          stored = @receipt.items.index_by { |item| item.id.to_s }
           target.association(:items).target = rows.map do |index, attributes|
             destroy = ActiveModel::Type::Boolean.new.cast(attributes.delete(:_destroy))
+            # The suggestion of a stored item is not a form field: it comes from the item, so "Use" stays.
+            if (item = stored[attributes[:id].to_s])
+              attributes = item.slice(:suggested_category_id, :confidence, :accepted_by_user).symbolize_keys.merge(attributes)
+            end
             ReceiptItem.new(attributes).tap do |item|
               item.mark_for_destruction if destroy
               @row_items[index] = item

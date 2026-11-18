@@ -14,8 +14,7 @@ class Receipts::EnterByHandTest < ActiveSupport::TestCase
     assert receipt.extracted?
     assert receipt.entered_by_hand?
     assert_equal({ "entered_by_hand" => { "started_at" => "2026-11-18T10:00:00+02:00" } }, receipt.ocr_raw)
-    assert_nil receipt.ocr_model_name
-    assert_nil receipt.ocr_model_version
+    assert_nil receipt.ocr_model_name, "no model read it, and none is invented"
     assert_empty receipt.items
     assert receipt.reviewable?
     assert_equal 1, receipt.lock_version
@@ -23,6 +22,7 @@ class Receipts::EnterByHandTest < ActiveSupport::TestCase
 
   test "a failed receipt keeps the failure it replaces and the items of an earlier read" do
     receipt = receipts(:failed_receipt)
+    receipt.update_columns(ocr_model_name: "stub-ocr")
     receipt.items.create!(position: 1, name: "Bread", amount: BigDecimal("30.00"))
 
     Receipts::EnterByHand.call(receipt)
@@ -32,6 +32,7 @@ class Receipts::EnterByHandTest < ActiveSupport::TestCase
       receipt.ocr_raw.dig("entered_by_hand", "previous_error"))
     assert_nil receipt.ocr_error
     assert_equal [ "Bread" ], receipt.items.map(&:name)
+    assert_equal "stub-ocr", receipt.ocr_model_name, "the model that read the kept items stays named"
   end
 
   test "a waiting OCR request is withdrawn, so a queued job leaves the typed receipt alone" do

@@ -115,7 +115,8 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
         - if form_receipt.suggested_category
           p.field-hint = "Suggested: #{form_receipt.suggested_category.name}#{" (#{receipt_confidence(form_receipt.suggested_category_confidence)})" if form_receipt.suggested_category_confidence}"
         = f.error_for :category_id
-      - stored_items = items.count { |item| item.id && !item.marked_for_destruction? }
+      / Every kept row counts, typed ones too: a slip saves with none.
+      - stored_items = items.count { |item| !item.marked_for_destruction? && (item.id || item.name.present? || item.amount_before_type_cast.present?) }
       - if stored_items.positive?
         = render "ui/callout", tone: :signal, class: "mt-4" do
           label.form-check-label

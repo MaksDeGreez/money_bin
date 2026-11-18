@@ -1,8 +1,10 @@
 require "test_helper"
 require_relative "../../support/ml_service_stubs"
+require "turbo/broadcastable/test_helper"
 
 class Receipts::ReviewTest < ActiveSupport::TestCase
   include MlServiceStubs
+  include Turbo::Broadcastable::TestHelper
 
   setup do
     @receipt = receipts(:corner_receipt)
@@ -370,4 +372,55 @@ class Receipts::ReviewTest < ActiveSupport::TestCase
     assert_equal [ [ categories(:cafes).id, BigDecimal("-152.50") ] ], result.transaction.lines.map { |line| [ line.category_id, line.amount ] }
     assert result.transaction.confirmed?
   end
+
+  # --- Found in review ----------------------------------------------------------------------------------------
+
+  test "a row removed before a refused accept stays removed on the form, so the next accept does not book it" do
+    params = form(items: rows_with(item_form(@deposit, _destroy: "1")))
+    result = review(params, intent: "accept")
+
+    assert_not result.call
+
+    assert ReceiptItem.exists?(@deposit.id), "the refusal saved nothing"
+    deposit = result.form_receipt.items.find { |item| item.id == @deposit.id }
+    assert deposit&.marked_for_destruction?, "the removed row is still on the form, marked for removal"
+    assert_equal BigDecimal("155.00"), result.form_receipt.items_total
+
+    accepted = review(params.merge(account_id: accounts(:card_uah).id.to_s), intent: "accept")
+    assert accepted.call
+    assert_equal BigDecimal("-155.00"), accepted.transaction.amount
+    assert_not ReceiptItem.exists?(@deposit.id)
+  end
+
+  test "an accept the models refuse is a reason on the form, not an error page" do
+    huge = (Transaction::AMOUNT_LIMIT - 1).to_s
+    params = form(total: "", account_id: accounts(:card_uah).id.to_s,
+                  items: [ item_form(@water, amount: huge), item_form(@sandwich, amount: huge), item_form(@deposit) ])
+    result = review(params, intent: "accept")
+
+    assert_no_difference -> { Transaction.count } do
+      assert_not result.call
+    end
+    assert_match(/\ANot accepted: Amount must be greater than/, result.form_receipt.errors[:base].first)
+    assert_equal BigDecimal("60.00"), @water.reload.amount
+  end
+
+  test "a save refreshes the receipt's other open pages and the list" do
+    assert review(form(merchant_name: "Corner Shop 2")).call
+
+    assert_turbo_stream_broadcasts @receipt, count: 1
+    assert_turbo_stream_broadcasts Receipts::LiveUpdate::STREAM, count: 1
+  end
+
+  test "the conflict copy keeps each stored item's suggestion" do
+    stale = form
+    assert review(form(merchant_name: "Saved elsewhere")).call
+
+    result = review(stale)
+
+    assert_not result.call
+    sandwich = result.form_receipt.items.find { |item| item.id == @sandwich.id }
+    assert_equal [ categories(:takeaway).id, 0.62 ], [ sandwich.suggested_category_id, sandwich.confidence ]
+  end
 end
+

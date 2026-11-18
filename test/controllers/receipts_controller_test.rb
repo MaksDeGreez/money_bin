@@ -644,6 +644,25 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='receipt[remove_items]']", false
   end
 
+  test "rows typed into a receipt switched to a card slip can be confirmed for removal" do
+    receipt = receipts(:corner_receipt)
+    receipt.items.delete_all
+    params = review_params(receipt.reload, kind: "card_slip",
+                           items_attributes: { "0" => { name: "Typed row", amount: "5.00", discount: "0", _destroy: "0" } })
+
+    patch receipt_path(receipt), params: { intent: "save", receipt: params }
+
+    assert_response :unprocessable_content
+    assert_select "input[name='receipt[remove_items]']"
+    assert_select ".callout", text: /Remove its 1 item when saving/
+
+    params[:remove_items] = "1"
+    patch receipt_path(receipt), params: { intent: "save", receipt: params }
+    assert_redirected_to receipt_path(receipt)
+    assert_empty receipt.reload.items
+    assert receipt.card_slip?
+  end
+
   test "a receipt about to be accepted warns about the same date and amount on the account" do
     receipt = receipts(:corner_receipt)
     same = Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 8), amount: "-152.50", source: :bank,

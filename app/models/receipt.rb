@@ -244,9 +244,9 @@ class Receipt < ApplicationRecord
     uploaded? && transaction_id.nil? && !items.exists? && !ground_truths.exists?
   end
 
-  # The sum of the item amounts, as a BigDecimal.
+  # The sum of the item amounts, as a BigDecimal (items the review form marked for removal left out).
   def items_total
-    items.sum(BigDecimal("0")) { |item| item.amount || 0 }
+    kept_items.sum(BigDecimal("0")) { |item| item.amount || 0 }
   end
 
   # The printed total minus the items' sum, as a BigDecimal: positive when items are missing (OCR skipped an
