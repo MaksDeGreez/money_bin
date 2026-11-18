@@ -2,7 +2,7 @@
 
 A personal finance tracker for one person and an AI agent. The core flow: take a photo of a receipt, a
 local ML service reads it (OCR), the items get categories, and they land in a ledger. AI agents read the
-ledger through a REST API (read-only for now); an MCP server comes later. The history kept by the
+ledger through a REST API and an MCP server (both read-only for now). The history kept by the
 previous version of the app is loaded with an importer (see "Importing the history"). It is a master's
 capstone project (MSc Data Science, engineering project). It is local-first: everything runs on the
 owner's machine, and the data and photos stay there.
@@ -10,7 +10,7 @@ owner's machine, and the data and photos stay there.
 ```
   browser ─┐                       ┌─> PostgreSQL (ledger)
            ├─> Rails app :3100 ────┼─> Redis (Sidekiq queues, cache, Action Cable)
-  AI agent ┘   (UI, API, later MCP)├─> local disk (Active Storage: receipt photos)
+  AI agent ┘   (UI, API, MCP)      ├─> local disk (Active Storage: receipt photos)
                      │             │
                      └─> Sidekiq ──┴─> ML service :8100 (FastAPI, ml/)
                                          OCR + categorisation; backend: stub, or a
@@ -28,8 +28,8 @@ runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-o
 
 Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
 owner signs in, AI agents authenticate with personal API tokens and read the ledger through a read-only
-JSON API, the ML service answers with its stub backend or reads receipts with a local vision model
-(`OCR_BACKEND=mlx`, Apple silicon), and CI checks both. The domain model is described in
+JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
+with a local vision model (`OCR_BACKEND=mlx`, Apple silicon), and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
 
 ## Requirements
@@ -178,6 +178,79 @@ curl -s -H "$H" "$API/receipts/7"
 #   "category":{…},"suggested_category":{…},"confidence":0.97,"accepted_by_user":true}, …]}
 ```
 
+## MCP server
+
+AI assistants that speak the [Model Context Protocol](https://modelcontextprotocol.io) (Claude Desktop,
+for example) can read the ledger at `http://localhost:3100/mcp`. The server lives inside the Rails app
+(the official Ruby SDK, Streamable HTTP, stateless) and is read-only. Its tools call the same query
+objects as the read API, so both always give the same numbers. The design is in
+[`docs/decisions/0008-mcp-server.md`](docs/decisions/0008-mcp-server.md).
+
+| Tool | What it answers |
+| ---- | --------------- |
+| `spending_summary` | expenses and incomes for a date range, by category, group and month, per currency |
+| `search_transactions` | transactions by date range, account, category or group (slug or id), status, payee, text; paged |
+| `list_categories` | the category tree with slugs and descriptions |
+| `list_accounts` | accounts with their booked balances |
+| `recent_receipts` | the latest receipts, newest purchase first |
+| `get_receipt` | one receipt with its items |
+
+Each result has a short text and `structuredContent` with the exact values (the read API's JSON: money
+as decimal strings next to their currency, dates as `YYYY-MM-DD`, times in ISO 8601 with the Kyiv offset). Expenses are negative, drafts and
+transfers between own accounts are not counted as spending, and two currencies are never added together.
+There are no write tools and no receipt photos.
+
+**A token.** Create a personal API token at `/settings/api_tokens` (see above); the `read` scope is
+enough. The MCP server takes it in the `Authorization: Bearer` header, like the read API; a browser session
+does not count. It answers only to requests for `localhost`, `127.0.0.1` or `::1` (and `APP_HOST`), and
+refuses requests sent by other web pages (a foreign `Origin` header).
+
+**Claude Desktop.** Claude Desktop talks to local servers over stdio; [`mcp-remote`](https://www.npmjs.com/package/mcp-remote)
+(run by `npx`, so Node.js is needed) bridges that to the app's HTTP endpoint. With the app running
+(`bin/dev`), add this to Claude Desktop's `claude_desktop_config.json` (Settings → Developer → Edit
+Config) and restart Claude Desktop. Put your token after `Bearer `; the value below is a placeholder:
+
+```json
+{
+  "mcpServers": {
+    "money-bin": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:3100/mcp", "--transport", "http-only",
+               "--header", "Authorization:${MONEY_BIN_AUTH_HEADER}"],
+      "env": { "MONEY_BIN_AUTH_HEADER": "Bearer mbt_your-token-here" }
+    }
+  }
+}
+```
+
+`mcp-remote` fills `${MONEY_BIN_AUTH_HEADER}` from the `env` entry (written without a space after the
+colon, as its documentation advises). The config file holds the token in plain text: keep it on your
+machine, and revoke the token at `/settings/api_tokens` if the file leaks. Then ask, for example, "How
+much did I spend on groceries last month compared with the same month a year ago?" or "What did I buy on
+my last receipt?".
+
+**With curl.** Every request is a JSON-RPC message in a POST; the server is stateless, so no session or
+`initialize` is needed first:
+
+```sh
+curl -s http://localhost:3100/mcp \
+  -H "Authorization: Bearer $MONEY_BIN_TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"spending_summary","title":"Spending summary",
+#   "description":"How much was spent and earned in a date range: …","inputSchema":{…},
+#   "outputSchema":{…},"annotations":{"readOnlyHint":true, …}}, …]}}
+
+curl -s http://localhost:3100/mcp \
+  -H "Authorization: Bearer $MONEY_BIN_TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
+       "params":{"name":"spending_summary","arguments":{"from":"2026-10-01","to":"2026-10-31"}}}'
+```
+
+The official inspector works too:
+`npx @modelcontextprotocol/inspector --cli http://localhost:3100/mcp --transport http --header "Authorization: Bearer $MONEY_BIN_TOKEN" --method tools/list`.
+
 ## Importing the history
 
 The previous version of the app writes an export folder (a manifest and four JSON Lines files). Keep it
@@ -304,7 +377,7 @@ for development can never point the tests at development data; a real environmen
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
 | `MLX_OCR_MODEL`  | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
-| `APP_HOST`       | (unset)                         | production only: one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1` |
+| `APP_HOST`       | (unset)                         | one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1`: for pages in production only, for the MCP server in every environment |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |
 
 Databases and Redis numbers. The names and numbers are chosen so this app can share PostgreSQL and Redis
@@ -332,7 +405,8 @@ the numbers and names.
 ```
 app/              Rails app: models, controllers, Slim views, UI helpers (app/helpers/ui_helper.rb,
                   app/views/ui/, app/form_builders/ui_form_builder.rb), jobs, query objects
-                  (app/queries/, the API's reading logic) and the API's JSON builders (app/serializers/)
+                  (app/queries/, the API's reading logic), the API's JSON builders (app/serializers/)
+                  and the MCP server's tools (app/mcp/)
 bin/              setup, dev, ci, services, worktree and pull request scripts, leak-check, codex-review,
                   favicon
 config/           Rails config; ci.rb (the bin/ci steps), redis_url.rb, worktree_isolation.rb

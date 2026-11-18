@@ -648,9 +648,10 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
 
 - Who (person or agent) wrote a row. Authentication and API tokens are in place
   (`docs/decisions/0002-authentication-and-api-tokens.md`).
-- Writes over the API (an agent proposing a draft, accepting a receipt) and the MCP server. The read API
-  is in place: transactions, accounts with balances, the category tree, a spending summary and receipts
-  (`docs/openapi.yaml`, `docs/decisions/0007-read-api.md`).
+- Writes over the API and the MCP server (an agent proposing a draft, accepting a receipt). Reading is in
+  place: the read API (transactions, accounts with balances, the category tree, a spending summary and
+  receipts; `docs/openapi.yaml`, `docs/decisions/0007-read-api.md`) and the read-only MCP server at `/mcp`,
+  whose tools call the same query objects (`docs/decisions/0008-mcp-server.md`).
 - The upload flow that enqueues `ReceiptOcrJob`, and a call to `/categorise` that fills
   `suggested_category` and `confidence` on the items.
 - A database trigger for the line sum, if anything starts writing lines past the models.
