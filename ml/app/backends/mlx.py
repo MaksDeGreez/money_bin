@@ -19,6 +19,7 @@ The prompt, the parsing with its repair pass and the post-processing are the
 shared modules in `app.ocr`; this backend only runs the model.
 """
 
+import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,8 @@ from app.ocr.prompt import ANSWER_SCHEMA, PROMPT_VERSION, Repair, build_messages
 from app.schemas import CategoriseResult
 
 WORKER_THREAD_NAME = "mlx-ocr"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,10 @@ class VisionGenerator(Protocol):
         With a `schema`, the answer's tokens are constrained to that JSON schema.
         Sampling is greedy (temperature 0), so the same input gives the same answer.
         """
+        ...  # pragma: no cover
+
+    def close(self) -> None:
+        """Release the model and this thread's MLX streams. Runs on the worker thread."""
         ...  # pragma: no cover
 
 
@@ -128,10 +135,22 @@ class MlxBackend(Backend):
             self.model_version = generator.model_version
 
     def stop(self) -> None:
-        """Finish the queued work, then stop the worker thread."""
+        """Finish the queued work, release the model on the worker thread, then stop it.
+
+        MLX streams belong to the thread that made them, so only the worker can
+        release its own; mlx-vlm's exit hook runs on the main thread.
+        """
         with self._lock:
-            executor, self._executor, self._generator = self._executor, None, None
-        if executor is not None:
+            executor, self._executor = self._executor, None
+            generator, self._generator = self._generator, None
+        if executor is None:
+            return
+        try:
+            if generator is not None:
+                executor.submit(generator.close).result()
+        except Exception:
+            logger.exception("Releasing the MLX model failed")
+        finally:
             executor.shutdown(wait=True)
 
     def _generate(self, messages: list[dict[str, str]], images: Sequence[Image]) -> Generation:

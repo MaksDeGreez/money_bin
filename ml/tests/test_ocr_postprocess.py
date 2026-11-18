@@ -358,15 +358,91 @@ def test_a_discount_line_is_folded_into_the_item_above() -> None:
     assert report.discount_lines_folded == 1
 
 
-@pytest.mark.parametrize("name", ["ЗНИЖКА 10%", "знижка по картці", "Discount", "Акція"])
-def test_discount_lines_are_recognised(name: str) -> None:
-    raw = receipt(item("Tea", "50.00"), item(name, "5.00"))
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("ЗНИЖКА 10%", "-5.00"),
+        ("знижка по картці", "-5,00"),
+        ("Discount", "-5.00"),
+        ("Акція", "-5.00"),
+    ],
+)
+def test_discount_lines_are_recognised(name: str, value: str) -> None:
+    raw = receipt(item("Tea", "50.00"), item(name, value))
 
-    assert items_of(raw)[0]["discount"] == "5.00"
-    assert items_of(raw)[0]["amount"] == "45.00"
+    assert items_of(raw) == [
+        {
+            "name": "Tea",
+            "quantity": None,
+            "unit_price": None,
+            "amount": "45.00",
+            "discount": "5.00",
+        }
+    ]
+
+
+@pytest.mark.parametrize("name", ["Знижкова картка", "Акційний набір"])
+def test_a_discount_word_with_a_positive_amount_is_an_item_bought(name: str) -> None:
+    raw = receipt(item("Tea", "50.00"), item(name, "20.00"))
+
+    assert [(entry["name"], entry["amount"]) for entry in items_of(raw)] == [
+        ("Tea", "50.00"),
+        (name, "20.00"),
+    ]
+
+
+def test_an_unreadable_item_discount_drops_the_item_instead_of_becoming_zero() -> None:
+    raw = receipt(item("Tea", "50.00", discount="0.011"), item("Milk", "10.00"), total="60.00")
+    result, report = postprocess(raw)
+
+    assert [entry.name for entry in result.items] == ["Milk"]
+    assert report.items_with_unreadable_discount == 1
+    assert report.too_precise_money == 1
+    assert result.sum_matches_total is None
+
+
+@pytest.mark.parametrize("discount", [None, "", "  "])
+def test_a_blank_item_discount_is_no_discount(discount: str | None) -> None:
+    raw = receipt(item("Tea", "50.00", discount=discount))
+
+    assert items_of(raw)[0]["discount"] == "0.00"
+
+
+@pytest.mark.parametrize(
+    "text", ["12345678901.00", "123456789012345678901234567.89", "99999999999"]
+)
+def test_numbers_too_long_to_be_real_are_refused_not_errors(text: str) -> None:
+    report = Report()
+
+    assert parse_money(text, report) is None
+    assert parse_quantity(text, Report()) is None
+    assert report.unreadable_values == 1
+
+
+def test_the_longest_accepted_values_keep_products_exact() -> None:
+    raw = receipt(item("Big", None, quantity="9999999999.999", unit_price="9999999999.99"))
+
+    result, report = postprocess(raw)
+
+    assert parse_money("9999999999.99", Report()) == Decimal("9999999999.99")
+    assert result.items == []
+    assert report.items_without_amount == 1
+
+
+def test_a_promotional_item_with_a_positive_amount_stays_an_item() -> None:
+    raw = receipt(item("Tea", "50.00"), item("Акційний хліб", "25.00 А"))
+    result, report = postprocess(raw)
+
+    assert [(entry.name, entry.amount) for entry in result.items] == [
+        ("Tea", Decimal("50.00")),
+        ("Акційний хліб", Decimal("25.00")),
+    ]
+    assert report.discount_lines_folded == 0
+    assert report.tax_letters_stripped == 1
 
 
 def test_a_discount_value_in_the_discount_field_of_a_discount_line() -> None:
+    # The amount is empty, so the value in the discount field counts whatever its sign.
     raw = receipt(item("Tea", "50.00"), item("Знижка", None, discount="-5,00"))
 
     assert items_of(raw)[0]["discount"] == "5.00"
@@ -569,6 +645,11 @@ def test_card_last4(text: str | None, expected: str | None) -> None:
         ("ЧЕК № 000123", "000123"),
         ("№123", "123"),
         ("AbC-12_x", "AbC-12_x"),
+        ("N7AbC12_xZ9", "N7AbC12_xZ9"),
+        ("n7abc", "n7abc"),
+        ("ФН4000000001", "4000000001"),
+        ("# 55", "55"),
+        ("Чекова 1", "Чекова1"),
         ("  ", None),
         (None, None),
     ],
@@ -607,3 +688,58 @@ def test_a_quantity_line_with_unreadable_numbers_stays_an_ordinary_line() -> Non
 
     assert [entry.name for entry in result.items] == ["Tea", "1.2345 x 1.005"]
     assert report.quantity_lines_merged == 0
+
+
+def test_a_discount_given_twice_is_subtracted_once() -> None:
+    raw = receipt(item("Milk", "40.00", discount="5.00"), item("Знижка", "-5.00"), total="35.00")
+    result, report = postprocess(raw)
+
+    assert [(entry.amount, entry.discount) for entry in result.items] == [
+        (Decimal("35.00"), Decimal("5.00"))
+    ]
+    assert result.sum_matches_total is True
+    assert report.discount_lines_duplicated == 1
+    assert report.discount_lines_folded == 0
+
+
+def test_a_different_discount_line_adds_to_the_item_discount() -> None:
+    raw = receipt(item("Milk", "40.00", discount="5.00"), item("Знижка картки", "-2.00"))
+
+    assert items_of(raw)[0]["discount"] == "7.00"
+
+
+def test_a_quantity_line_never_attaches_to_a_discount_line_below() -> None:
+    raw = receipt(item("A", "7.00"), item("2 x 5.00"), item("Знижка", None, discount="1.00"))
+    result, report = postprocess(raw)
+
+    assert [(entry.name, entry.amount) for entry in result.items] == [("A", Decimal("6.00"))]
+    assert report.lines_left_over == 1
+
+
+def test_a_dropped_nameless_item_makes_the_sum_unknown() -> None:
+    raw = receipt(item("Tea", "10.00"), item(None, "5.00"), total="10.00")
+
+    result, _ = postprocess(raw)
+
+    assert result.sum_matches_total is None
+
+
+def test_a_date_with_its_time_wins_over_nothing_and_the_time_field_wins_over_it() -> None:
+    assert str(parse_issued_at("16.12.2025 12:52", "12:52", Report())) == (
+        "2025-12-16 12:52:00+02:00"
+    )
+    assert str(parse_issued_at("16.12.2025 12:52", "12:53:10", Report())) == (
+        "2025-12-16 12:53:10+02:00"
+    )
+
+
+@pytest.mark.parametrize("text", ["٣.٥", "１２.５０", "12.5١"])
+def test_only_ascii_digits_are_numbers(text: str) -> None:
+    assert parse_money(text, Report()) is None
+
+
+def test_dates_with_other_digit_forms_are_refused() -> None:
+    report = Report()
+
+    assert parse_issued_at("١٥.01.2026", "12:00", report) is None
+    assert report.invalid_dates == 1

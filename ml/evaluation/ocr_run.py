@@ -31,6 +31,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
+from pydantic import ValidationError
+
 from app.backends import BACKENDS, Backend, ImageInput, create_backend
 from app.config import Settings
 from app.main import MAX_IMAGES
@@ -168,10 +170,9 @@ def run_one(backend: Backend, ingest: Path, line: dict[str, Any], *, crops: bool
     if not 1 <= len(files) <= MAX_IMAGES:
         record.update(status="skipped", error="image_count")
         return record
-    images = load_images(ingest, files)
     started = time.perf_counter()
     try:
-        extraction = backend.extract_receipt(images)
+        extraction = backend.extract_receipt(load_images(ingest, files))
     except OcrParseError as error:
         record.update(status="parse_failed", error="ocr_parse_failed")
         record["diagnostics"] = dict(error.diagnostics)
@@ -187,6 +188,19 @@ def run_one(backend: Backend, ingest: Path, line: dict[str, Any], *, crops: bool
         )
     record["seconds"] = round(time.perf_counter() - started, 3)
     return record
+
+
+def make_run_dir(runs: Path, run_id: str) -> Path:
+    """A new private run folder; a suffix keeps two runs started in the same second apart."""
+    ensure_private_folder(runs)
+    for attempt in range(1, 100):
+        run_dir = runs / (run_id if attempt == 1 else f"{run_id}-{attempt}")
+        try:
+            run_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        return run_dir
+    raise UsageError("too many run folders with the same name")
 
 
 def _open_private(path: Path) -> TextIO:
@@ -208,28 +222,28 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     overrides: dict[str, Any] = {"ocr_backend": args.backend}
     if args.model:
         overrides["mlx_ocr_model"] = args.model
-    if args.image_max_side:
+    if args.image_max_side is not None:
         overrides["mlx_ocr_image_max_side"] = args.image_max_side
-    if args.max_tokens:
+    if args.max_tokens is not None:
         overrides["mlx_ocr_max_tokens"] = args.max_tokens
-    settings = Settings(**overrides)
+    try:
+        settings = Settings(**overrides)
+    except ValidationError as error:
+        fields = ", ".join(str(detail["loc"][0]) for detail in error.errors())
+        raise UsageError(f"invalid setting: {fields}") from None
     backend = create_backend(args.backend, settings)
 
     started_at = datetime.now(UTC)
-    load_started = time.perf_counter()
-    backend.start()
-    load_seconds = round(time.perf_counter() - load_started, 3)
-    print(f"model loaded in {load_seconds:.1f} s; {len(selected)} receipt(s)", file=out)
-
-    run_dir = runs / run_id_for(backend.name, backend.model_name, started_at)
-    ensure_private_folder(runs)
-    run_dir.mkdir(mode=0o700)
-
     statuses: Counter[str] = Counter()
     seconds: list[float] = []
     repaired = 0
     peak_memory = 0.0
     try:
+        load_started = time.perf_counter()
+        backend.start()
+        load_seconds = round(time.perf_counter() - load_started, 3)
+        print(f"model loaded in {load_seconds:.1f} s; {len(selected)} receipt(s)", file=out)
+        run_dir = make_run_dir(runs, run_id_for(backend.name, backend.model_name, started_at))
         with _open_private(run_dir / "predictions.jsonl") as predictions:
             for number, line in enumerate(selected, start=1):
                 record = run_one(backend, ingest, line, crops=args.crops)

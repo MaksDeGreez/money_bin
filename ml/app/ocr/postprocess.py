@@ -42,16 +42,17 @@ _MINUS_SIGNS = str.maketrans({"\u2212": "-", "\u2013": "-", "\u2014": "-"})
 # A currency word or sign before or after a number.
 _CURRENCY = re.compile(r"(?i)(грн\.?|uah|₴)")
 # One or two letters right after an amount: the tax group (А, Б, В, ... or A, B, ...).
-_TAX_LETTER = re.compile(r"(?<=\d)\s*[A-Za-zА-ЯҐЄІЇа-яґєії]{1,2}\s*$")
+_TAX_LETTER = re.compile(r"(?<=[0-9])\s*[A-Za-zА-ЯҐЄІЇа-яґєії]{1,2}\s*$")
 # A unit after a quantity: шт, кг, г, л, мл, уп, pcs, kg, ... with an optional dot.
-_UNIT = re.compile(r"(?<=\d)\s*[A-Za-zА-ЯҐЄІЇа-яґєії.]+\s*$")
-_NUMBER = re.compile(r"^-?(\d+(\.\d+)?|\.\d+)$")
+_UNIT = re.compile(r"(?<=[0-9])\s*[A-Za-zА-ЯҐЄІЇа-яґєії.]+\s*$")
+# Only ASCII digits count: a model that answers in other digit forms is misreading.
+_NUMBER = re.compile(r"^-?([0-9]+(\.[0-9]+)?|\.[0-9]+)$")
 # Thousands groups: `1 234,56`, `1,234.56`, `1.234,56`.
-_SPACE_GROUPED = re.compile("\\d{1,3}(?:[\\s\u00a0\u2009\u202f]\\d{3})+(?:[.,]\\d+)?")
-_COMMA_GROUPED = re.compile(r"\d{1,3}(?:,\d{3})+\.\d+")
-_DOT_GROUPED = re.compile(r"\d{1,3}(?:\.\d{3})+,\d+")
+_SPACE_GROUPED = re.compile("[0-9]{1,3}(?:[ \u00a0\u2009\u202f\t][0-9]{3})+(?:[.,][0-9]+)?")
+_COMMA_GROUPED = re.compile(r"[0-9]{1,3}(?:,[0-9]{3})+\.[0-9]+")
+_DOT_GROUPED = re.compile(r"[0-9]{1,3}(?:\.[0-9]{3})+,[0-9]+")
 
-_QTY = r"\d+(?:[.,]\d+)?"
+_QTY = r"[0-9]+(?:[.,][0-9]+)?"
 _UNIT_WORD = r"(?:\s*(?:шт|кг|г|л|мл|уп|pcs|kg)\.?)?"
 _TIMES = r"\s*[xх×*XХ]\s*"
 _QTY_PRICE = rf"(?P<quantity>{_QTY}){_UNIT_WORD}{_TIMES}(?P<price>{_QTY})"
@@ -60,6 +61,9 @@ _QUANTITY_LINE = re.compile(rf"^\s*{_QTY_PRICE}(?:\s*=?\s*(?P<amount>-?{_QTY}))?
 # A quantity and a price at the start or the end of an item's name.
 _LEADING_QTY_PRICE = re.compile(rf"^\s*{_QTY_PRICE}\s+(?P<rest>.*\S)\s*$")
 _TRAILING_QTY_PRICE = re.compile(rf"^\s*(?P<rest>.*\S)\s+{_QTY_PRICE}\s*$")
+# A line that may be a discount ("Знижка -5.00", "Акція -3.00"). It is folded only
+# when its amount is negative (or its value is in the discount field): "Акційний
+# хліб 25.00" and "Знижкова картка 20.00" are things bought, not discounts.
 _DISCOUNT_LINE = re.compile(r"(?i)^\s*(знижк|скидк|discount|акці)")
 
 _DATE_FORMATS = ("%Y-%m-%d", "%d.%m.%Y", "%d.%m.%y", "%d/%m/%Y", "%Y.%m.%d", "%d-%m-%Y")
@@ -71,9 +75,16 @@ _KINDS: dict[str, ReceiptKind] = {
     "slip": "card_slip",
 }
 _CURRENCIES = {"ГРН": "UAH", "ГРН.": "UAH", "₴": "UAH", "ГРИВНЯ": "UAH", "ГРИВЕНЬ": "UAH"}
+# A label before a fiscal or receipt number. A word label counts only when a
+# separator or a digit follows it, so an identifier such as "N7AbC12" keeps its letters.
 _IDENTIFIER_LABEL = re.compile(
-    r"(?i)^\s*(фн\s*прро|фн\s*чека|фіскальний\s+номер(\s+чека)?|фн|чек|№|n|#)\s*[:№#.]?\s*"
+    r"(?i)^\s*(?:(?:фн\s*прро|фн\s*чека|фіскальний\s+номер(?:\s+чека)?|фн|чек)"
+    r"(?:\s*[:№#.]\s*|\s+|(?=[0-9]))|[№#]\s*)"
 )
+# The largest number of digits before the decimal point that is read as money
+# or a quantity (9,999,999,999.99). Anything longer is a misread, and keeping
+# it small keeps every product and sum exact in Decimal's 28 digits.
+MAX_INTEGER_DIGITS = 10
 
 
 @dataclass
@@ -87,8 +98,10 @@ class Report:
     quantity_lines_merged: int = 0
     quantities_taken_from_names: int = 0
     discount_lines_folded: int = 0
+    discount_lines_duplicated: int = 0
     amounts_derived: int = 0
     items_without_amount: int = 0
+    items_with_unreadable_discount: int = 0
     items_without_name: int = 0
     lines_left_over: int = 0
     invalid_dates: int = 0
@@ -107,6 +120,10 @@ class _Item:
     unit_price: Decimal | None = None
     gross: Decimal | None = None
     discount: Decimal = field(default_factory=lambda: Decimal("0"))
+    # A discount was printed but could not be read: the amount paid is unknown.
+    discount_refused: bool = False
+    # The discount the model put in the item's own discount field.
+    own_discount: Decimal | None = None
 
 
 def _squish(value: str | None) -> str | None:
@@ -170,6 +187,9 @@ def parse_decimal(value: str | None, places: int, report: Report) -> Decimal | N
         return None
     exponent = number.as_tuple().exponent
     assert isinstance(exponent, int)  # a finite decimal, never NaN or Infinity
+    if number.adjusted() >= MAX_INTEGER_DIGITS:
+        report.unreadable_values += 1
+        return None
     if -exponent > places:
         if quantity:
             report.too_precise_quantities += 1
@@ -231,8 +251,12 @@ def parse_issued_at(
     if date_part is None:
         return None
     pieces = date_part.replace("T", " ").split(" ")
-    if len(pieces) == 2 and time_part is None:
-        date_part, time_part = pieces
+    if len(pieces) == 2:
+        date_part = pieces[0]
+        time_part = time_part or pieces[1]
+    if not date_part.isascii() or not (time_part or "").isascii():
+        report.invalid_dates += 1
+        return None
     day = _parse_date(date_part)
     moment = _parse_time(time_part) if time_part else None
     if day is None or (time_part is not None and moment is None):
@@ -372,7 +396,10 @@ def _attach_quantity_line(
         report.quantity_lines_merged += 1
         return True
     below = upcoming[0] if upcoming else None
-    if below is None or _squish(below.name) is None or _QUANTITY_LINE.match(below.name or ""):
+    below_name = _squish(below.name) if below is not None else None
+    if below is None or below_name is None or _QUANTITY_LINE.match(below_name):
+        return False
+    if _DISCOUNT_LINE.match(below_name):
         return False
     below_amount = parse_money(below.amount, Report())
     if below_amount is not None and not _close(quantity * price, below_amount):
@@ -392,16 +419,32 @@ def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
-def _fold_discount(items: list[_Item], raw: RawItem, report: Report) -> bool:
-    """Fold a discount line into the item above. False when there is none."""
-    if not items:
+def _fold_discount(items: list[_Item], raw: RawItem, name: str, report: Report) -> bool:
+    """Fold a discount line into the item above.
+
+    False when the line is not a discount line, has no readable value, or
+    there is no item above; the line is then treated as an ordinary item.
+    """
+    if not items or not _DISCOUNT_LINE.match(name):
         return False
-    value = parse_money(raw.amount, report)
-    if value is None:
-        value = parse_money(raw.discount, report)
-    if value is None:
-        return False
-    items[-1].discount += abs(value)
+    # A scratch report: a line that is not folded is read again as an item.
+    scratch = Report()
+    amount = parse_money(raw.amount, scratch)
+    if amount is not None:
+        if amount >= 0:
+            return False
+        value = amount
+    else:
+        discount = parse_money(raw.discount, scratch)
+        if discount is None:
+            return False
+        value = discount
+    above = items[-1]
+    if above.own_discount is not None and above.own_discount == abs(value):
+        # The model gave the discount twice: in the item's field and as a line.
+        report.discount_lines_duplicated += 1
+        return True
+    above.discount += abs(value)
     report.discount_lines_folded += 1
     return True
 
@@ -417,7 +460,7 @@ def _build_items(raw_items: list[RawItem], report: Report) -> list[_Item]:
                 report.lines_left_over += 1
             continue
         name = _squish(raw.name)
-        if name is not None and _DISCOUNT_LINE.match(name) and _fold_discount(items, raw, report):
+        if name is not None and _fold_discount(items, raw, name, report):
             continue
         if name is None:
             report.items_without_name += 1
@@ -432,6 +475,9 @@ def _build_items(raw_items: list[RawItem], report: Report) -> list[_Item]:
         discount = parse_money(raw.discount, report)
         if discount is not None:
             item.discount = abs(discount)
+            item.own_discount = abs(discount)
+        elif raw.discount is not None and raw.discount.strip():
+            item.discount_refused = True
         if item.quantity is None or item.unit_price is None:
             _take_quantity_from_name(item, report)
         items.append(item)
@@ -451,13 +497,17 @@ def _derive_amount(item: _Item, report: Report) -> None:
 
 
 def _finish(items: list[_Item], report: Report) -> tuple[list[ReceiptItem], bool]:
-    """The API items, and whether any item was dropped for a missing amount."""
+    """The API items, and whether any item was dropped for an unknown amount."""
     result = []
     dropped = False
     for item in items:
         _derive_amount(item, report)
         if item.gross is None:
             report.items_without_amount += 1
+            dropped = True
+            continue
+        if item.discount_refused:
+            report.items_with_unreadable_discount += 1
             dropped = True
             continue
         discount = item.discount.quantize(Decimal("0.01"))
@@ -479,7 +529,7 @@ def sum_matches_total(
     """Whether the item amounts add up exactly to the total.
 
     None when it cannot be known: no total, no item, or an item was dropped
-    because its amount was unreadable.
+    (no name, or an unreadable amount or discount).
     """
     if total is None or not items or incomplete:
         return None
@@ -500,7 +550,9 @@ def postprocess(raw: RawReceipt) -> tuple[Receipt, Report]:
         total=total,
         currency=parse_currency(raw.currency),
         card_last4=parse_card_last4(raw.card_last4),
-        sum_matches_total=sum_matches_total(items, total, incomplete=dropped),
+        sum_matches_total=sum_matches_total(
+            items, total, incomplete=dropped or report.items_without_name > 0
+        ),
         items=items,
     )
     return receipt, report

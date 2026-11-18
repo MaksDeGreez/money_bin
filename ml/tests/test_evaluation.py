@@ -257,6 +257,21 @@ def test_an_undecodable_image_is_recorded(ingest: Path) -> None:
     assert (record["status"], record["error"]) == ("error", "image_unreadable")
 
 
+def test_a_missing_image_is_an_error_record_and_the_run_goes_on(
+    ingest: Path, tmp_path: Path
+) -> None:
+    (ingest / "images" / "rcpt_000001_1.jpg").unlink()
+    out = tmp_path / "runs"
+
+    summary = ocr_run.run(ocr_run.parse_args(run_args(ingest, out)), io.StringIO())
+
+    records = list(read_jsonl(the_run(out) / "predictions.jsonl"))
+    assert (records[0]["status"], records[0]["error"]) == ("error", "FileNotFoundError")
+    assert [r["status"] for r in records[1:]] == ["ok", "ok", "skipped", "ok"]
+    assert summary["counts"]["error"] == 1
+    assert (the_run(out) / "run.json").is_file()
+
+
 def test_the_run_id_names_the_backend_and_the_model() -> None:
     from datetime import UTC, datetime
 
@@ -409,3 +424,34 @@ def test_percentile_is_nearest_rank(values: list[float], expected: float | None)
 def test_timing_summary() -> None:
     assert timing_summary([1.0, 2.0, 6.0]) == {"count": 3, "mean": 3.0, "median": 2.0, "p90": 6.0}
     assert timing_summary([]) == {"count": 0, "mean": None, "median": None, "p90": None}
+
+
+def test_two_runs_in_the_same_second_get_two_folders(tmp_path: Path) -> None:
+    first = ocr_run.make_run_dir(tmp_path / "runs", "20260115T123456Z-stub-x")
+    second = ocr_run.make_run_dir(tmp_path / "runs", "20260115T123456Z-stub-x")
+
+    assert first.name == "20260115T123456Z-stub-x"
+    assert second.name == "20260115T123456Z-stub-x-2"
+
+
+def test_too_many_run_folders_with_one_name_is_a_usage_error(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    for _ in range(99):
+        ocr_run.make_run_dir(runs, "same")
+
+    with pytest.raises(UsageError, match="too many run folders"):
+        ocr_run.make_run_dir(runs, "same")
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("--image-max-side", "0"), ("--image-max-side", "99999"), ("--max-tokens", "0")],
+)
+def test_an_invalid_setting_is_a_usage_error(
+    ingest: Path, tmp_path: Path, option: str, value: str
+) -> None:
+    args = ocr_run.parse_args(run_args(ingest, tmp_path / "runs", option, value))
+
+    with pytest.raises(UsageError, match="invalid setting"):
+        ocr_run.run(args, io.StringIO())
+    assert not (tmp_path / "runs").exists()

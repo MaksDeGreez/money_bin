@@ -41,7 +41,14 @@ class FakeGenerator:
         self.calls: list[dict[str, Any]] = []
         self.running = 0
         self.most_running = 0
+        self.closed_on: list[int] = []
+        self.fail_close = False
         self._count_lock = threading.Lock()
+
+    def close(self) -> None:
+        self.closed_on.append(threading.get_ident())
+        if self.fail_close:
+            raise RuntimeError("cannot release")
 
     def generate(
         self,
@@ -315,6 +322,29 @@ def test_the_first_request_loads_the_model_when_start_was_not_called() -> None:
 
     assert len(loader.threads) == 1
     backend.stop()
+
+
+def test_stop_releases_the_model_on_the_worker_thread() -> None:
+    generator = FakeGenerator()
+    backend, loader = make_backend(generator)
+    backend.start()
+
+    backend.stop()
+
+    assert generator.closed_on == [loader.threads[0].ident]
+    assert not loader.threads[0].is_alive()
+
+
+def test_a_failed_release_still_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:
+    generator = FakeGenerator()
+    generator.fail_close = True
+    backend, loader = make_backend(generator)
+    backend.start()
+
+    backend.stop()
+
+    assert not loader.threads[0].is_alive()
+    assert "Releasing the MLX model failed" in caplog.text
 
 
 def test_stop_without_start_does_nothing() -> None:

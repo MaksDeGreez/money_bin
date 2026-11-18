@@ -19,7 +19,7 @@ from app.backends.mlx import Generation, weights_revision
 
 try:
     import mlx.core as mx
-    from mlx_vlm import generate, load
+    from mlx_vlm import clear_mlx_streams, generate, load
     from mlx_vlm.prompt_utils import apply_chat_template
     from mlx_vlm.structured import build_json_schema_logits_processor
     from mlx_vlm.utils import get_model_path
@@ -94,3 +94,9 @@ class MlxVlmGenerator:
             peak_memory_gb=round(float(result.peak_memory), 3),
             finish_reason=result.finish_reason,
         )
+
+    def close(self) -> None:
+        """Drop the model, then release this (the worker) thread's MLX streams and cache."""
+        self._model = self._processor = self._tokenizer = None
+        clear_mlx_streams()
+        mx.clear_cache()

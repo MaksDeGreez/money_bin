@@ -64,7 +64,9 @@ letter (А, Б, В, ...) printed after an amount, and the currency sign.
 
 A line such as "2,000 шт x 65,00" or "0.850 x 64.00" is the quantity and unit price of the \
 item printed next to it, above or below; put its numbers into that item's quantity and \
-unit_price, and do not list it as an item of its own. These lines are NOT items: item codes \
+unit_price, and do not list it as an item of its own. A discount line (Знижка -5,00) \
+printed under an item is that item's discount: put it into the item's discount and do not \
+list it as an item of its own. These lines are NOT items: item codes \
 (Код, Артикул, a barcode), the cashier (Касир), subtotals, taxes (ПДВ, акциз), the payment \
 (Готівка, Картка, Еквайринг, Оплата), the change (решта), rounding (заокруглення), bonus or \
 loyalty lines (БАЛАНС, НАРАХОВАНО, бонуси) and anything after the total.
