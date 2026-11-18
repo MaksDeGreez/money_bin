@@ -165,6 +165,22 @@ value, a total, a date or a photo name, and exits with status 1 when the check f
 not be written. A real run needs Redis (Active Storage analyses photos in background jobs). The rules are
 in [`docs/domain.md`](docs/domain.md), "Receipt load".
 
+## Training the transaction categoriser
+
+`ml/categoriser/` trains a model that suggests a category for a transaction (TF-IDF + logistic
+regression, with rule baselines to beat) from a history export, and evaluates it on the latest 20% of the
+history by date:
+
+```sh
+cd ml
+uv run python -m categoriser.train /path/to/export   # model + metrics JSON in ~/Documents/money_bin_data/models/
+```
+
+It runs locally only. The model file holds payee names, so it and the metrics JSON go to a folder outside
+the repository (the command refuses one inside a git repository); the console prints counts and metrics
+only. Details: [`ml/README.md`](ml/README.md); reasons:
+[`docs/decisions/0006-transaction-categoriser.md`](docs/decisions/0006-transaction-categoriser.md).
+
 ## Tests and checks
 
 ```sh
@@ -247,7 +263,8 @@ db/               migrations, schema, seeds
 design/           favicon/source.png, the artwork behind the logo and the favicons
 docs/             domain.md (the data model), import-contract.md (the history export) and decisions/
                   (architecture decision records)
-ml/               the Python ML service (FastAPI, uv); see ml/README.md
+ml/               the Python ML service (FastAPI, uv) and the categoriser training (ml/categoriser/);
+                  see ml/README.md
 test/             Minitest tests and invented fixtures; test/support/coverage.rb is the coverage gate
 tools/            receipt_ingest/: the command-line tool that prepares receipt photos for OCR evaluation
                   (Python, uv); see tools/receipt_ingest/README.md

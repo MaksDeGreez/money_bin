@@ -13,6 +13,13 @@ dependencies = [
 ]
 
 [dependency-groups]
+# The transaction categoriser's training (categoriser/). Installed by a plain `uv sync` (see default-groups).
+categoriser = [
+    "joblib>=1.6.0",
+    "pyyaml>=6.0.3",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+]
 dev = [
     "httpx2>=2.16.2",
     "pytest>=9.2.0",
@@ -23,11 +30,12 @@ dev = [
 [tool.uv]
 # This is an application, not a library: uv installs the dependencies only.
 package = false
+default-groups = ["dev", "categoriser"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--cov=app --cov-report=term-missing --cov-fail-under=70"
+addopts = "--cov=app --cov=categoriser --cov-report=term-missing --cov-fail-under=70"
 filterwarnings = ["error"]
 
 [tool.coverage.run]
