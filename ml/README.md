@@ -32,8 +32,8 @@ cd ml
 uv sync
 ```
 
-A plain `uv sync` installs the `dev` and `mlx` dependency groups
-(`[tool.uv] default-groups`). The `mlx` group (mlx-vlm, pinned exactly, and
+A plain `uv sync` installs the `dev`, `categoriser` and `mlx` dependency
+groups (`[tool.uv] default-groups`). The `mlx` group (mlx-vlm, pinned exactly, and
 with it MLX and transformers) carries the markers
 `sys_platform == 'darwin' and platform_machine == 'arm64'`, so on any other
 machine, Linux CI included, it installs nothing. The `stub` backend and every
@@ -348,6 +348,7 @@ evaluation/
   ocr_run.py       run a backend over the receipt set
   ocr_fields.py    score a run against the QR codes
   common.py        shared helpers
+categoriser/       transaction categoriser training (see below)
 tests/
 ```
 
