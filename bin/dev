@@ -35,7 +35,8 @@ puts "\n== Starting development server =="
 ENV["RAILS_ENV"] = "development"
 ENV["PORT"] ||= "3100"
 STDOUT.flush
-# --env /dev/null keeps foreman from reading .env itself; dotenv does that inside Rails.
+# --env /dev/null keeps foreman from reading .env itself; dotenv does that inside Rails, and the ML
+# service's line in Procfile.dev hands .env to uv (the service itself reads only its environment).
 # -t 30: foreman's default of 5 seconds before SIGKILL would cut Sidekiq's 25-second shutdown short.
 exec "bundle", "exec", "foreman", "start", "-t", "30", "-f", "Procfile.dev", "--env", "/dev/null",
   "-p", ENV["PORT"], *formation, *ARGV

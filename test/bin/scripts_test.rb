@@ -55,6 +55,32 @@ class BinScriptsTest < ActiveSupport::TestCase
     assert_match(/usage: bin\/pr-wait <pr>/, out)
   end
 
+  # The ML service reads only its environment, so bin/dev's line for it must pass the repository's .env.
+  # Without that the service runs its stub backends whatever .env says. The line is run here as foreman
+  # runs it, with a fake `uv` that prints its arguments, in a folder with and without a .env.
+  test "the ML service's line in Procfile.dev hands .env to uv when there is one" do
+    command = File.read(Rails.root.join("Procfile.dev"))[/^ml: (.+)$/, 1]
+    assert command, "Procfile.dev has no ml line"
+
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "ml"))
+      FileUtils.mkdir_p(File.join(root, "fake-bin"))
+      fake_uv = File.join(root, "fake-bin", "uv")
+      File.write(fake_uv, "#!/bin/sh\necho \"uv $*\"\n")
+      File.chmod(0o755, fake_uv)
+      env = { "PATH" => "#{File.join(root, 'fake-bin')}:#{ENV.fetch('PATH')}" }
+
+      out, status = Open3.capture2e(env, "sh", "-c", command, chdir: root)
+      assert status.success?, out
+      assert_equal "uv run uvicorn app.main:app --host 127.0.0.1 --port 8100\n", out
+
+      File.write(File.join(root, ".env"), "OCR_BACKEND=mlx\n")
+      out, status = Open3.capture2e(env, "sh", "-c", command, chdir: root)
+      assert status.success?, out
+      assert_equal "uv run --env-file ../.env uvicorn app.main:app --host 127.0.0.1 --port 8100\n", out
+    end
+  end
+
   test "codex-review takes one target and known options only" do
     out, status = run_script("bin/codex-review", "--uncommitted", "--plan", "README.md")
     assert_equal 2, status.exitstatus

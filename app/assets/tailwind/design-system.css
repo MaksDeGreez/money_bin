@@ -273,6 +273,11 @@
   .data-grid .data-grid-num { @apply whitespace-nowrap text-right tabular-nums; }
   .data-grid .data-grid-sub td { @apply text-ink-body; }
   .data-grid .data-grid-sub td:first-child { @apply pl-8; }
+  /* One tbody per record (`data-grid-grouped`): a row and the sub-rows under it read as one block, so the
+     divider goes under the block, never between a row and what belongs to it. */
+  .data-grid-grouped tbody tr td { @apply border-b-0; }
+  .data-grid-grouped tbody:not(:last-child) tr:last-child td { @apply border-b border-hairline; }
+  .data-grid-grouped .data-grid-sub td { @apply pt-0 pb-4; }
   .data-grid .data-grid-group td { @apply font-medium text-ink-display; }
   /* The link to the record, in the row's primary cell. Other cells stay plain, selectable text. */
   .data-grid-link { @apply text-ink-display no-underline hover:underline; }

@@ -72,6 +72,21 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     assert_select "tr[id^=review_transaction_line_]", 1
   end
 
+  # A suggestion sits under its own transaction, inside that transaction's tbody, and the table is marked as
+  # grouped, so the divider is drawn under the pair. Without it the divider fell between a transaction and
+  # its suggestion, and each suggestion read as the next transaction's.
+  test "a suggestion is in its transaction's own block, after the transaction's row" do
+    get transactions_path(status: "needs_review")
+
+    assert_response :success
+    assert_select "table.data-grid.data-grid-grouped"
+    assert_select "tbody##{dom_id(@transaction, :list)}" do
+      assert_select "tr:first-child td", text: /#{Regexp.escape(I18n.l(@transaction.occurred_on))}/
+      assert_select "tr:first-child + tr.data-grid-sub##{dom_id(@line, :review)}"
+      assert_select "tr.data-grid-sub:last-child"
+    end
+  end
+
   test "Take categorises the line with its suggestion and answers with the transaction's rows" do
     post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1",
       **shown, filter: { status: "needs_review" } }, as: :turbo_stream
