@@ -42,6 +42,8 @@ module OcrBatches
       when "running" then follow
       when "applying" then apply
       end
+      # A batch that ended with stored results whose follow-ups could not be queued then (released, given up).
+      ApplyResults.follow_up(@batch, now: @now) if %w[failed unknown].include?(@batch.reload.state)
       delete_upstream if @batch.reload.awaiting_deletion?
     ensure
       LiveUpdate.changed(@batch)

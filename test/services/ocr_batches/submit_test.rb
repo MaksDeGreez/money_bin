@@ -201,4 +201,20 @@ class OcrBatches::SubmitTest < ActiveSupport::TestCase
     assert @batch.awaiting_deletion?
     assert @receipts.none? { |receipt| receipt.reload.in_ocr_batch? }
   end
+
+  test "a too-large photo of a receipt a person took over during the upload leaves their work alone" do
+    key = key_of(@batch, @receipts.second)
+    stub_request(:post, ml_url("/ocr/batches")).to_return do
+      Receipts::EnterByHand.call(@receipts.second.reload)
+      { status: 422, headers: { "Content-Type" => "application/json" },
+        body: JSON.generate(error: { code: "batch_image_too_large", message: "A photo of receipt key #{key} is too large." }) }
+    end
+
+    assert_equal :retry_later, OcrBatches::Submit.call(@batch)
+
+    second = @receipts.second.reload
+    assert second.extracted?
+    assert second.entered_by_hand?
+    assert_equal "superseded", @batch.entries.find_by!(custom_id: key).state
+  end
 end

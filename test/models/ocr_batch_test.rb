@@ -93,4 +93,11 @@ class OcrBatchTest < ActiveSupport::TestCase
     entry.assign_attributes(state: "released", followed_up_at: Time.current)
     assert_not entry.valid?
   end
+
+  test "a batch with a stored result whose follow-up waits is still followed" do
+    batch = ocr_batches(:finished_batch)
+    assert_not OcrBatch.followed.exists?(batch.id)
+    ocr_batch_entries(:finished_entry).update_columns(followed_up_at: nil)
+    assert OcrBatch.followed.exists?(batch.id)
+  end
 end

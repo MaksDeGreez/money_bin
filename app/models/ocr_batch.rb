@@ -39,8 +39,12 @@ class OcrBatch < ApplicationRecord
   scope :unfinished, -> { where(state: UNFINISHED_STATES) }
   # Finished or failed at the provider and not deleted there yet.
   scope :awaiting_deletion, -> { where(state: %w[finished failed]).where.not(provider_batch_id: nil).where(deleted_upstream_at: nil) }
+  # Resolved entries whose follow-up (category suggestions, a read one at a time) is not queued yet.
+  scope :awaiting_follow_ups, -> {
+    where(id: OcrBatchEntry.where(state: OcrBatchEntry::FOLLOWED_UP_STATES, followed_up_at: nil).select(:ocr_batch_id))
+  }
   # Everything the poller still has to look at.
-  scope :followed, -> { unfinished.or(awaiting_deletion) }
+  scope :followed, -> { unfinished.or(awaiting_deletion).or(awaiting_follow_ups) }
   scope :due, ->(now = Time.current) { where(next_check_at: nil).or(where(next_check_at: ..now)) }
   scope :newest_first, -> { order(created_at: :desc, id: :desc) }
 
@@ -68,11 +72,17 @@ class OcrBatch < ApplicationRecord
   # and ends the batch as `final_state` (failed or unknown) with the reason. The receipts go back to what they
   # were (`uploaded` or `failed`), free for a read one at a time or another batch, and their open pages are
   # refreshed. Idempotent.
+  #
+  # Locks in the order the result path does (OcrBatches::ApplyResults: an entry, then its receipt): the batch,
+  # its waiting entries in id order, then their receipts in id order, so the two cannot deadlock.
   def release!(final_state, code, message, now: Time.current)
     transaction do
       lock!
       waiting = entries.where(state: "waiting")
+      waiting_ids = waiting.unscope(:order).order(:id).lock.pluck(:id)
+      waiting = OcrBatchEntry.where(id: waiting_ids)
       held = Receipt.where(id: waiting.select(:receipt_id), ocr_batch_id: id).order(:id)
+      held.lock.pluck(:id)
       released = held.pluck(:id)
       held.update_all(ocr_batch_id: nil)
       waiting.update_all(state: "released", error_code: code, error_message: message, resolved_at: now, updated_at: now)

@@ -793,7 +793,11 @@ class OpenRouterBatches(OcrBatches):
         # A batch sent earlier is read even if its model or provider has left the catalogue
         # since: its answers are then checked against OPENROUTER_BATCH_PROVIDERS itself.
         catalogue = self._catalogue_or_none()
-        allowed = catalogue.providers if catalogue is not None else frozenset(self.providers)
+        allowed = (
+            catalogue.providers
+            if catalogue is not None
+            else frozenset(_provider_tag(slug) for slug in self.providers)
+        )
         status = self._status_of(document, catalogue)
         if status.state != "completed":
             raise _error(

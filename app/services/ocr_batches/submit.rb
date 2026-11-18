@@ -99,17 +99,26 @@ module OcrBatches
         @batch.entries.where(state: "waiting").includes(:receipt).filter_map do |entry|
           Receipt.transaction do
             receipt = entry.receipt_id && Receipt.lock.find_by(id: entry.receipt_id)
-            if receipt.nil? || receipt.ocr_batch_id != @batch.id || !HELD_STATUSES.include?(receipt.status)
-              receipt.update_columns(ocr_batch_id: nil) if receipt&.ocr_batch_id == @batch.id
-              entry.resolve!(:superseded, code: "superseded", message: SUPERSEDED_MESSAGE, now: @now)
+            unless held?(receipt)
+              supersede(entry, receipt)
               next
             end
+
             [ entry, ReceiptOcrJob.images_of(receipt) ]
           rescue ReceiptOcrJob::Unprocessable => error
             fail_entry(entry, receipt, error.code, error.message)
             nil
           end
         end
+      end
+
+      def held?(receipt)
+        receipt.present? && receipt.ocr_batch_id == @batch.id && HELD_STATUSES.include?(receipt.status)
+      end
+
+      def supersede(entry, receipt)
+        receipt.update_columns(ocr_batch_id: nil) if receipt&.ocr_batch_id == @batch.id
+        entry.resolve!(:superseded, code: "superseded", message: SUPERSEDED_MESSAGE, now: @now)
       end
 
       def fail_entry(entry, receipt, code, message)
@@ -191,9 +200,14 @@ module OcrBatches
 
         while_submitting do
           Receipt.transaction do
-            receipt = Receipt.lock.find(entry.receipt_id)
-            fail_entry(entry, receipt, error.code, "A photo is larger than the batch provider takes inline; read this " \
-              "receipt one at a time instead.")
+            receipt = entry.receipt_id && Receipt.lock.find_by(id: entry.receipt_id)
+            if held?(receipt)
+              fail_entry(entry, receipt, error.code, "A photo is larger than the batch provider takes inline; read " \
+                "this receipt one at a time instead.")
+            else
+              # A person took it over during the upload: their work stays.
+              supersede(entry, receipt)
+            end
           end
           @batch.update!(state: "pending", next_check_at: @now)
           :retry_later

@@ -76,8 +76,15 @@ class OcrBatchesController < ApplicationController
   # fails, its results are not used, and it is deleted at OpenRouter once it ends there. Not while it is being
   # sent: whether OpenRouter has it is not known yet.
   def release
-    if @batch.unfinished? && !@batch.submitting?
+    released = @batch.with_lock do
+      # Checked under the lock: the submitter claims a pending batch under the same lock.
+      next false unless @batch.unfinished? && !@batch.submitting?
+
       @batch.release!("failed", "released_by_owner", RELEASED_MESSAGE)
+      true
+    end
+    if released
+      OcrBatches::ApplyResults.follow_up(@batch)
       OcrBatches::LiveUpdate.changed(@batch)
       OcrBatchPollJob.ensure_scheduled
       redirect_to ocr_batch_path(@batch), status: :see_other, notice: "The waiting receipts were released."

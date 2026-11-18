@@ -8,6 +8,7 @@ finished_entry:
   state: applied
   cost_usd: 0.000987654321
   resolved_at: 2026-10-08T09:04:00+03:00
+  followed_up_at: 2026-10-08T09:04:00+03:00
 
 expired_entry:
   ocr_batch: expired_batch

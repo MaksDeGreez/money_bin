@@ -447,7 +447,11 @@ records the provider's id (`failed`, `submit_late`), so the batch is deleted ups
 stuck (batch mode was switched off in the service, which then refuses to follow or delete it) or no longer
 wanted: the batch fails (`released_by_owner`), its results are not used, and it is deleted at OpenRouter
 once it ends there. The poller does the same by itself for a `running` or `applying` batch it could not
-follow for five days (`batch_abandoned`; the longest provider window is four).
+follow for five days (`batch_abandoned`; the longest provider window is four). Results already stored keep
+their follow-ups (queued then, or by a later check: a batch with a follow-up still to queue stays followed).
+While batch mode is off a released batch cannot be deleted either; it stays on the list, checked every
+quarter of an hour, and its page says why, until batch mode is on again. Release is checked under the
+batch's lock (never while it is being sent) and locks entries before receipts, as the result path does.
 
 **Polling.** There is no webhook: the app has no public URL. `OcrBatchPollJob` runs `OcrBatches::Poll`
 (each due batch gets one `OcrBatches::Check`) and queues itself again for when the next batch is due,

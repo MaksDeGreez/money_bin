@@ -180,4 +180,22 @@ class OcrBatchesControllerTest < ActionDispatch::IntegrationTest
     post release_ocr_batch_path(batch)
     assert_match "Nothing to release", flash[:alert]
   end
+
+  test "release refuses a batch being sent, and queues the follow-ups of results already stored" do
+    sending = held_batch([ batch_receipt ], state: "submitting", provider_batch_id: nil)
+    post release_ocr_batch_path(sending)
+    assert_match "Nothing to release", flash[:alert]
+    assert sending.reload.submitting?
+
+    stored, waiting = batch_receipt, batch_receipt
+    applying = held_batch([ stored, waiting ], state: "applying", provider_batch_id: "batch_t9")
+    stored.update_columns(ocr_batch_id: nil, status: "extracted")
+    applying.entries.first.update!(state: "applied", resolved_at: Time.current)
+
+    with_env("CATEGORISE_BACKEND" => "stub") do
+      assert_enqueued_with(job: ReceiptCategoriseJob) { post release_ocr_batch_path(applying) }
+    end
+    assert_not_nil applying.entries.first.reload.followed_up_at
+    assert_equal "released", applying.entries.second.state
+  end
 end

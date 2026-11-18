@@ -90,7 +90,10 @@ module Receipts
     private
       def claim(now)
         Receipt.transaction do
-          ids = self.class.readable(@relation, @kind, now:).lock.pluck(:id)
+          # Rows are locked in id order, as every multi-row claim of receipts (OcrBatches::Create too) locks them,
+          # so two claims cannot deadlock; the jobs are then queued in the list's order.
+          locked = self.class.readable(@relation.reorder(:id), @kind, now:).lock.pluck(:id)
+          ids = @relation.where(id: locked).pluck(:id)
           # updated_at stays: it dates the receipt's own state (Receipt#ocr_stuck? reads it).
           Receipt.where(id: ids).update_all(ocr_requested_at: now) if ids.any?
           ids

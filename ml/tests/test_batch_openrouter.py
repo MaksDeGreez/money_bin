@@ -1040,3 +1040,14 @@ def test_an_accepted_batch_whose_answer_breaks_the_reader_is_unknown(
     with pytest.raises(BackendError) as raised:
         batches.submit(receipts(KEY_A))
     assert (raised.value.status_code, raised.value.code) == (504, "openrouter_batch_submit_unknown")
+
+
+def test_the_fallback_check_compares_providers_not_endpoint_slugs() -> None:
+    transport = FakeBatchTransport(completed(result(KEY_A)), models={"data": []})
+    batches = OpenRouterBatches(
+        settings(openrouter_batch_providers="anthropic/eu"), transport=transport
+    )
+
+    (item,) = batches.results("batch_abc123").items
+
+    assert item.extraction is not None
