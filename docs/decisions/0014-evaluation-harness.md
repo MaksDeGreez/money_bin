@@ -89,9 +89,13 @@ to fail safe: two names are different models only with proof (another family, si
 word); the same words are the same model; anything else, a word the rules do not know, is unknown, and
 an unknown comparison leaves the record out. A name that is a path on disk, a version `local` (a model
 loaded from a folder says nothing reliable about its weights) or a name that leaves no word is unknown
-too. A first version that compared token lists for equality was refuted in review: the same model
-written another way (`qwen-2.5` against `qwen2.5`, a date before the quantisation suffix, an unknown
-build word) got two identities, and the rule was bypassed. Both the run's name and version and the
+too. Two earlier versions were refuted in review: one compared token lists for equality, and the same
+model written another way (`qwen-2.5` against `qwen2.5`, a date before the quantisation suffix, an
+unknown build word) got two identities; the next took a vendor word for the family
+(`Meta-Llama` against `llama`) and any extra number for another version (`Mixtral-8x7B-v0.1`). Both
+bypassed the rule. Now versions prove a difference only where both names have one, a family word
+inside the other name proves nothing, and the tests keep every such real name as a case that must
+never come out "different". Both the run's name and version and the
 record's `prefilled_by` and `prefilled_model_version` are compared. Every run reports how many receipts
 the rule left out and how many of those for an unknown model. A combined item-category run is every
 categoriser it combines (`combined_from` in its `run.json`): it is left out wherever any of them
@@ -136,7 +140,8 @@ bins of the score (fixed so that runs are binned alike; adaptive bins would move
 expected calibration error from those bins, and the Brier score of the top candidate, with intervals
 from resampling receipts; the run says whether its scores were calibrated (`scores_calibrated`). The
 metrics are also split by the source of each prediction (an open set: `memory`, `model`, `decision`,
-`combined`, ...), because an answer from memory and one from a model are different mechanisms; the
+`combined`, and any word a run declares in its `run.json`; an undeclared word is counted as `other`,
+so free text from a predictions file never reaches the public results), because an answer from memory and one from a model are different mechanisms; the
 `memory` answers may come from the very booking whose category became the ground truth, so their
 share correct is an upper bound.
 

@@ -808,8 +808,9 @@ running `make eval` again. Nothing else changes.
 `prompt_version` (or null), `git` (`sha`, `dirty`), `started_at`, `finished_at`, `counts` (whole
 numbers by name), `seconds_per_item`, `cost_usd`, `scores_calibrated` (true when the scores were
 calibrated, for example on a validation set; false when they are raw; absent or null when not
-known) and, for a run made by combining other runs, `combined_from`: a list of
-`{"run_id", "backend", "model_name"}`, one per run it combines. `predictions.jsonl`, one line per
+known), `sources` (any `source` values its lines use besides `memory`, `model`, `decision` and
+`combined`) and, for a run made by combining other runs, `combined_from`: a list of
+`{"run_id", "backend", "model_name", "model_version"}`, one per run it combines. `predictions.jsonl`, one line per
 item:
 
 ```json
@@ -823,11 +824,14 @@ item:
   ground-truth record named by `ground_truth_source` (`dps_xml` or `manual`; optional: without it,
   the record the harness chooses; categories are only ever on `manual` records). A card slip has
   one line with `position: null`, for the receipt's own category.
-- `candidates`: at most 3, best first; `score` a number between 0 and 1 (the first one's is the
-  confidence) or null.
-- `source`: an open set of short lower-case words, for example `memory` (an earlier booking of the
-  same text), `model`, `decision` (a hosted decision model), `combined`; the metrics are split by
-  whatever values occur.
+- `candidates`: at most 3, best first; `score` a number from 0 to 1 (the first one's is the
+  confidence) or null; a score outside that range stops the harness (percentages or logits would
+  make calibration meaningless).
+- `source`: an open set of short lower-case words: `memory` (an earlier booking of the same text),
+  `model`, `decision` (a hosted decision model), `combined`, and any word `run.json` declares in
+  `sources`. The metrics are split by the values that occur; an undeclared word is counted as
+  `other` (so a word written by mistake never reaches the results), and an item without a
+  prediction or without a source as `unstated`.
 - `seconds`: a number; `cost_usd`: a decimal string, or null for a local model.
 
 ### Which ground truth counts
@@ -854,10 +858,12 @@ item:
   is read as a family, sizes, versions and words, ignoring the publisher or host, case, a backend
   prefix, a routing suffix (`:free`), dates and releases (`-2025-04-14`, `-20260217`, `-2507`),
   quantisation and packaging (`4bit`, `bf16`, `fp8`, `Q4_K_M`, `mlx`, `gguf`, `unsloth`, `qat`),
-  `instruct` and a reasoning effort (`high`). Two names are **different models only with proof**:
-  another family, other sizes (`8b` against `235b a22b`), other versions (`qwen2.5` against
-  `qwen3`), or a tier word on one side only (`mini`, `pro`, `flash`, `sonnet`, `opus`, `vl`,
-  `thinking`, ...). The same words are the same model (`mlx-community/Qwen3-VL-8B-Instruct-4bit` =
+  `instruct`, a reasoning effort (`high`) and vendor or region words in front (`meta`, `us`,
+  `anthropic`). Two names are **different models only with proof**: another family (unless one
+  family is a word of the other name), other sizes (`8b` against `235b a22b`), versions that
+  differ at a place both have (`qwen2.5` against `qwen3`; `8` against `8 0 1` is not proof), or a
+  tier word on one side only (`mini`, `pro`, `flash`, `sonnet`, `opus`, `vl`, ...; mode or host
+  labels such as `thinking`, `reasoning`, `turbo` are not tiers). The same words are the same model (`mlx-community/Qwen3-VL-8B-Instruct-4bit` =
   `qwen/qwen3-vl-8b-instruct`; `anthropic/claude-4.6-sonnet-20260217` =
   `anthropic/claude-sonnet-4.6`; `openai/gpt-4.1-mini-2025-04-14` = `openai/gpt-4.1-mini`).
   Anything else is **unknown**, and so is a name that is a path on disk, a run or pre-fill whose
@@ -922,8 +928,8 @@ or a top-1 prediction; weighted F1; accuracy; top-3 accuracy), `coverage` (preci
 confident rows at 10, 25, 50, 75, 90 and 100% coverage, whole tie groups kept, and at confidence
 0.5, 0.7, 0.9), `auto_accept` (the largest coverage whose kept rows are at least 95% precise, and
 the confidence that reaches it), `per_class` (support, predictions, F1), `confusion`, `by_source`
-(the headline metrics and the calibration for each `source` value that occurs; `none` for items
-without a prediction), `seconds_per_item`, `cost_usd` (from the lines' `cost_usd`).
+(the headline metrics and the calibration for each `source` value that occurs, `unstated` and
+`other` included), `seconds_per_item`, `cost_usd` (from the lines' `cost_usd`).
 
 **Calibration** (`calibration`): whether the top candidate's score means what it says, over the
 items whose top candidate has a score (`rows_without_score` counts the others). Reliability table:
@@ -934,11 +940,16 @@ mean score and share correct. Expected calibration error (`ece`): the sum over b
 the mean of `(score - correct)^2`, correct being 1 or 0. Both with 95% intervals from resampling
 receipts. `scores_calibrated` copies what the run says about its scores (null when it says
 nothing), so a reader can tell a raw score from a calibrated one. A bin with few items is noisy:
-read the counts.
+read the counts. With few items per bin the ECE is biased upwards and its percentile interval is
+centred on that biased value, so it rarely covers 0 even for a well-calibrated categoriser; compare
+runs of a similar size, and read the reliability table next to it.
 
 **A combined run** is left out on a receipt (the pre-fill rule) when any categoriser it combines
 pre-filled that receipt's categories: the identities come from its own `model_name` and every
-`model_name` in `combined_from`; an entry without a name counts as unknown.
+`model_name` (and `model_version`) in `combined_from`. An entry without a name, an empty or missing
+`combined_from` in a run that says it combines (lines with `source: combined`), or a part with the
+version `local` counts as unknown, which leaves the record out. `combined_from` is read only for
+item-category runs.
 
 The `memory` source answers from earlier bookings of the same text, which may include the booking
 whose category became the ground truth; its share correct is an upper bound, so read it apart
@@ -966,8 +977,8 @@ backend whose name sorts first).
 
 `eval/results/` (`index.json`, `runs/<run id>.json`, `comparisons/<A>__vs__<B>.json`,
 `tables/*.md` and `*.csv`: OCR fields by run, by segment, OCR items by run, local against hosted,
-full against cropped photos, other OCR comparisons, item categories by run, the auto-accept table,
-item-category comparisons). Files there that a run did not write are removed. Keys are sorted,
+full against cropped photos, other OCR comparisons, item categories by run, item categories by
+source, calibration (the reliability table), the auto-accept table, item-category comparisons). Files there that a run did not write are removed. Keys are sorted,
 floats rounded to 6 places in JSON; tables have fixed rounding (one decimal for percentages and
 percentage points, two for seconds, three for p-values) and a fixed row order, so the same inputs
 give byte-identical files; the only times in them are `started_at` and `finished_at` copied from
