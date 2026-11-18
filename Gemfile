@@ -36,6 +36,9 @@ gem "bcrypt", "~> 3.1"
 # [https://github.com/modelcontextprotocol/ruby-sdk]
 gem "mcp", "~> 1.10"
 
+# XML parsing for the receipt ground-truth files (DpsXml::Reader); Rails already depends on it.
+gem "nokogiri", ">= 1.19"
+
 # Load .env* files into ENV (.env.example lists the settings)
 gem "dotenv"
 

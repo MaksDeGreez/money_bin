@@ -399,6 +399,7 @@ DEPENDENCIES
   importmap-rails
   lucide-rails
   mcp (~> 1.10)
+  nokogiri (>= 1.19)
   pg (~> 1.7)
   propshaft
   puma (>= 5.0)
