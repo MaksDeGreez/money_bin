@@ -99,8 +99,8 @@ identity, with as little machinery as possible.
   service's errors, `{"error": {"code": "...", "message": "..."}}`: 401 `unauthorized` (no token), 401
   `invalid_token`, both with `WWW-Authenticate: Bearer realm="Money Bin"` (plus `error="..."`), and 403
   `insufficient_scope`. A missing record is 404 `not_found`, a missing parameter 400 `bad_request`.
-  `GET /api/v1/status` is the one endpoint for now: it tells an agent that its token works and what
-  scope it has.
+  `GET /api/v1/status` tells an agent that its token works and what scope it has. (The read API of
+  [0007](0007-read-api.md) added the ledger endpoints and the 422 `invalid_parameter` error.)
 
 ## Alternatives considered
 

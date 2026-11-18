@@ -483,6 +483,23 @@ payload, a raw photo name, a total or a date; Active Record's SQL log
 is silenced while it runs, for the same reason. A real run needs Redis: attaching a photo enqueues Active
 Storage's analysis job, and the task checks Redis before it writes.
 
+## Reports
+
+`SpendingSummaryQuery` (behind `GET /api/v1/summary`) is the one report so far. Its rules follow from the
+model above:
+
+- only booked rows count (`Transaction.booked`); a draft is in no figure;
+- transfer legs are left out: they move money between own accounts, and a fee is already its own expense;
+- a transaction is an expense when its amount is negative and an income when it is positive, as in the
+  `expenses` and `incomes` scopes; a refund booked as a positive row is therefore an income;
+- its lines are summed per category, so a split transaction gives each category its share, and an
+  opposite-sign line (a bottle deposit returned) lowers its category inside the expense;
+- a group's figure is the sum of its categories; a line with no category stays apart (no category, no group);
+- each currency is summed on its own: there are no exchange rates, so two currencies are never added;
+- months are calendar months of `occurred_on`, and amounts keep the ledger's sign.
+
+The reasons are in [`decisions/0007-read-api.md`](decisions/0007-read-api.md).
+
 ## Decisions and why
 
 **The model is called `Transaction`; a line points back with `parent`.** It is the domain word. Rails
@@ -622,7 +639,11 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
 
 ## Deferred
 
-- Authentication, API tokens, and who (person or agent) wrote a row.
+- Who (person or agent) wrote a row. Authentication and API tokens are in place
+  (`docs/decisions/0002-authentication-and-api-tokens.md`).
+- Writes over the API (an agent proposing a draft, accepting a receipt) and the MCP server. The read API
+  is in place: transactions, accounts with balances, the category tree, a spending summary and receipts
+  (`docs/openapi.yaml`, `docs/decisions/0007-read-api.md`).
 - The upload flow that enqueues `ReceiptOcrJob`, and a call to `/categorise` that fills
   `suggested_category` and `confidence` on the items.
 - A database trigger for the line sum, if anything starts writing lines past the models.
