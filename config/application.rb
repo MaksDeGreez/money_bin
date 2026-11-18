@@ -20,8 +20,13 @@ Bundler.require(*Rails.groups)
 
 # dotenv loads .env files when the application class below is defined. Test runs read none of them: a
 # REDIS_URL or DATABASE_URL written there for development would point the tests, which delete Redis keys
-# and reload tables, at the development data. Real environment variables still apply (CI sets both).
-Dotenv::Rails.files = [] if Dotenv::Rails.env.test?
+# and reload tables, at the development data, and any other setting of the owner's machine (which model
+# reads receipts, an API key) would change what the tests do. Real environment variables still apply (CI
+# sets both).
+#
+# The list must not be empty: with no file names dotenv falls back to `.env` in the working directory.
+# The null device is a file that is always there and always empty.
+Dotenv::Rails.files = [ File::NULL ] if Dotenv::Rails.env.test?
 
 require_relative "redis_url"
 
