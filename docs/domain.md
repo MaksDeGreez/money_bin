@@ -16,9 +16,9 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
-| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
+| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `categorised_at`, `categoriser_error`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
 | `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `categories_known`, `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
-| `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
+| `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `suggested_by`, `name_key`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
 
@@ -81,7 +81,9 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   produced the fields and items (they stay when "Enter by hand" keeps the items of an earlier read).
   `filled_from` is `dps_xml` once a person filled the fields and items from the receipt's tax-service record
   in the review form, and `categoriser_model_name` names the categoriser whose suggestions the items (and a
-  slip) carry; whatever fills the suggestions sets it, and nothing does yet. A new OCR result clears both.
+  slip) carry: `Receipts::SuggestCategories` sets it (see "Category suggestions"), with `categorised_at`
+  (when suggestions were last filled) and `categoriser_error` (the code of a failed request to the
+  categoriser, nil when it answered). A new OCR result clears both.
   The three say what pre-filled the review form when the receipt is saved as ground truth (see "The pre-fill
   rule"). `currency` is what OCR
   read (nil when unknown).
@@ -100,11 +102,13 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   `category` is a card slip's one category: a slip has no items and is booked as one line, its `total` in
   this category; a person chooses it at review, and only a `card_slip` keeps one. `suggested_category` and
   `suggested_category_confidence` (0..1) are room for the categoriser's guess for a slip; nothing fills them
-  yet. `lock_version` is the receipt's version, which the review form carries (see "Review").
+  yet: the item categoriser leaves a slip alone, and a transaction-level categoriser fills them later. `lock_version` is the receipt's version, which the review form carries (see "Review").
 - **Receipt item.** `amount` is what was paid for the item after its `discount`. It is normally positive,
   but it can be negative (a bottle deposit returned) or zero (a free item). `suggested_category` and
-  `confidence` (0..1) are the categoriser's guess. `category` is the accepted category, and
-  `accepted_by_user` records that a person confirmed it.
+  `confidence` (0..1) are the categoriser's guess, and `suggested_by` where it came from: `memory` (the
+  owner's own earlier labels) or `model` (the ML service). `category` is the accepted category, and
+  `accepted_by_user` records that a person confirmed it. `name_key` is the name normalised for the label
+  memory (`ItemName.key`), kept in step with the name on every save.
 
 ## Invariants
 
@@ -144,6 +148,8 @@ listed, the model gives a readable error and the database is the safety net for 
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
 | A `reviewed` receipt has a transaction: destroying the transaction moves its receipt back to `extracted` | Model (in the destroy's database transaction); the foreign key only nullifies the link |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
+| A receipt item's `suggested_by` is `memory`, `model` or nil; its `name_key` is `ItemName.key(name)`, never null | Model; DB for the values and the null (`receipt_items_suggested_by_known`) |
+| Filling suggestions never writes an item's `category_id` or `accepted_by_user`, nor the receipt's `lock_version` | `Receipts::SuggestCategories` (tested) |
 | A receipt's `card_last4` is exactly four digits when present | Model + DB (`receipts_card_last4_format`) |
 | A receipt's `ingest_id` is `rcpt_` and six or more digits, and unique when present | Model + DB (`receipts_ingest_id_format`, partial unique index) |
 | A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
@@ -486,7 +492,7 @@ Retries and timeouts:
   stays `processing` until a run succeeds;
 - the client opens the connection within `ML_SERVICE_OPEN_TIMEOUT` seconds (default 2), waits up to
   `ML_SERVICE_OCR_TIMEOUT` (default 120; a real model can be slow) for an OCR answer and
-  `ML_SERVICE_CATEGORISE_TIMEOUT` (default 30) for a categorisation answer. `/health` waits 5 seconds.
+  `ML_SERVICE_CATEGORISE_TIMEOUT` (default 120: one receipt's items, perhaps after another receipt's OCR) for a categorisation answer. `/health` waits 5 seconds.
   `ML_SERVICE_URL` is the base URL (default `http://127.0.0.1:8100`);
 - `image/heif` photos are sent as `image/heic`: the receipt accepts both names, the service only the
   second.
@@ -565,6 +571,82 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
 Every refusal raises a subclass of `Receipts::Accept::Error`: `NotAcceptable` (status, no items, a slip
 with items or without a total, or linked to a transfer leg), `AccountRequired`, `CurrencyMismatch`,
 `NothingToBook` (the booked total is zero or less, so there is no expense) and `TotalMismatch`.
+
+### Category suggestions
+
+Every item of a receipt gets a suggested category with a confidence, so the owner can take the confident
+ones in bulk ("Accept suggestions from N %") and look only at the doubtful ones. `Receipts::SuggestCategories`
+fills them, in this order of trust (the reasons: `docs/decisions/0015-item-categoriser.md`):
+
+1. **The label memory** (below): an item whose name the owner already labelled on another receipt gets that
+   category, `suggested_by: "memory"`.
+2. **The ML service** (`/categorise`, `CATEGORISE_BACKEND`): the other items of the receipt, in one call,
+   with the candidate categories (`Categories::ItemCandidates`: every category except Uncategorised and
+   Adjustments, with names, descriptions and groups) and the shop's name as context. The answer may only
+   name those slugs (the client refuses anything else as an invalid answer). Each item gets the best
+   candidate and its score, `suggested_by: "model"`. Whether the score is calibrated depends on the
+   service's setup (`ml/README.md`); the page shows it as a percentage either way.
+
+**When.** Right after OCR stores the items, in the same `ReceiptOcrJob`, so the suggestions arrive right
+behind the items instead of behind every other queued read. "Suggest categories again" on the receipt
+page queues `ReceiptCategoriseJob`, which asks again without reading the receipt; its queue
+(`receipt_categorise`) is worked by the OCR capsule's one thread before the OCR queue, so a request does
+not wait behind hundreds of queued reads. Only an `extracted` receipt with items gets suggestions; a card
+slip has none (its own `suggested_category` is left for the transaction-level categoriser).
+
+**What never overwrites what.**
+
+- A suggestion never writes `category` or `accepted_by_user`: a category a person chose stays, and the
+  item's suggestion fields are refreshed beside it. Taking a suggestion is a person's choice in the form
+  ("Use", Enter, "Accept suggestions"), which the save marks `accepted_by_user`.
+- Suggestions are not form fields, so filling them does not move the receipt's `lock_version`: a review
+  form open meanwhile stays valid, and a later save keeps them.
+- A new OCR result replaces the items, so their suggestions go with them and new ones are filled.
+- The service answers outside the receipt's lock (a local model takes seconds); the writes then happen
+  under it. An item renamed or removed meanwhile is skipped, and a receipt no longer `extracted` (accepted,
+  read again) is not written at all.
+- A failure of the categoriser (the service down, a timeout, a 501 from a backend that cannot categorise,
+  an invalid answer) never fails the receipt: OCR's result stays, the label memory's suggestions are still
+  stored, the other items keep what they had, the receipt is `extracted` and records the error code in
+  `categoriser_error`; the page says the categoriser could not answer and offers "Suggest categories again".
+  A bug in the filling itself is reported and recorded as `internal_error`, never raised: a retry of the
+  OCR job would find the receipt read and do nothing.
+
+**Provenance.** `suggested_by` says per item where its suggestion came from. `categoriser_model_name`
+says, for the pre-fill rule of the ground truth, whose suggestions the items carry: the model's name when
+any item carries a model's suggestion (the model that answered, or after a failure the one recorded
+before), `label-memory` (`LabelMemory::CATEGORISER_NAME`) when the memory filled them all, nil when no item
+has a suggestion. A mix of memory and model names the model: the receipt must leave the model's test set,
+and the memory, a rule over the owner's own labels, keeps it; that makes the memory's own score slightly
+optimistic on such receipts (an accepted limit; the per-item source stays in `suggested_by` should the
+evaluation need it). A name never empty while suggestions are on the items, so a receipt is not lost to
+every categoriser as `source:unknown`.
+
+### Label memory
+
+`LabelMemory` (`app/queries/label_memory.rb`) answers: what did the owner call items with this name?
+
+- **Only a person's labels**: items with `accepted_by_user` and a category among the candidates, on other
+  receipts than the one being suggested for (an item's own label is not a memory of it). A suggestion the
+  person took counts: they chose it.
+- **The name key** (`ItemName.key`, stored as `receipt_items.name_key`, indexed for the lookup with the
+  category, only over labelled rows): Unicode NFKC, lower case, the Latin letters that look like Cyrillic
+  ones in print (a, b, c, e, h, i, k, m, o, p, t, x, y) turned into those, then everything but letters and
+  digits dropped (spaces, punctuation, apostrophes). So "МОЛ 2,5% 900Г" and "Мол2.5%900г" match, and so do a
+  name printed with a Latin "K" and one with a Cyrillic "К". Weights, volumes and pack sizes are kept: they
+  are welded to the name in irregular forms ("Хл400", "Вод1.5літ"), stripping them would need a parser that
+  guesses, and the same product from the same shop prints the same way, which is what the memory is for.
+  A missed match only costs a model call; a wrong merge would put one product's label on another.
+- **The rule**: the category given most often under the key, when it has a strict majority (more than half
+  of the labels); a tie or a split vote suggests nothing and the model decides.
+- **The confidence**: with `n` labels of which `k` agree, (k + 1) / (n + 1.25), the mean of a Beta(1 + k,
+  0.25 + n − k) posterior for "the next item with this name gets this category", from a weak prior that a
+  name keeps its category (mean 0.8, worth 1.25 labels). One label gives 0.89, two that agree 0.92, four
+  0.95, and a disagreement pulls it down fast (2 of 3: 0.71). With the form's default threshold (90%) one
+  earlier label is not enough to take in bulk, two are. It is the memory's own rule, not a measured
+  precision: the evaluation measures it like a model's.
+- `ml/evaluation/label_memory.py` is the same rule for the offline runs; the Ruby and Python tests read the
+  same name cases (`ml/tests/fixtures/item_name_keys.json`), so the two cannot drift apart.
 
 ## Review
 
@@ -1148,10 +1230,14 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   place: the read API (transactions, accounts with balances, the category tree, a spending summary and
   receipts; `docs/openapi.yaml`, `docs/decisions/0007-read-api.md`) and the read-only MCP server at `/mcp`,
   whose tools call the same query objects (`docs/decisions/0008-mcp-server.md`).
-- A call to `/categorise` that fills `suggested_category` and `confidence` on the items.
 - The item-level metrics over the exported ground truth (`ml/evaluation/`), with the pre-fill rule.
-- Filling item suggestions and `categoriser_model_name` (the categoriser); recording which suggestion a
-  person took for each item, should the evaluation need more than "suggestions were on the form".
+- Recording which suggestion a person took for each item, should the evaluation need more than
+  "suggestions were on the form" (the source of each suggestion is on the item, `suggested_by`, but not in
+  the ground-truth snapshot).
+- A card slip's category suggestion (`receipts.suggested_category_id`), from a transaction-level
+  categoriser; and a model trained on the collected item labels (nearest neighbours or logistic regression
+  on embeddings), once labels exist: it would be one more `CATEGORISE_BACKEND`, or a step between the label
+  memory and the zero-shot model.
 - A transactions list, editing a booked transaction in the app (its amount, date or account), and
   entering an income or a transfer by hand.
 - A slip's category and suggestion in the read API and the MCP tools (the booked line already carries the

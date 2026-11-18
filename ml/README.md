@@ -4,21 +4,26 @@ A small HTTP service for the money_bin app. It does two jobs:
 
 - **Receipt OCR.** It reads a receipt from 1 to 3 photos and returns the
   merchant, date, total and items.
-- **Item categorisation.** It suggests categories for receipt item texts.
+- **Item categorisation.** It suggests a category, with a confidence, for each
+  item of one receipt, from the categories the request lists.
 
 The Rails app calls this service and stores the results.
 
-Three backends:
+Each job has its own backend setting: `OCR_BACKEND` for OCR and
+`CATEGORISE_BACKEND` for categorisation, each one of:
 
 - **`stub`** (the default) returns fixed, invented data in the final response
   shapes. The tests and CI use it.
-- **`mlx`** reads receipts with a local vision-language model (a Qwen VL model
-  run by [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)) on a Mac with Apple
-  silicon. Nothing leaves the machine. It does not categorise yet (501).
-- **`openrouter`** reads receipts with a hosted vision model through
-  [OpenRouter](https://openrouter.ai), only through endpoints with zero data
-  retention. The receipt photos and the fixed prompt leave the machine; nothing
-  else does (see "The openrouter backend"). It does not categorise (501).
+- **`mlx`** runs a local model with [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)
+  on a Mac with Apple silicon: a Qwen VL model reads receipts, and the same
+  model (by default) categorises items. Nothing leaves the machine.
+- **`openrouter`** calls a hosted model through [OpenRouter](https://openrouter.ai),
+  only through endpoints with zero data retention. For OCR the receipt photos
+  and the fixed prompt leave the machine; for categorisation the item names and
+  the fixed prompt with the category list. Nothing else does (see "The
+  openrouter backend" and "The hosted categoriser").
+
+So OCR can run locally while categorisation is hosted, or the other way round.
 
 ## Requirements
 
@@ -45,7 +50,7 @@ test work without it.
 
 ```sh
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8100
-OCR_BACKEND=mlx uv run uvicorn app.main:app --host 127.0.0.1 --port 8100
+OCR_BACKEND=mlx CATEGORISE_BACKEND=mlx uv run uvicorn app.main:app --host 127.0.0.1 --port 8100
 ```
 
 With `OCR_BACKEND=mlx` the service loads the model when it starts and is ready
@@ -66,14 +71,21 @@ uv run ruff format --check .  # format check (use `ruff format .` to fix)
 
 The tests never load a model and never reach the network: the `mlx` backend
 is tested with a fake generator, the `openrouter` backend with a fake
-transport (and httpx's mock transport for the real client). `app/backends/mlx_vlm_generator.py`, the only code that calls
-mlx-vlm, is left out of the coverage measurement.
+transport (and httpx's mock transport for the real client), the local
+categoriser with a fake character-level model. `app/backends/mlx_vlm_generator.py`
+and `app/categorise/mlx_token_model.py`, the only code that calls mlx-vlm, are
+left out of the coverage measurement; they were checked by hand on the real
+model (`python -m evaluation.item_sanity`, below).
 
 ## Settings
 
 | Variable                       | Default                                     | Values                      | Meaning |
 | ------------------------------ | ------------------------------------------- | --------------------------- | ------- |
-| `OCR_BACKEND`                  | `stub`                                      | `stub`, `mlx`, `openrouter` | The model backend to use. |
+| `OCR_BACKEND`                  | `stub`                                      | `stub`, `mlx`, `openrouter` | The OCR backend. |
+| `CATEGORISE_BACKEND`           | `stub`                                      | `stub`, `mlx`, `openrouter` | The item categoriser, chosen apart from OCR. |
+| `MLX_CATEGORISE_MODEL`         | empty: `MLX_OCR_MODEL`                      | a Hugging Face id or a folder | The local categoriser's model. Empty means the OCR model: with `OCR_BACKEND=mlx` the one loaded model does both jobs (see "One model or two"). A text model such as `mlx-community/Qwen3-4B-Instruct-2507-4bit` works too. |
+| `CATEGORISE_CALIBRATION_FILE`  | none                                        | a path outside the repository | A calibration of the categoriser's scores (see "Calibration"). It must have been fitted for the configured categoriser and model, or the service does not start. |
+| `OPENROUTER_CATEGORISE_MODEL`  | none                                        | a model id from openrouter.ai/models | The hosted categoriser's model (text only is fine). No default: with `CATEGORISE_BACKEND=openrouter` the service does not start without it. |
 | `ML_MAX_IMAGE_BYTES`           | `15728640`                                  | a whole number above 0      | The largest image file, in bytes (15 MB). |
 | `MLX_OCR_MODEL`                | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | a Hugging Face id or a folder | The `mlx` backend's model. `mlx-community/Qwen3-VL-8B-Instruct-4bit` works too. |
 | `MLX_OCR_MAX_TOKENS`           | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer. A receipt with 40 items needs about 2,000. |
@@ -86,8 +98,9 @@ mlx-vlm, is left out of the coverage measurement.
 | `OPENROUTER_OCR_IMAGE_MAX_SIDE` | `2048`                                     | 256 to 4096                 | As `MLX_OCR_IMAGE_MAX_SIDE`, for the photos sent to the hosted model. |
 | `OPENROUTER_STRUCTURED_OUTPUT` | `true`                                      | `true`, `false`             | Ask for the answer's JSON schema when the endpoints support it (see "The openrouter backend"). |
 
-An unknown `OCR_BACKEND` value stops the service at startup. The error
-message lists the valid names.
+An unknown `OCR_BACKEND` or `CATEGORISE_BACKEND` value stops the service at
+startup. The error message lists the valid names. The other `OPENROUTER_*`
+settings (key, timeout, structured output) are shared by the two hosted tasks.
 
 Each model backend has its own image-size setting with the same default
 (2048), not one shared setting: the local and the hosted backend can then be
@@ -108,8 +121,12 @@ curl http://127.0.0.1:8100/health
 ```
 
 ```json
-{"status": "ok", "backend": "stub", "model_name": "stub-ocr", "model_version": "0.1.0"}
+{"status": "ok", "backend": "stub", "model_name": "stub-ocr", "model_version": "0.1.0",
+ "categoriser": {"backend": "stub", "model_name": "stub-categoriser", "model_version": "0.2.0", "calibration": false}}
 ```
+
+`backend`, `model_name` and `model_version` are the OCR backend's; `categoriser`
+is the categoriser's, with whether a calibration file is loaded.
 
 With `mlx`, `model_name` is the model id (`MLX_OCR_MODEL`) and
 `model_version` the revision of the weights: the Hugging Face commit, or
@@ -205,37 +222,70 @@ The rest of the answer:
 
 ### `POST /categorise`
 
-Send JSON with 1 to 200 non-empty texts.
+Send JSON with the items of ONE receipt (1 to 200 non-empty texts of at most
+300 characters), the categories to choose from (2 to 100, unique slugs), and
+optionally the shop's name:
 
 ```sh
-curl -H "Content-Type: application/json" \
-  -d '{"texts": ["milk 2.5% 900g"]}' \
-  http://127.0.0.1:8100/categorise
+curl -H "Content-Type: application/json" -d '{
+  "texts": ["Мол2,5%900г", "Парацетамол №10"],
+  "categories": [
+    {"slug": "groceries/groceries", "name": "Groceries", "description": "Food and everyday groceries.", "group": "Groceries"},
+    {"slug": "health/health-pharmacy", "name": "Health & pharmacy", "description": "Pharmacy, medicine and medical treatment.", "group": "Health"}
+  ],
+  "merchant": "Example Market"
+}' http://127.0.0.1:8100/categorise
 ```
 
 ```json
 {
   "results": [
-    {
-      "text": "milk 2.5% 900g",
-      "candidates": [
-        {"category_slug": "groceries/groceries", "score": 0.71},
-        {"category_slug": "household-shopping/household-supplies", "score": 0.18},
-        {"category_slug": "eating-out/takeaway-fast-food", "score": 0.11}
-      ]
-    }
+    {"text": "Мол2,5%900г", "candidates": [
+      {"category_slug": "groceries/groceries", "score": 0.981},
+      {"category_slug": "health/health-pharmacy", "score": 0.019}]},
+    {"text": "Парацетамол №10", "candidates": [
+      {"category_slug": "health/health-pharmacy", "score": 0.997},
+      {"category_slug": "groceries/groceries", "score": 0.003}]}
   ],
-  "backend": "stub",
-  "model_name": "stub-categoriser",
-  "model_version": "0.1.0"
+  "score_kind": "label_probability",
+  "calibrated": false,
+  "prompt_version": "0123456789ab",
+  "categories_version": "ba9876543210",
+  "elapsed_seconds": "1.204",
+  "cost_usd": null,
+  "backend": "mlx",
+  "model_name": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+  "model_version": "<weights commit>"
 }
 ```
 
-Each text gets exactly 3 candidates, sorted by score (highest first). Scores
-are between 0 and 1. Results keep the order of `texts`. A `category_slug` has
-the form `group-slug/category-slug`; the Rails app owns these slugs. The stub
-picks slugs from a hash of the text, so the same text always gets the same
-answer (the numbers above are only an example).
+**The category list comes with every request.** The Rails app owns the
+taxonomy and its slugs (`Categories::ItemCandidates`); the service never
+hard-codes a category and never builds a slug. A category is `slug` (the
+app's form, `group-part/category-part`), `name`, `description` (may be empty)
+and `group` (the group's name). The answer may only name slugs from the
+request: a categoriser that answered anything else would be a 500, and the
+Rails client refuses such an answer too. So a taxonomy change on the app's side
+cannot be silently ignored here: the next request carries the new list.
+`categories_version` is a hash of the list as sent.
+
+The response:
+
+- `results`, in the order of `texts`: 1 to 3 candidates per item, best first,
+  scores in 0..1 adding up to at most 1;
+- `score_kind`: where the scores come from (`label_probability`,
+  `token_logprobs`, `fixed`, `stub`; see "How confidence is computed");
+- `calibrated`: the best candidate's score went through a calibration fitted on
+  labelled items for exactly this categoriser, model, prompt and score kind;
+  otherwise it is the raw score;
+- `prompt_version`: the hash of the categorisation prompt (null for the stub);
+- `elapsed_seconds`; `cost_usd`: what a hosted call cost (a decimal string), or
+  null for a local model or when a call reported no cost;
+- `backend`, `model_name`, `model_version`: the categoriser's.
+
+The texts and the shop's name are put on one line each (a line break inside a
+name would make a fake item). The stub picks slugs from a hash of the text, so
+the same text and list always get the same answer.
 
 ### Errors
 
@@ -256,9 +306,10 @@ Every error has the same shape:
 | 422    | `empty_image`             | An image file is empty.                        |
 | 422    | `image_unreadable`        | An image has the right signature but cannot be decoded (a cut-off file). |
 | 422    | `ocr_parse_failed`        | The model's answer was not valid receipt JSON, even after one repair pass. |
+| 422    | `categorise_parse_failed` | `openrouter` categoriser only: the answer did not name one listed slug for every item. Permanent (temperature 0). |
 | 424    | `openrouter_auth_failed`, `openrouter_payment_required`, `openrouter_refused`, `openrouter_no_matching_endpoint`, `openrouter_bad_request`, `openrouter_provider_unverified` | `openrouter` only: OpenRouter refused the request (HTTP 401, 402, 403, 404, another 4xx, also when reported inside an answer with HTTP 200), or an answer came from a provider outside the zero-retention list (then nothing more is sent until the service restarts). Permanent. |
-| 501    | `backend_not_implemented` | The selected backend cannot do this (`/categorise` on `mlx` and `openrouter`). |
-| 501    | `openrouter_model_missing`, `openrouter_key_missing`, `openrouter_key_invalid`, `openrouter_model_unknown`, `openrouter_model_without_images`, `openrouter_no_zdr_endpoint` | `openrouter` only: a setting is missing, or the model is unknown, takes no images or has no strict zero-retention endpoint. |
+| 501    | `backend_not_implemented` | The selected backend cannot do this. |
+| 501    | `openrouter_model_missing`, `openrouter_key_missing`, `openrouter_key_invalid`, `openrouter_model_unknown`, `openrouter_model_without_images`, `openrouter_no_zdr_endpoint` | `openrouter` only: a setting is missing, or the model is unknown, takes no images (OCR only) or has no strict zero-retention endpoint. |
 | 502    | `openrouter_upstream_error`, `openrouter_unreachable`, `openrouter_bad_response` | `openrouter` only: the hosted service failed (HTTP 408 or 5xx, an error in the answer), cannot be reached, or answered in an unexpected shape. Transient. |
 | 503    | `openrouter_rate_limited`, `openrouter_catalogue_unavailable` | `openrouter` only: rate limited (HTTP 429), or the list of zero-retention endpoints cannot be read (nothing is sent then). Transient. |
 | 504    | `openrouter_timeout`      | `openrouter` only: no answer within the receipt's `OPENROUTER_TIMEOUT`. Transient. |
@@ -279,9 +330,11 @@ message names the fields and the kind of problem, never what the model read.
 
 - **One worker thread.** MLX keeps its GPU streams per thread, and FastAPI runs
   each request in a thread of its own pool. So one dedicated thread (a
-  single-thread executor) loads the model at startup and runs every
-  generation; a request hands its work to that thread and waits. One receipt
-  is read at a time; others wait in the queue.
+  single-thread executor, `app/backends/mlx_worker.py`) loads the model at
+  startup and runs every generation; a request hands its work to that thread
+  and waits. One receipt is read at a time; others wait in the queue. With
+  `CATEGORISE_BACKEND=mlx` the categoriser shares this thread (and the model,
+  when it is the same), so OCR and categorisation never use MLX at once.
 - **One call per receipt.** All the photos of a receipt go to the model in
   one call, in order. Each is decoded, turned upright from its EXIF
   orientation and scaled to `MLX_OCR_IMAGE_MAX_SIDE` first
@@ -423,6 +476,187 @@ latency, tokens, cost, the provider that served it, the model it ran
 (`model`) and whether structured output was used; the evaluation scripts sum
 them (below).
 
+## Item categorisation
+
+`app/categorise/`. The reasons are in `docs/decisions/0015-item-categoriser.md`.
+It is zero-shot: no training on the owner's labels; the model gets the
+category list with descriptions and answers with a slug from it.
+
+### The prompt
+
+`app/categorise/prompt.py`, shared by every categoriser and versioned like the
+OCR prompt (`PROMPT_VERSION`, a hash of every fixed text and example, in every
+response and run). The system message holds the task, the categories grouped
+by group (`slug: Name. Description.`), how receipt items are printed (abbreviated,
+run together, a size stuck to the name, brands in Latin letters), a few rules
+(shop food is groceries, drinks made on the spot are eating out, toiletries are
+household supplies), a few invented example items with their slugs, and the
+answer format: one JSON object, item numbers as keys, one slug as each value,
+`{"1": "groceries/groceries", "2": "health/health-pharmacy"}`. It holds no
+receipt data, so a local model keeps it computed between receipts.
+
+The user message lists the receipt's items, numbered, in printed order: the
+items of one receipt are categorised together, since the neighbours help (on a
+pharmacy's receipt an unclear item is a medicine). For a local model the shop's
+name comes first, as context (`local_messages`). For a hosted model there is a
+separate function that takes the category list and the item texts and nothing
+else (`hosted_messages`): the shop, amounts, dates and ids cannot reach it.
+
+### How confidence is computed
+
+- **Local (`mlx`, `score_kind: label_probability`).** The answer may only be one
+  of the listed slugs, and instead of letting the model pick token by token
+  (greedy constrained decoding gives the probability of the path it took and
+  nothing about the others), every slug is scored
+  (`app/categorise/labels.py`). Each slug is tokenised, followed by the closing
+  quote, and the token sequences form a trie. At every node where slugs part
+  ways, the model's logits for the allowed next tokens are renormalised among
+  those tokens only; where one slug remains, the constrained probability is 1.
+  A slug's probability is the product along its path, and the probabilities of
+  all slugs add up to 1: the model's own distribution over the listed
+  categories, as constrained decoding sees it. Only the parting points cost a
+  model call: the tokens up to one are fed in one call, scored, and taken back
+  out of the KV cache. The best slug is then written into the answer and the
+  next item is scored with all earlier answers in context, as in a normal
+  generation. The three best go into the response. mlx-vlm's JSON-schema logits
+  processor (used for OCR) was not used here: it masks logits but exposes only
+  the chosen token's log-probability, which says nothing about the runner-up.
+  Limits: the slug's tokens are the tokeniser's own spelling of it (another
+  spelling of the same slug is not counted, which can only lower a score), and
+  a model can be sure and wrong, so a probability is not a precision until it
+  is calibrated.
+- **Hosted (`openrouter`, `score_kind: token_logprobs`).** A hosted endpoint does
+  not give logits at chosen points, so the slugs cannot all be scored. Where the
+  endpoints return token log-probabilities (`logprobs` with `top_logprobs`; the
+  endpoint list says which do, by `supported_parameters`), the chosen slug's
+  score is the product of the probabilities of the tokens that spell it, and
+  an alternative token that, after the text before it, can lead to only one
+  other listed slug gives that slug the probability of the path to it
+  (`app/categorise/logprobs.py`). An alternative that leads to several slugs is
+  not attributed, so the scores add up to at most 1. Whether an endpoint
+  reports probabilities before or after the structured output masked tokens is
+  not documented: these are the model's token probabilities of its answer, not
+  a distribution over the categories.
+- **Hosted without log-probabilities (`score_kind: fixed`).** The chosen slug
+  gets 0.5 (`FALLBACK_SCORE`), the only candidate. It is a marker, not a
+  confidence, and it is below any sensible acceptance threshold; a calibration
+  fitted on such answers turns it into the model's measured precision.
+- **Stub (`score_kind: stub`).** Shares of a hash; they mean nothing.
+
+### Calibration
+
+A raw probability is not a precision. A calibration is a monotone mapping
+fitted on labelled items: isotonic regression of "the best candidate was right"
+on its raw score (`python -m evaluation.item_categories_calibrate`, below). It
+is a JSON file outside the repository with the breakpoints and what it was
+fitted for (categoriser, model, prompt version, score kind, number of items).
+`CATEGORISE_CALIBRATION_FILE` loads it at start-up; a file fitted for another
+categoriser or model stops the service, and an answer of another prompt version
+or score kind (a hosted answer without log-probabilities, say) keeps its raw
+scores. The best candidate's score is mapped; the others are mapped too and
+scaled down if they no longer fit under 1. `calibrated: true` means exactly
+this; without a file the service still answers, with `calibrated: false`.
+
+### One model or two
+
+The local categoriser can use the vision model already loaded for OCR (one copy
+in memory, about 7 GB) or a smaller text model loaded beside it. Measured on
+the invented sanity set (43 items in 11 receipts, `tests/fixtures/item_sanity_set.json`)
+on an M2 Max, with the 37 candidate categories:
+
+| Model | Right (top 1) | Seconds per item, prompt cached | Peak memory | Best ≥ 0.9 but wrong |
+| --- | --- | --- | --- | --- |
+| `mlx-community/Qwen3-VL-8B-Instruct-4bit` (the OCR model) | 39 of 43 | 0.6 to 0.7 | 6.7 GB (shared with OCR) | 3 |
+| `mlx-community/Qwen3-4B-Instruct-2507-4bit` | 34 of 43 | 0.35 | +3.2 GB beside the OCR model | 9 |
+| Qwen3-VL-8B without the shop's name | 32 of 43 | as above | as above | n/a |
+
+So the default is the OCR model: it is right more often, it is wrong with
+high confidence less often, and it costs no memory. A receipt of 20 items takes
+about 15 seconds after the first (which also computes the 1,600-token
+instructions once, about 5 seconds). The shop's name matters (39 against 32),
+which the hosted categoriser does not get. `MLX_CATEGORISE_MODEL` names another
+model when wanted.
+
+### The hosted categoriser
+
+`app/categorise/openrouter.py`, for comparison with the local one. It calls
+through the same `OpenRouterClient` as the hosted OCR backend, so every rule of
+"Zero data retention" above applies: the catalogue of strict zero-retention
+endpoints (text-only models allowed), the fixed `zdr` and `data_collection`
+preferences, the provider check of every answer, and the halt after a wrong
+one, which stops OCR and categorisation alike until the service restarts.
+
+- **Routing**: the endpoints that support both structured output and
+  log-probabilities when there are any; else structured output; else
+  log-probabilities; else any strict zero-retention endpoint.
+- **What is sent**: `model`, `messages` (the fixed instructions with the
+  category list, and the numbered item names), `temperature` 0, `max_tokens`
+  (64 plus 32 per item, at most `OPENROUTER_MAX_TOKENS`), `stream`,
+  `provider`, and where supported `response_format` (a JSON schema: keys "1" to
+  "n", each an enum of the slugs) and `logprobs` with `top_logprobs` 5. Never
+  the shop's name, an amount, a date, an id or anything of the ledger.
+- **Answer**: a JSON object naming one listed slug per item, else 422
+  `categorise_parse_failed` (no repair pass: the schema already constrains it).
+  Cost, latency and provider per call are accounted as for OCR.
+
+## Evaluating the item categoriser
+
+```sh
+# The categories the app sends (no personal data).
+bin/rails "categories:export_items[$HOME/Documents/money_bin_data/exports/item_categories.json]"
+# The labelled items.
+bin/rails "receipts:export_ground_truth[$HOME/Documents/money_bin_data/exports]"
+
+cd ml
+# A smoke test on the invented sanity set: counts and timings only.
+uv run python -m evaluation.item_sanity --categories ~/Documents/money_bin_data/exports/item_categories.json \
+  --backend mlx --with-ocr-model
+
+# A run over the labelled items, the label memory first.
+uv run python -m evaluation.item_categories_run \
+  --ground-truth ~/Documents/money_bin_data/exports/ground_truth.jsonl \
+  --ingest ~/Documents/money_bin_data/receipts \
+  --categories ~/Documents/money_bin_data/exports/item_categories.json \
+  --out ~/Documents/money_bin_data/runs --backend mlx --memory
+
+# A calibration from a run without one.
+uv run python -m evaluation.item_categories_calibrate --run ~/Documents/money_bin_data/runs/<run id> \
+  --ground-truth ~/Documents/money_bin_data/exports/ground_truth.jsonl
+```
+
+`item_categories_run` reads the ground-truth export (one record per receipt: one
+with `categories_known` first, then a person's before an imported one; labels
+only from a record with `categories_known`) and keeps the receipts of the
+receipt set that have a labelled item (`--all-receipts` for all, `--ids`,
+`--limit`). Receipts go in time order. Each receipt's items are categorised
+together in one call, with the shop's name for a local model. With `--memory`
+the label memory answers first, with the app's rule
+(`evaluation/label_memory.py`), from the labels of EARLIER receipts only, so no
+item is suggested its own label; the memory is the categoriser `label-memory`
+for the pre-fill rule. `--calibration FILE` applies a calibration; `--backend`
+and `--model` choose the categoriser.
+
+The run folder (outside any git repository, files readable by the owner only;
+the console prints counts) gets `predictions.jsonl`, one line per item:
+`receipt_id` (the ingest id), `position` (the item's place in the ground-truth
+document, from 1), `candidates` (up to three `{"category_slug", "score"}`, best
+first), `source` (`memory` or `model`), `seconds` and `cost_usd` (decimal
+strings: a call's time and cost split evenly over its items, the cost rounded
+to 10⁻¹²; memory costs `"0"`; null when not reported) and `error` (a code when
+the call failed, else null). `run.json` has `"task": "item_categories"`, the
+backend, model and weights revision, prompt and categories versions, the git
+commit, `calibrated`, the score kinds, the memory rule, counts (receipts, items,
+labelled items, memory and model items, failures, labels outside the category
+list), seconds per call and per model item, and for a hosted backend the cost
+(total, per receipt, per 1,000 items). Scoring is the evaluation harness's job.
+
+`item_categories_calibrate` fits on the model items of a run that have a label
+(at least 30, `--min-items`; `--ids` for a calibration slice), writes the file
+to `--out` (default `~/Documents/money_bin_data/models/`, refused inside git,
+mode 600) and prints the accuracy and the share of these items at a calibrated
+0.95 or more, which is optimistic on the items it was fitted on: fit on one
+part of the labelled receipts, evaluate on another.
+
 ## Evaluating OCR on the receipt set
 
 `evaluation/` runs a backend over the receipt set made by
@@ -498,13 +732,23 @@ app/
   schemas.py       request and response models
   errors.py        the shared error shape and handlers
   config.py        settings from environment variables
-  backends/
+  backends/        OCR
     __init__.py    registry: backend name -> class
-    base.py        the Backend interface
+    base.py        the Backend interface and the shared errors
     stub.py        the stub backend (default)
-    mlx.py         the local MLX backend: worker thread, VisionGenerator protocol
-    mlx_vlm_generator.py  the real model call (mlx-vlm); macOS on Apple silicon only
-    openrouter.py  the hosted backend: zero-retention routing, Transport protocol
+    mlx_worker.py  the one MLX worker thread, shared with the categoriser
+    mlx.py         the local MLX backend: VisionGenerator protocol
+    mlx_vlm_generator.py  the real model call (mlx-vlm), shared loaded models; Apple silicon only
+    openrouter.py  the hosted backend and OpenRouterClient: zero-retention routing, Transport protocol
+  categorise/      item categorisation
+    __init__.py    registry: categoriser name -> class
+    base.py        the Categoriser interface
+    prompt.py      the prompt, the answer schema, PROMPT_VERSION
+    labels.py      scoring every slug over a token trie (TokenModel protocol)
+    logprobs.py    scores from hosted token log-probabilities
+    calibration.py reading and applying a calibration
+    stub.py, mlx.py, openrouter.py  the categorisers
+    mlx_token_model.py  the real token model (mlx-vlm); Apple silicon only
   ocr/
     prompt.py      the prompt, the answer schema, PROMPT_VERSION
     parsing.py     the model's text to a raw receipt, with one repair pass
@@ -513,6 +757,10 @@ app/
 evaluation/
   ocr_run.py       run a backend over the receipt set
   ocr_fields.py    score a run against the QR codes
+  item_categories_run.py        run a categoriser over labelled items
+  item_categories_calibrate.py  fit a calibration from a run
+  item_sanity.py   a smoke test on the invented sanity set
+  label_memory.py  the label memory's rule, as the app applies it
   common.py        shared helpers (timings, cost summary)
 categoriser/       transaction categoriser training (see below)
 tests/
@@ -521,9 +769,9 @@ tests/
 ## Adding a real backend
 
 1. Create a class in `app/backends/` that extends `Backend` from `base.py`.
-   Set `name`, `model_name`, `categoriser_model_name` and `model_version`.
+   Set `name`, `model_name` and `model_version`.
    The constructor takes the `Settings`.
-2. Implement `extract_receipt(images)` and `categorise(texts)`.
+2. Implement `extract_receipt(images)`.
    `extract_receipt` returns an `Extraction` (the `Receipt`, the prompt
    version, whether a repair was needed, and diagnostics for the evaluation).
    A vision model backend uses `app/ocr/` for the prompt, the parsing and the
@@ -534,7 +782,10 @@ tests/
 3. If it needs to load something, do it in `start()` (called once when the
    service starts) and release it in `stop()`.
 4. Add the class to `BACKENDS` in `app/backends/__init__.py`. It can now be
-   selected with `OCR_BACKEND`.
+   selected with `OCR_BACKEND`. A categoriser is the same in `app/categorise/`:
+   a `Categoriser` with `categorise(request)` returning a `Categorisation`,
+   registered in `CATEGORISERS`, selected with `CATEGORISE_BACKEND`; it answers
+   with the request's slugs only and uses `prompt.py`.
 5. Read any new settings (model path, API key) in `app/config.py`. Never
    commit keys or model weights.
 6. Add tests. The tests must not need network access or real model weights.

@@ -13,8 +13,9 @@ owner's machine, and the data and photos stay there.
   AI agent ┘   (UI, API, MCP)      ├─> local disk (Active Storage: receipt photos)
                      │             │
                      └─> Sidekiq ──┴─> ML service :8100 (FastAPI, ml/)
-                                         OCR + categorisation; backend: stub, or a
-                                         local Qwen VL model (MLX), or a hosted
+                                         OCR + item categorisation, each with its
+                                         own backend: stub, a local Qwen VL model
+                                         (MLX; one model for both), or a hosted
                                          model through OpenRouter (zero retention)
 ```
 
@@ -25,13 +26,16 @@ How coding agents share the work is in
 [`docs/decisions/0003-agent-tooling.md`](docs/decisions/0003-agent-tooling.md), and how the local OCR model
 runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-ocr-backend.md), and how a
 hosted model reads receipts under a zero-data-retention rule in
-[`docs/decisions/0012-hosted-ocr-backend.md`](docs/decisions/0012-hosted-ocr-backend.md).
+[`docs/decisions/0012-hosted-ocr-backend.md`](docs/decisions/0012-hosted-ocr-backend.md), and how receipt
+items get category suggestions (the label memory, a zero-shot model, where confidence comes from) in
+[`docs/decisions/0015-item-categoriser.md`](docs/decisions/0015-item-categoriser.md).
 
 ## Status
 
 Phase 1: the skeleton and the data model. The Rails app boots with a dashboard and the UI helpers, the
-owner signs in, sees the ledger at a glance, sees the receipts, uploads new ones and has them read by OCR, corrects them in a review form and
-accepts them into the ledger, enters an expense by hand, AI agents authenticate with personal API tokens and read the ledger through a read-only
+owner signs in, sees the ledger at a glance, sees the receipts, uploads new ones and has them read by OCR,
+gets a category suggestion with a confidence for every item (the owner's own earlier labels first, then a
+zero-shot model), corrects them in a review form and accepts them into the ledger, enters an expense by hand, AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
 with a local vision model (`OCR_BACKEND=mlx`, Apple silicon) or a hosted one through OpenRouter
 (`OCR_BACKEND=openrouter`, zero-data-retention endpoints only), and CI checks both. The domain model is described in
@@ -410,9 +414,12 @@ The review form (rules: [`docs/domain.md`](docs/domain.md), "Review"):
   mark and "Use the QR value"; the account to book on (the receipt's currency first, the last one used
   chosen);
 - the items, edited in place: name, quantity, unit price, discount, amount and a category picker that
-  filters as you type (part of a category or group name). A suggested category shows its confidence; Enter
-  in an empty category field takes it, and "Accept suggestions" takes every one at or above a typed
-  confidence. A card slip has no items, only one category for its total;
+  filters as you type (part of a category or group name). A suggested category shows its confidence and
+  where it came from ("from your labels", "from the model"); Enter in an empty category field takes it,
+  and "Accept suggestions" takes every one at or above a typed confidence. A line above the form says
+  how many items have a suggestion (or why the categoriser could not answer) and offers **Suggest
+  categories again**, which asks without reading the receipt again. A card slip has no items, only one
+  category for its total;
 - live totals (items, total, difference, QR total) in exact hundredths as you type; the saved figures are
   the server's;
 - **Save** (Ctrl+S or Cmd+S) stores the corrections; **Accept** (Ctrl+Enter or Cmd+Enter) saves and books
@@ -454,7 +461,15 @@ OCR runs in Sidekiq (`bin/dev` starts it) with the ML service (`OCR_BACKEND`, se
   one stuck "reading" for over an hour; an accepted receipt is never read again;
 - "Read all in this filter" queues every unread receipt the filter shows, and every failed one that has no
   items to lose. The OCR queue reads
-  one receipt at a time, so a few hundred receipts take hours with a local model.
+  one receipt at a time, so a few hundred receipts take hours with a local model;
+- right after a read, the same job fills the items' category suggestions (`CATEGORISE_BACKEND`): first
+  from the label memory (items with the same name you labelled on other receipts), the rest in one call to
+  the ML service. A categoriser that cannot answer never fails the receipt: it is ready for review without
+  suggestions and the page says so. Suggestions never change a category you chose.
+
+To compare categorisers offline, `bin/rails "categories:export_items[FILE]"` writes the candidate categories
+the app sends, and `ml/evaluation/item_categories_run` runs a backend over the labelled items of the
+ground-truth export (see `ml/README.md`, "Evaluating the item categoriser").
 
 The pages follow OCR live (Turbo Streams over Action Cable, through Redis): the status and the data change
 when a job starts, finishes or fails, without a reload. The rules are in
