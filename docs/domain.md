@@ -619,8 +619,19 @@ before), `label-memory` (`LabelMemory::CATEGORISER_NAME`) when the memory filled
 has a suggestion. A mix of memory and model names the model: the receipt must leave the model's test set,
 and the memory, a rule over the owner's own labels, keeps it; that makes the memory's own score slightly
 optimistic on such receipts (an accepted limit; the per-item source stays in `suggested_by` should the
-evaluation need it). A name never empty while suggestions are on the items, so a receipt is not lost to
-every categoriser as `source:unknown`.
+evaluation need it). When suggestions are filled again by a different categoriser on a receipt where a
+person already chose a category, the receipt records `source:unknown` instead of the new name: the earlier
+suggestions may have shaped that choice, and naming only the latest would let the earlier categoriser be
+scored on it. A memory-only or model receipt otherwise always names its categoriser, so it is not lost to
+every categoriser; a receipt whose items carry suggestions of an unknown source (filled before this
+existed) stays nil, which the pre-fill rule reads as `source:unknown`.
+
+**Limits, accepted.** A taken suggestion counts as a person's label, so the memory can repeat what the
+model or the memory suggested before (two taken suggestions already reach 0.92); the evaluation measures
+the memory on labels it did not pre-fill. The stub categoriser (the ML service's default) suggests invented
+categories: set `CATEGORISE_BACKEND` (to `mlx`, or `off`) when OCR runs on a real model; the page names the
+categoriser (`stub-categoriser`) in its summary line. The confidence is stored as a number only: whether
+the service calibrated it is in its answer (`calibrated`) but not on the item yet.
 
 ### Label memory
 
@@ -934,6 +945,33 @@ labelled. "Save" and "Accept" never write ground truth.
 converts nothing). A field the record leaves unknown is emptied, so nothing of the model's answer stays;
 every row is replaced and the new rows have no category. The hidden `filled_from` field becomes `dps_xml`,
 and any save then stores it on the receipt (only that value, and only when the record exists).
+
+### Labelling without suggestions
+
+A categoriser is not evaluated on labels it pre-filled (below), and that includes the label memory. So
+labels that are fair to every categoriser come from receipts labelled with no suggestion on screen at all.
+`CATEGORISE_BACKEND=off` (in the shared `.env`, read by the app and the ML service; restart both) switches
+every suggestion off, the label memory's included (`ItemSuggestions`):
+
+- a receipt read meanwhile gets its items and no suggestion; `Receipts::SuggestCategories` does nothing
+  and records nothing, so `categoriser_model_name` stays nil and a ground-truth record saved from it has
+  `categories_prefilled_by` nil: test ground truth for every categoriser;
+- the review form shows no suggestion, no "Use", no "Accept suggestions" and no "Suggest categories again",
+  and Enter in an empty category takes nothing; a suggestion stored earlier stays on the item, hidden;
+- "Suggest categories again" is refused, and the ML service answers `/categorise` with 501.
+
+The protocol:
+
+1. Set `CATEGORISE_BACKEND=off` and restart the app and the ML service.
+2. Read a share of the receipts (for example "Read all" over a batch kept for testing) and label each one
+   with "Save as ground truth", all before step 3: a suggestion filled later on a receipt a person labelled
+   marks it `source:unknown` (see "Category suggestions").
+3. Set `CATEGORISE_BACKEND` back to the backend that should suggest. A receipt read while suggestions were
+   off gets them with "Suggest categories again" whenever wanted.
+
+Two limits: a receipt that already carried suggestions before the switch keeps them on its items, so its
+record still names their categoriser (it leaves that categoriser's test set, on the safe side); and the
+person's own memory of earlier receipts is not switched off.
 
 ### The pre-fill rule
 

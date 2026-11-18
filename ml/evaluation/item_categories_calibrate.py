@@ -11,7 +11,11 @@ it was right) goes into an isotonic regression: a monotone step function from
 score to the share of right answers. Its breakpoints are written to a JSON
 file that the service reads (`CATEGORISE_CALIBRATION_FILE`), with the backend,
 model, prompt version and score kind it is valid for. Items the label memory
-answered are left out: they have their own rule.
+answered are left out: they have their own rule. So are the receipts whose
+labels were chosen with this model's suggestions on screen (the ground truth's
+`categories_prefilled_by` names it, or is `source:unknown`): a person who takes
+confident suggestions makes them "right" by construction, which would inflate
+exactly the high scores a threshold uses.
 
 The file goes to `--out` (default `~/Documents/money_bin_data/models/`), which
 must be outside any git repository; it holds numbers only, but it is fitted on
@@ -91,6 +95,14 @@ def pairs(
     return result
 
 
+UNKNOWN_CATEGORISER = "source:unknown"
+
+
+def prefilled_by(categoriser: str | None, model_name: str) -> bool:
+    """Whether labels chosen with `categoriser`'s suggestions on screen are this model's own."""
+    return categoriser is not None and categoriser.strip() in (model_name, UNKNOWN_CATEGORISER)
+
+
 def fit(points: list[tuple[float, int]]) -> tuple[list[float], list[float]]:
     from sklearn.isotonic import IsotonicRegression
 
@@ -117,6 +129,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     labels = {
         (receipt.ingest_id, item.position): item.label
         for receipt in receipts
+        if not prefilled_by(receipt.categories_prefilled_by, summary["model_name"])
         for item in receipt.items
         if item.label
     }

@@ -10,6 +10,9 @@
 # prints the same way, which is what the memory is for. A missed match costs a model call; a wrong merge
 # would put one product's label on another.
 #
+# Changing the rule needs a migration that recomputes `receipt_items.name_key` (the first one called this
+# method), or older labels stop matching.
+#
 # ml/evaluation/label_memory.py is the same rule for the offline evaluation; both read the shared cases in
 # ml/tests/fixtures/item_name_keys.json, so the two cannot drift apart.
 module ItemName

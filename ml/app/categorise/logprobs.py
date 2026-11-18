@@ -117,12 +117,13 @@ def item_scores(
                 text = typed + alternative[len(outside) :]
                 complete = '"' in text
                 text = text.split('"', 1)[0]
+                # Counted with the chosen slug: a prefix that could still be it is ambiguous.
                 reachable = [
                     other
                     for other in slugs
-                    if other != slug and (other == text if complete else other.startswith(text))
+                    if (other == text if complete else other.startswith(text))
                 ]
-                if len(reachable) == 1:
+                if len(reachable) == 1 and reachable[0] != slug:
                     other = reachable[0]
                     scores[other] = scores.get(other, 0.0) + math.exp(before + logprob)
             before += token.logprob

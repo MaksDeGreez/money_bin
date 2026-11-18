@@ -43,3 +43,16 @@ def test_the_memory_suggests_a_strict_majority_only() -> None:
     assert memory.suggest("Хліб") is None  # one each: no majority
     assert memory.suggest("Сир") is None
     assert memory.suggest("--") is None  # an empty key is never stored
+
+
+def test_labels_outside_the_candidates_are_not_counted() -> None:
+    memory = LabelMemory(allowed=["groceries/groceries"])
+    memory.add("Хліб", "uncategorised/uncategorised")
+    memory.add("Хліб", "uncategorised/uncategorised")
+    memory.add("Хліб", "groceries/groceries")
+    memory.add("Сир", "uncategorised/uncategorised")
+
+    suggestion = memory.suggest("Хліб")
+    assert suggestion is not None
+    assert (suggestion.slug, suggestion.labels) == ("groceries/groceries", 1)
+    assert memory.suggest("Сир") is None

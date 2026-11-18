@@ -246,3 +246,19 @@ def test_a_calibration_for_another_model_stops_the_service(tmp_path: Path) -> No
 
     with pytest.raises(CalibrationError, match="fitted for stub 'another-model'"), TestClient(app):
         pass
+
+
+def test_an_alternative_that_could_still_be_the_chosen_slug_is_not_attributed() -> None:
+    answer = '{"1": "eating-out/cafes-bars-restaurants"}'
+    content = tokens(
+        ('{"1": "', 0.0, []),
+        ("eating-out/caf", math.log(0.7), [("eat", math.log(0.2))]),
+        ('es-bars-restaurants"}', 0.0, []),
+    )
+
+    (candidates,) = item_scores(answer, content, ["eating-out/cafes-bars-restaurants"], SLUG_LIST)
+
+    # "eat" leads to both eating-out slugs: neither gets its probability.
+    assert [(c.slug, round(c.score, 6)) for c in candidates] == [
+        ("eating-out/cafes-bars-restaurants", 0.7)
+    ]

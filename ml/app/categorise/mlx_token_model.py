@@ -64,10 +64,17 @@ class MlxTokenModel:
         if self._vision_positions:
             positions = mx.arange(offset, offset + len(tokens)).reshape(1, 1, -1)
             arguments["position_ids"] = mx.broadcast_to(positions, (3, 1, len(tokens)))
-        output = self._language_model(mx.array([list(tokens)]), cache=self._cache, **arguments)
+        try:
+            output = self._language_model(mx.array([list(tokens)]), cache=self._cache, **arguments)
+            logits = output.logits[0, -1, :]
+            mx.eval(logits)
+        except BaseException:
+            # Some layers may have stored the tokens and others not: start from an empty cache, so a
+            # later prompt is never scored against a half-written one.
+            self._cache = cache_module.make_prompt_cache(self._language_model)
+            self._tokens = []
+            raise
         self._tokens.extend(tokens)
-        logits = output.logits[0, -1, :]
-        mx.eval(logits)
         return logits
 
     def _next(self, logits: mx.array) -> NextToken:

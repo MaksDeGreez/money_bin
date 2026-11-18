@@ -10,6 +10,8 @@ database. Both normalise names the same way, checked by the shared cases in
   turned into those Cyrillic letters, then everything but letters and digits
   dropped (spaces, punctuation, signs). Sizes are kept: they are welded to
   the name in irregular forms, and the same product usually prints the same way.
+- **The labels**: only categories among the candidates count (the app's memory
+  filters by the candidate list too), so Uncategorised is never repeated.
 - **The suggestion**: among the labelled items with the same key, the category
   given most often, when it has a strict majority (more than half). With `n`
   labels of which `k` agree, the confidence is (k + 1) / (n + 1.25): the mean
@@ -20,6 +22,7 @@ database. Both normalise names the same way, checked by the shared cases in
 
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 # Lower-case Latin letters whose upper-case forms look like Cyrillic ones in print.
@@ -50,12 +53,19 @@ class MemorySuggestion:
 
 
 class LabelMemory:
-    """Labels seen so far, by name key."""
+    """Labels seen so far, by name key.
 
-    def __init__(self) -> None:
+    Only labels among `allowed` (the candidate categories, as the app's memory
+    only counts those) are kept; None keeps every label.
+    """
+
+    def __init__(self, allowed: Iterable[str] | None = None) -> None:
         self._votes: defaultdict[str, Counter[str]] = defaultdict(Counter)
+        self._allowed = None if allowed is None else frozenset(allowed)
 
     def add(self, name: str, slug: str) -> None:
+        if self._allowed is not None and slug not in self._allowed:
+            return
         key = name_key(name)
         if key:
             self._votes[key][slug] += 1

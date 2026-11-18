@@ -159,4 +159,67 @@ class Receipts::SuggestCategoriesTest < ActiveSupport::TestCase
 
     assert_turbo_stream_broadcasts @receipt, count: 1
   end
+
+  test "switched off, nothing is suggested, asked or recorded, the label memory included" do
+    with_env("CATEGORISE_BACKEND" => " Off ") do
+      assert_equal :off, call.status
+    end
+
+    assert_empty ml_requests(:categorise)
+    assert @receipt.items.reload.none?(&:suggested_category_id)
+    @receipt.reload
+    assert_nil @receipt.categoriser_model_name
+    assert_nil @receipt.categorised_at
+  end
+
+  test "a receipt read while suggestions were off gets them once they are on" do
+    with_env("CATEGORISE_BACKEND" => "off") { call }
+    stub_ml_categorise([ "Kebab", "Pills" ])
+
+    with_env("CATEGORISE_BACKEND" => "mlx") { assert_equal :suggested, call.status }
+
+    assert_equal 3, @receipt.items.reload.count(&:suggested_category_id)
+  end
+
+  test "a different categoriser on a receipt a person already labelled is recorded as unknown" do
+    @receipt.update_columns(categoriser_model_name: "earlier-model")
+    stub_ml_categorise([ "Kebab", "Pills" ], model_name: "later-model")
+
+    call
+
+    assert_equal ReceiptGroundTruth::CATEGORISER_UNKNOWN, @receipt.reload.categoriser_model_name
+  end
+
+  test "the same categoriser again, or nobody labelled yet, keeps the name" do
+    @receipt.update_columns(categoriser_model_name: "stub-categoriser")
+    stub_ml_categorise([ "Kebab", "Pills" ])
+    call
+    assert_equal "stub-categoriser", @receipt.reload.categoriser_model_name
+
+    @kebab.update_columns(accepted_by_user: false)
+    @receipt.update_columns(categoriser_model_name: "earlier-model")
+    call
+    assert_equal "stub-categoriser", @receipt.reload.categoriser_model_name
+  end
+
+  test "long names are cut to the service's limit and a long receipt goes in batches" do
+    @pills.update_columns(name: "П" * 400)
+    stub_const_texts = Receipts::SuggestCategories::MAX_TEXTS
+    Receipts::SuggestCategories.send(:remove_const, :MAX_TEXTS)
+    Receipts::SuggestCategories.const_set(:MAX_TEXTS, 1)
+    stub_request(:post, ml_url("/categorise")).to_return do |request|
+      ml_requests(:categorise) << request
+      texts = JSON.parse(request.body)["texts"]
+      { status: 200, body: JSON.generate(ml_categorise_body(texts)), headers: { "Content-Type" => "application/json" } }
+    end
+
+    call
+
+    sent = ml_requests(:categorise).map { |request| JSON.parse(request.body)["texts"] }
+    assert_equal [ [ "Kebab" ], [ "П" * 300 ] ], sent
+    assert_equal "model", @pills.reload.suggested_by
+  ensure
+    Receipts::SuggestCategories.send(:remove_const, :MAX_TEXTS)
+    Receipts::SuggestCategories.const_set(:MAX_TEXTS, stub_const_texts)
+  end
 end

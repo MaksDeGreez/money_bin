@@ -6,7 +6,7 @@ it pick token by token (greedy constrained decoding, which gives the
 probability of the path it took and nothing about the others), every slug is
 scored:
 
-- each slug is tokenised (followed by the closing quote) and the token
+- each slug is tokenised (followed by the closing `",`, or `"}` for the last item) and the token
   sequences form a trie;
 - at every node where the slugs part ways, the model's logits for the allowed
   next tokens are renormalised among those tokens only (a softmax over them);
@@ -29,12 +29,16 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 ANSWER_START = '{"1": "'
-VALUE_END = '"'
+# What closes a value: the quote and what follows it, written as the model writes them (a
+# tokeniser has `",` and `"}` as tokens of their own), so a slug's last branch is scored on the
+# natural token.
+VALUE_END = '",'
+LAST_VALUE_END = '"}'
 
 
 def separator(number: int) -> str:
-    """What follows an answer before the value for item `number`."""
-    return f', "{number}": "'
+    """What follows a closed value (`",`) before the value for item `number`."""
+    return f' "{number}": "'
 
 
 class NextToken(Protocol):
@@ -86,8 +90,8 @@ class LabelSet:
     root: _Node
 
     @classmethod
-    def build(cls, model: TokenModel, labels: Sequence[str]) -> "LabelSet":
-        end = model.encode(VALUE_END)
+    def build(cls, model: TokenModel, labels: Sequence[str], close: str = VALUE_END) -> "LabelSet":
+        end = model.encode(close)
         sequences = tuple(tuple(model.encode(label) + end) for label in labels)
         root = _Node()
         for index, sequence in enumerate(sequences):
@@ -151,12 +155,14 @@ def score_items(
     `labels`, adding up to 1), and the number of model calls.
     """
     label_set = LabelSet.build(model, labels)
+    last_set = LabelSet.build(model, labels, LAST_VALUE_END)
     prompt = model.chat_tokens(messages, ANSWER_START)
     stats = ScoreStats(model_calls=1, prompt_tokens=len(prompt))
     next_token = model.prefill(prompt)
     results: list[list[float]] = []
     for number in range(1, count + 1):
-        log_probabilities = _score_node(model, label_set.root, next_token, stats)
+        current = last_set if number == count else label_set
+        log_probabilities = _score_node(model, current.root, next_token, stats)
         values = [math.exp(log_probabilities[index]) for index in range(len(labels))]
         total = sum(values)
         probabilities = [value / total for value in values]

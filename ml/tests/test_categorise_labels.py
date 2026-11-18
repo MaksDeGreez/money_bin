@@ -46,9 +46,9 @@ def test_items_are_scored_in_one_chat_with_the_earlier_answers_written_in() -> N
     # The cache ends where item 3 is answered; items 1 and 2 hold their best slugs.
     assert text.endswith(
         ANSWER_START
-        + 'groceries/groceries"'
+        + 'groceries/groceries",'
         + separator(2)
-        + 'health/health-pharmacy"'
+        + 'health/health-pharmacy",'
         + separator(3)
     )
     assert [call[0] for call in model.calls].count("prefill") == 1
@@ -81,8 +81,8 @@ def test_a_deeper_split_is_fed_and_rewound() -> None:
 def test_a_label_that_starts_another_is_refused() -> None:
     class SplitModel(FakeTokenModel):
         def encode(self, text: str) -> list[int]:
-            # A tokeniser that never emits the closing quote makes "a/b" a prefix of "a/bc".
-            return [ord(char) for char in text if char != '"']
+            # A tokeniser that never emits the closing marks makes "a/b" a prefix of "a/bc".
+            return [ord(char) for char in text if char not in '",}']
 
     with pytest.raises(ValueError, match="start of another"):
         LabelSet.build(SplitModel({}), ["a/b", "a/bc"])

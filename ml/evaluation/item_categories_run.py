@@ -49,7 +49,7 @@ from typing import Any, TextIO
 from pydantic import ValidationError
 
 from app.backends import BackendError
-from app.categorise import CATEGORISERS, CategoriseInput, Categoriser, create_categoriser
+from app.categorise import SUGGESTING, CategoriseInput, Categoriser, create_categoriser
 from app.categorise.calibration import Calibration, CalibrationError, calibrate, load_calibration
 from app.categorise.prompt import PROMPT_VERSION, CategoryOption, categories_version
 from app.config import Settings
@@ -89,6 +89,9 @@ class Receipt:
     merchant: str | None
     issued_at: str | None
     items: tuple[Item, ...]
+    # The categoriser whose suggestions were on the form when the labels were chosen (the record's
+    # `categories_prefilled_by`), for the pre-fill rule; None when none was.
+    categories_prefilled_by: str | None = None
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -100,7 +103,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--ingest", required=True, type=Path, help="the receipt set folder")
     parser.add_argument("--categories", required=True, type=Path, help="the exported categories")
     parser.add_argument("--out", required=True, type=Path, help="the folder for run folders")
-    parser.add_argument("--backend", default="mlx", choices=sorted(CATEGORISERS))
+    parser.add_argument("--backend", default="mlx", choices=SUGGESTING)
     parser.add_argument("--model", help="the model id (MLX_CATEGORISE_MODEL or the hosted one)")
     parser.add_argument("--memory", action="store_true", help="the label memory goes first")
     parser.add_argument("--calibration", type=Path, help="a calibration file to apply")
@@ -129,7 +132,7 @@ def read_ground_truth(path: Path) -> list[Receipt]:
     """
     if not path.is_file():
         raise UsageError(f"ground-truth file not found: {path}")
-    chosen: dict[str, tuple[int, dict[str, Any]]] = {}
+    chosen: dict[str, tuple[tuple[int, int], dict[str, Any], str | None]] = {}
     for line in read_jsonl(path):
         ingest_id = line.get("ingest_id")
         document = line.get("document")
@@ -140,9 +143,10 @@ def read_ground_truth(path: Path) -> list[Receipt]:
         known = line.get("categories_known") is True
         rank = (0 if known else 1, SOURCE_PREFERENCE.get(str(line.get("source")), 9))
         if ingest_id not in chosen or rank < chosen[ingest_id][0]:
-            chosen[ingest_id] = (rank, document)
+            prefilled = line.get("categories_prefilled_by")
+            chosen[ingest_id] = (rank, document, prefilled if isinstance(prefilled, str) else None)
     receipts = []
-    for ingest_id, ((unknown, _), document) in chosen.items():
+    for ingest_id, ((unknown, _), document, prefilled) in chosen.items():
         items = []
         for index, item in enumerate(document.get("items") or [], start=1):
             if not isinstance(item, dict) or _text(item.get("name")) is None:
@@ -159,6 +163,7 @@ def read_ground_truth(path: Path) -> list[Receipt]:
                     _text(document.get("merchant")),
                     _text(document.get("issued_at")),
                     tuple(items),
+                    None if unknown else prefilled,
                 )
             )
     return receipts
@@ -309,7 +314,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     categoriser = create_categoriser(args.backend, settings)
     slugs = {category.slug for category in categories}
     labels = [item.label for receipt in receipts for item in receipt.items if item.label]
-    memory = LabelMemory() if args.memory else None
+    memory = LabelMemory(allowed=slugs) if args.memory else None
 
     started_at = datetime.now(UTC)
     counts: Counter[str] = Counter()

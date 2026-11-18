@@ -72,7 +72,8 @@ So the backend does not rely on the account setting alone:
 3. Every answer names the provider that served it. An answer from a provider outside the list (or without
    one) is discarded with 424 `openrouter_provider_unverified`, and from then on the backend sends
    nothing until the service is restarted (an evaluation run stops): a photo may already have gone to the
-   wrong place, and a person has to look before any more do. Chat calls go one at a time, from sending to this check
+   wrong place, and a person has to look before any more do. Since the hosted item categoriser shares the
+   client, the halt is process-wide: after a wrong provider on either task, neither sends anything. Chat calls go one at a time, from sending to this check
    (a lock), so a concurrent request cannot slip out in between; the Rails OCR queue reads one receipt at
    a time anyway, so nothing is lost.
 
@@ -189,8 +190,10 @@ actually served by (the answer's `model`) is recorded per call in the evaluation
 ### What stays local, always
 
 The transaction categoriser (`docs/decisions/0006-transaction-categoriser.md`) and all ledger data:
-transactions, payees, comments, bank descriptions, accounts, categories. `/categorise` answers 501 on this
-backend. Nothing in this backend reads the database; it sees only the photos it is handed.
+transactions, payees, comments, bank descriptions, accounts, the categories given to anything. Nothing in
+this backend reads the database; it sees only the photos it is handed. (Later, item categorisation got a
+hosted option of its own, `CATEGORISE_BACKEND=openrouter`, through the same client and rules: it sends the
+item names and the app's category list, nothing else; `docs/decisions/0015-item-categoriser.md`.)
 
 ## Consequences
 

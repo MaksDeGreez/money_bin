@@ -82,7 +82,7 @@ model (`python -m evaluation.item_sanity`, below).
 | Variable                       | Default                                     | Values                      | Meaning |
 | ------------------------------ | ------------------------------------------- | --------------------------- | ------- |
 | `OCR_BACKEND`                  | `stub`                                      | `stub`, `mlx`, `openrouter` | The OCR backend. |
-| `CATEGORISE_BACKEND`           | `stub`                                      | `stub`, `mlx`, `openrouter` | The item categoriser, chosen apart from OCR. |
+| `CATEGORISE_BACKEND`           | `stub`                                      | `stub`, `mlx`, `openrouter`, `off` | The item categoriser, chosen apart from OCR. `off` switches suggestions off: `/categorise` answers 501, and the Rails app, which reads the same setting, asks nothing and fills nothing, not even from its label memory (labelling with no suggestions on screen, `docs/domain.md`). |
 | `MLX_CATEGORISE_MODEL`         | empty: `MLX_OCR_MODEL`                      | a Hugging Face id or a folder | The local categoriser's model. Empty means the OCR model: with `OCR_BACKEND=mlx` the one loaded model does both jobs (see "One model or two"). A text model such as `mlx-community/Qwen3-4B-Instruct-2507-4bit` works too. |
 | `CATEGORISE_CALIBRATION_FILE`  | none                                        | a path outside the repository | A calibration of the categoriser's scores (see "Calibration"). It must have been fitted for the configured categoriser and model, or the service does not start. |
 | `OPENROUTER_CATEGORISE_MODEL`  | none                                        | a model id from openrouter.ai/models | The hosted categoriser's model (text only is fine). No default: with `CATEGORISE_BACKEND=openrouter` the service does not start without it. |
@@ -482,6 +482,41 @@ them (below).
 It is zero-shot: no training on the owner's labels; the model gets the
 category list with descriptions and answers with a slug from it.
 
+### The categoriser interface
+
+`app/categorise/base.py`, deliberately narrow, so another kind of categoriser
+(a trained one, a decision model, a combination of several) fits in as one more
+`CATEGORISE_BACKEND` value:
+
+    Categoriser.categorise(CategoriseInput(categories, texts, merchant)) -> Categorisation
+
+- in: the items of one receipt (`texts`), the taxonomy to choose from
+  (`categories`: `CategoryOption`s with `slug`, `name`, `description`,
+  `group`) and the context (`merchant`, which a hosted categoriser must not
+  send);
+- out: per item 1 to 3 `Candidate`s (slug, score), best first, scores adding up
+  to at most 1; the `score_kind`; the `prompt_version`; and `diagnostics`, the
+  accounting (`model_calls`, tokens, `seconds`, and for a paid call `cost_usd`
+  as a decimal string);
+- errors: `BackendError` (a 5xx other than 501 is retried by the app) or
+  `BackendNotImplementedError` (501).
+
+The service checks every answer against the request's slugs and applies the
+calibration itself; `start()` and `stop()` load and release a model.
+
+**The category hand-over** is one shape in two places: the `categories` of a
+request, and the file `bin/rails "categories:export_items[FILE]"` writes
+(`{"categories": [...]}`). `app/categorise/taxonomy.py` reads both
+(`parse_categories(rows)`, `read_categories_file(path)`) with the same checks,
+so an offline script gets exactly the list the app sends:
+
+```python
+from pathlib import Path
+from app.categorise.taxonomy import read_categories_file
+
+categories = read_categories_file(Path("item_categories.json"))  # tuple of CategoryOption
+```
+
 ### The prompt
 
 `app/categorise/prompt.py`, shared by every categoriser and versioned like the
@@ -747,7 +782,8 @@ app/
     labels.py      scoring every slug over a token trie (TokenModel protocol)
     logprobs.py    scores from hosted token log-probabilities
     calibration.py reading and applying a calibration
-    stub.py, mlx.py, openrouter.py  the categorisers
+    taxonomy.py    the category hand-over: a request's list or an exported file
+    stub.py, mlx.py, openrouter.py, off.py  the categorisers (off: switched off)
     mlx_token_model.py  the real token model (mlx-vlm); Apple silicon only
   ocr/
     prompt.py      the prompt, the answer schema, PROMPT_VERSION

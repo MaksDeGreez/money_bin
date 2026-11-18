@@ -273,7 +273,12 @@ def test_no_labelled_receipt_is_a_usage_error(files: dict[str, Path], tmp_path: 
     [
         ("[]", "no list"),
         ("not json", "not JSON"),
-        (json.dumps({"categories": [{"slug": "a/b"}, {"slug": "c/d"}]}), "needs a slug"),
+        (json.dumps({"categories": [{"slug": "a/b"}, {"slug": "c/d"}]}), "name is empty"),
+        (json.dumps({"categories": [CATEGORIES[0]]}), "2 to 100"),
+        (
+            json.dumps({"categories": [{**CATEGORIES[0], "slug": "groceries"}, CATEGORIES[1]]}),
+            "slug",
+        ),
         (json.dumps({"categories": [CATEGORIES[0], CATEGORIES[0]]}), "twice"),
     ],
 )
@@ -347,10 +352,11 @@ def make_run(tmp_path: Path, rows: list[tuple[str, int, str, float]], **summary:
     return run_dir
 
 
-def labelled_truth(tmp_path: Path, count: int) -> Path:
+def labelled_truth(tmp_path: Path, count: int, prefilled_by: str | None = None) -> Path:
     items = [item(f"item {n}", "groceries/groceries") for n in range(count)]
     path = tmp_path / "gt.jsonl"
-    path.write_text(json.dumps(gt_line("rcpt_000001", items)) + "\n")
+    line = gt_line("rcpt_000001", items, categories_prefilled_by=prefilled_by)
+    path.write_text(json.dumps(line) + "\n")
     return path
 
 
@@ -465,3 +471,22 @@ def test_the_sanity_command_needs_every_slug(tmp_path: Path) -> None:
     path.write_text(json.dumps({"categories": CATEGORIES}))
 
     assert item_sanity.main(["--categories", str(path), "--backend", "stub"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("prefilled_by", "items"),
+    [("example/model", 0), ("source:unknown", 0), ("label-memory", 40), ("another/model", 40)],
+)
+def test_labels_the_model_pre_filled_are_not_fitted_on(
+    tmp_path: Path, prefilled_by: str, items: int
+) -> None:
+    rows = [("rcpt_000001", n + 1, "groceries/groceries", 0.5 + n / 100) for n in range(40)]
+    run_dir = make_run(tmp_path, rows)
+    truth = labelled_truth(tmp_path, 40, prefilled_by)
+    args = calibrate_args(run_dir, truth, tmp_path / "models", "--min-items", "1")
+
+    if items == 0:
+        with pytest.raises(UsageError, match="only 0 labelled"):
+            item_categories_calibrate.run(args, io.StringIO())
+    else:
+        assert item_categories_calibrate.run(args, io.StringIO())["items"] == items

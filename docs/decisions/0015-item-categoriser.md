@@ -129,6 +129,28 @@ same client reads the zero-retention catalogue, sets the fixed provider preferen
 every answer, and halts all hosted calls (OCR and categorisation) after a wrong one until the service
 restarts.
 
+### Suggestions can be switched off, for fair test labels
+
+A categoriser is not evaluated on labels it pre-filled, the label memory included. `CATEGORISE_BACKEND=off`
+switches every suggestion off, in the app (which reads the same setting) and in the service, so the owner
+can label receipts that nothing pre-filled; "Suggest categories again" fills them later. One setting rather
+than two, so the app and the service cannot disagree about whether suggestions are on.
+
+### A narrow interface and a reusable hand-over
+
+The categoriser interface is one call (`categorise(items, taxonomy, context) -> candidates with scores`,
+plus accounting), and the category list is read by one parser for both a request and the exported file
+(`ml/app/categorise/taxonomy.py`), so offline scripts and other kinds of categoriser (a decision model
+returning a probability per category, a combiner of several runs) use exactly what the app sends and plug
+in as one more `CATEGORISE_BACKEND` value.
+
+### What still reaches a hosted categoriser, within the rule
+
+The category names and descriptions are the app's taxonomy, so a description the owner edits leaves the
+machine with every hosted request; and a line OCR misread as an item (a cashier's name, a loyalty number)
+is an "item name" and goes too. Both are inside the owner's rule (item names only, zero retention), and
+worth knowing before switching categorisation to a hosted model.
+
 ## Consequences
 
 - The owner can take confident suggestions in bulk from the first receipt; with labels, the memory takes

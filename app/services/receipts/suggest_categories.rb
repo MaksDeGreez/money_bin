@@ -15,6 +15,10 @@ module Receipts
   #    model: its test set must lose the receipt; the label memory, a rule over the owner's own labels, keeps
   #    it (the per-item source stays in `suggested_by`).
   #
+  # With suggestions switched off (ItemSuggestions, CATEGORISE_BACKEND=off) it does nothing at all, the label
+  # memory included: no suggestion, no categoriser_model_name, nothing recorded (status :off). "Suggest
+  # categories again" fills them later, once they are on.
+  #
   # What it never does:
   # - write `category_id` or `accepted_by_user`: a suggestion is only ever a suggestion, so nothing a person
   #   chose is overwritten (the item's suggestion fields are refreshed even where a category is chosen);
@@ -32,10 +36,13 @@ module Receipts
   # (Receipts::LiveUpdate).
   class SuggestCategories
     Result = Data.define(:status, :memory, :model, :error) do
-      def self.skipped = new(status: :skipped, memory: 0, model: 0, error: nil)
+      def self.skipped(status = :skipped) = new(status:, memory: 0, model: 0, error: nil)
     end
 
     Suggestion = Data.define(:category_id, :confidence, :source)
+    # The ML service's limits on one request (ml/README.md, "POST /categorise").
+    MAX_TEXTS = 200
+    MAX_TEXT_LENGTH = 300
 
     def self.call(receipt, client: MlClient.new)
       new(receipt, client:).call
@@ -47,6 +54,8 @@ module Receipts
     end
 
     def call
+      return Result.skipped(:off) unless ItemSuggestions.enabled?
+
       @receipt.reload
       return Result.skipped unless @receipt.extracted?
 
@@ -69,21 +78,29 @@ module Receipts
     end
 
     private
-      # Adds the model's suggestions to `suggestions`; returns [model name, nil] or [nil, error code].
+      # Adds the model's suggestions to `suggestions`; returns [the model that answered (nil when none did),
+      # the error code (nil when every call answered)]. The service's limits are kept here, so a long receipt
+      # is never refused as a whole: names and the shop's name are cut to MAX_TEXT_LENGTH characters (only
+      # what is sent), and a receipt with more than MAX_TEXTS items goes in several calls.
       def ask_model(items, candidates, suggestions)
         by_slug = candidates.index_by(&:slug)
-        answer = @client.categorise(items.map(&:name), categories: Categories::ItemCandidates.payload(candidates),
-          merchant: @receipt.merchant_name)
-        items.zip(answer.results).each do |item, result|
-          best = result["candidates"].first
-          suggestion = Suggestion.new(category_id: by_slug.fetch(best["category_slug"]).id,
-            confidence: best["score"].to_f.clamp(0.0, 1.0), source: "model")
-          suggestions[item.id] = [ item.name_key, suggestion ]
+        payload = Categories::ItemCandidates.payload(candidates)
+        merchant = @receipt.merchant_name&.first(MAX_TEXT_LENGTH)
+        model_name = nil
+        items.each_slice(MAX_TEXTS) do |batch|
+          answer = @client.categorise(batch.map { |item| item.name.first(MAX_TEXT_LENGTH) }, categories: payload, merchant:)
+          batch.zip(answer.results).each do |item, result|
+            best = result["candidates"].first
+            suggestion = Suggestion.new(category_id: by_slug.fetch(best["category_slug"]).id,
+              confidence: best["score"].to_f.clamp(0.0, 1.0), source: "model")
+            suggestions[item.id] = [ item.name_key, suggestion ]
+          end
+          model_name = answer.model_name
         end
-        [ answer.model_name, nil ]
+        [ model_name, nil ]
       rescue MlClient::Error => error
         Rails.logger.warn("Receipts::SuggestCategories: receipt #{@receipt.id}: the categoriser failed (#{error.code})")
-        [ nil, error.code ]
+        [ model_name, error.code ]
       end
 
       def write(suggestions, model_name, error)
@@ -107,14 +124,24 @@ module Receipts
       # Whose suggestions the items carry now: the model that answered, or (after a failure, or when the memory
       # answered everything) the model recorded before, while some item still carries a model's suggestion;
       # the label memory when only it suggested; nil when no item carries a suggestion.
-      def categoriser_after(model_name, error)
+      #
+      # When that differs from the categoriser recorded before and a person already chose a category on this
+      # receipt, the earlier suggestions may have shaped that choice: the receipt then says
+      # ReceiptGroundTruth::CATEGORISER_UNKNOWN, which leaves it out of every categoriser's test set, rather
+      # than name only the latest (the pre-fill rule leans towards leaving a receipt out).
+      def categoriser_after(model_name, _error)
+        recorded = @receipt.categoriser_model_name.presence
         suggested = @receipt.items.where.not(suggested_category_id: nil)
-        if suggested.where(suggested_by: "model").exists?
-          recorded = @receipt.categoriser_model_name.presence
-          (model_name unless error) || (recorded unless recorded == LabelMemory::CATEGORISER_NAME)
-        elsif suggested.exists?
-          LabelMemory::CATEGORISER_NAME
-        end
+        current =
+          if suggested.where(suggested_by: "model").exists?
+            model_name || (recorded unless recorded == LabelMemory::CATEGORISER_NAME)
+          elsif suggested.exists?
+            LabelMemory::CATEGORISER_NAME
+          end
+        return current if recorded.nil? || current == recorded
+        return current unless @receipt.items.where(accepted_by_user: true).exists?
+
+        ReceiptGroundTruth::CATEGORISER_UNKNOWN
       end
   end
 end
