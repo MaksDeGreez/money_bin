@@ -9,8 +9,6 @@ from app.config import Settings
 from app.main import create_app
 from tests.conftest import ClientFactory, image_part
 
-PLACEHOLDERS = ["openrouter"]
-
 
 def test_registry_lists_every_backend() -> None:
     expected = {"stub": StubBackend, "mlx": MlxBackend, "openrouter": OpenRouterBackend}
@@ -61,38 +59,45 @@ def test_the_backend_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatc
     assert TestClient(create_app()).get("/health").json()["backend"] == "openrouter"
 
 
-@pytest.mark.parametrize("name", PLACEHOLDERS)
-def test_health_works_for_placeholders(make_client: ClientFactory, name: str) -> None:
-    response = make_client(name).get("/health")
+def test_health_works_for_an_unconfigured_openrouter_backend(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OPENROUTER_OCR_MODEL", raising=False)
+    response = make_client("openrouter").get("/health")
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["backend"] == name
-    assert body["model_name"] == f"{name}-placeholder"
-    assert body["model_version"] == "0.0.0"
+    assert body["backend"] == "openrouter"
+    assert body["model_name"] == "not-configured"
+    assert body["model_version"] == "not-started"
 
 
-@pytest.mark.parametrize("name", PLACEHOLDERS)
-def test_placeholder_ocr_is_501(make_client: ClientFactory, name: str) -> None:
-    response = make_client(name).post("/ocr", files=[image_part()])
+def test_an_unconfigured_openrouter_backend_answers_501(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OPENROUTER_OCR_MODEL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    response = make_client("openrouter").post("/ocr", files=[image_part()])
 
     assert response.status_code == 501
     error = response.json()["error"]
-    assert error["code"] == "backend_not_implemented"
-    assert name in error["message"]
+    assert error["code"] == "openrouter_model_missing"
+    assert "OPENROUTER_OCR_MODEL" in error["message"]
 
 
 @pytest.mark.parametrize("name", ["openrouter", "mlx"])
-def test_placeholder_categorise_is_501(make_client: ClientFactory, name: str) -> None:
+def test_categorise_is_501_on_the_model_backends(make_client: ClientFactory, name: str) -> None:
     response = make_client(name).post("/categorise", json={"texts": ["milk"]})
 
     assert response.status_code == 501
     assert response.json()["error"]["code"] == "backend_not_implemented"
 
 
-@pytest.mark.parametrize("name", PLACEHOLDERS)
-def test_placeholders_still_validate_uploads_first(make_client: ClientFactory, name: str) -> None:
-    response = make_client(name).post("/ocr", files=[image_part("a.txt", b"x", "text/plain")])
+def test_uploads_are_checked_before_the_backend(make_client: ClientFactory) -> None:
+    response = make_client("openrouter").post(
+        "/ocr", files=[image_part("a.txt", b"x", "text/plain")]
+    )
 
     assert response.status_code == 415

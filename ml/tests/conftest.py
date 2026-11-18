@@ -21,6 +21,23 @@ HEIC_BYTES = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic"
 
 ClientFactory = Callable[..., TestClient]
 
+# Settings of the hosted backend. A developer's shell may export them; no test may
+# see a real key or model id.
+OPENROUTER_VARIABLES = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_OCR_MODEL",
+    "OPENROUTER_TIMEOUT",
+    "OPENROUTER_MAX_TOKENS",
+    "OPENROUTER_OCR_IMAGE_MAX_SIDE",
+    "OPENROUTER_STRUCTURED_OUTPUT",
+)
+
+
+@pytest.fixture(autouse=True)
+def no_hosted_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in OPENROUTER_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
 
 def image_part(
     name: str = "receipt.png", content: bytes = PNG_BYTES, content_type: str = "image/png"
