@@ -7,8 +7,12 @@ module OcrBatches
   # A check that fails is recorded on its batch (`check_error_code`, `check_error_message`) and tried again later,
   # with the same growing wait; one batch's failure never stops the others. An error of the ML service is
   # expected (the service is down, batch mode was switched off); anything else is a bug and is also reported.
+  #
+  # A batch that cannot be followed for GIVE_UP_AFTER (the longest provider window is four days) is given up:
+  # its waiting receipts are released, and it stays on the list only to be deleted upstream once that works.
   module Poll
     ERROR_WAIT = 5.minutes
+    GIVE_UP_AFTER = 5.days
 
     module_function
 
@@ -36,7 +40,18 @@ module OcrBatches
       batch.reload.update_columns(check_error_code: code, check_error_message: message.truncate(ReceiptOcrJob::MAX_MESSAGE_LENGTH),
         last_checked_at: now, checks: batch.checks + 1,
         next_check_at: now + [ Check.interval(batch.checks + 1), ERROR_WAIT ].max, updated_at: now)
+      give_up(batch, message, now)
       LiveUpdate.changed(batch)
+    end
+
+    def give_up(batch, message, now)
+      return unless %w[running applying].include?(batch.state)
+      return if (batch.submitted_at || batch.created_at) > now - GIVE_UP_AFTER
+
+      ApplyResults.follow_up(batch, now:)
+      batch.release!("failed", "batch_abandoned", "The batch could not be followed for #{GIVE_UP_AFTER.inspect} " \
+        "(last problem: #{message}); its waiting receipts were released. It is deleted at OpenRouter once that works.",
+        now:)
     end
   end
 end

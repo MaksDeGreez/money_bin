@@ -624,7 +624,8 @@ and never does change account settings):
 
 ### Settings
 
-- `OPENROUTER_BATCH_ALLOW_RETENTION` (`false`): the opt-in above.
+- `OPENROUTER_BATCH_ALLOW_RETENTION` (`false`): the opt-in above. Only `true` or
+  `false` (any case); anything else (`1`, `yes`, `on`) stops the service at start.
 - `OPENROUTER_BATCH_MODEL` (no default): the model, as its plain slug; it must
   have a `:batch` variant that takes images on openrouter.ai/models
   (`?variant=batch`), or batches are refused (`openrouter_batch_model_unsupported`).
@@ -713,7 +714,15 @@ batch, and sending it again could pay for it twice, so the service answers 504
 `openrouter_batch_submit_unknown`; the Rails app then releases the receipts
 and tells the owner to look for the batch in OpenRouter's logs. A connection
 that never opened is 502 `openrouter_unreachable` (nothing was sent; safe to
-retry), a rate limit 503 `openrouter_rate_limited`.
+retry), a rate limit 503 `openrouter_rate_limited`. The app retries only
+those two and 503 `openrouter_catalogue_unavailable`; any other server error
+of a create request counts as unknown.
+
+Status and results of a batch sent earlier are read even if its model or
+provider has since left OpenRouter's catalogue; its answers are then checked
+against `OPENROUTER_BATCH_PROVIDERS` itself. Switching batch mode off makes
+every batch endpoint refuse, following and deleting included: the app can then
+release a stuck batch's receipts, and deletes it once batch mode is on again.
 
 ## Item categorisation
 

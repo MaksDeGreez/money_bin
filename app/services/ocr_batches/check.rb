@@ -48,10 +48,16 @@ module OcrBatches
     end
 
     private
+      # Only while no submission runs (the submitter holds its lock for as long as it sends, however long the
+      # upload takes): a batch left `submitting` then belongs to a worker that died mid-send.
       def stale_submission
         return if @batch.submit_started_at && @batch.submit_started_at > @now - OcrBatch::SUBMIT_STALE_AFTER
 
-        @batch.release!("unknown", "submit_unknown", Submit::UNKNOWN_MESSAGE, now: @now)
+        Exclusive.run(:submit) do
+          @batch.with_lock do
+            @batch.release!("unknown", "submit_unknown", Submit::UNKNOWN_MESSAGE, now: @now) if @batch.submitting?
+          end
+        end
       end
 
       def follow
@@ -71,10 +77,18 @@ module OcrBatches
         gone(error)
       end
 
+      # Finished only once every entry is resolved and every follow-up queued (OcrBatch#settled?); until then
+      # it stays `applying` and the next check does the rest. The cost is the completed batch's own: a cost
+      # seen while it ran is not a final figure, so an unknown final cost stays unknown.
       def apply
         results = @client.ocr_batch_results(@batch.provider_batch_id)
         ApplyResults.call(@batch, results, now: @now)
-        @batch.update!(progress(results.batch).merge(state: "finished", finished_at: @now, next_check_at: @now))
+        if @batch.settled?
+          @batch.update!(progress(results.batch).merge(state: "finished", finished_at: @now, next_check_at: @now,
+            cost_usd: results.batch.cost_usd))
+        else
+          @batch.update!(next_check_at: @now + self.class.interval(@batch.checks))
+        end
       rescue MlClient::ResponseError => error
         raise unless error.code == "batch_not_found"
 

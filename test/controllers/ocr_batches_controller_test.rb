@@ -164,4 +164,20 @@ class OcrBatchesControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal "Not queued: the receipt is waiting in an OCR batch.", flash[:alert]
   end
+
+  test "the owner can release the receipts of a batch that is stuck" do
+    receipt = batch_receipt
+    batch = held_batch([ receipt ])
+
+    post release_ocr_batch_path(batch)
+
+    assert_redirected_to ocr_batch_path(batch)
+    assert batch.reload.failed?
+    assert_equal "released_by_owner", batch.error_code
+    assert_nil receipt.reload.ocr_batch_id
+    assert batch.awaiting_deletion?
+
+    post release_ocr_batch_path(batch)
+    assert_match "Nothing to release", flash[:alert]
+  end
 end

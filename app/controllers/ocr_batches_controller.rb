@@ -6,8 +6,10 @@
 # button appears only when the service says batch mode is available and the filter has receipts to send.
 # Opening the batches page, and the offer, start the poller if it is not running (OcrBatchPollJob).
 class OcrBatchesController < ApplicationController
+  RELEASED_MESSAGE = "Released by hand: the waiting receipts were taken out of the batch, and its results are " \
+    "not used. It is deleted at OpenRouter once it ends there."
   before_action :set_filter, only: %i[ offer new create ]
-  before_action :set_batch, only: %i[ show check ]
+  before_action :set_batch, only: %i[ show check release ]
 
   def index
     OcrBatchPollJob.ensure_scheduled
@@ -67,6 +69,21 @@ class OcrBatchesController < ApplicationController
     @batch.update_columns(next_check_at: Time.current) if OcrBatch.followed.exists?(@batch.id)
     OcrBatchPollJob.restart if OcrBatch.followed.exists?
     redirect_back_or_to ocr_batch_path(@batch), status: :see_other, notice: "Checking now. This page updates when it is done."
+  end
+
+  # "Release the receipts": the owner takes the waiting receipts out of a batch that is stuck (batch mode was
+  # switched off, the service cannot follow it) or no longer wanted. They go back to what they were; the batch
+  # fails, its results are not used, and it is deleted at OpenRouter once it ends there. Not while it is being
+  # sent: whether OpenRouter has it is not known yet.
+  def release
+    if @batch.unfinished? && !@batch.submitting?
+      @batch.release!("failed", "released_by_owner", RELEASED_MESSAGE)
+      OcrBatches::LiveUpdate.changed(@batch)
+      OcrBatchPollJob.ensure_scheduled
+      redirect_to ocr_batch_path(@batch), status: :see_other, notice: "The waiting receipts were released."
+    else
+      redirect_to ocr_batch_path(@batch), status: :see_other, alert: "Nothing to release: the batch is #{@batch.state}."
+    end
   end
 
   private

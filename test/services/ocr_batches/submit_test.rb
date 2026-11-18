@@ -112,7 +112,7 @@ class OcrBatches::SubmitTest < ActiveSupport::TestCase
   end
 
   test "a lost answer makes the batch unknown and releases its receipts" do
-    stub_request(:post, ml_url("/ocr/batches")).to_timeout
+    stub_request(:post, ml_url("/ocr/batches")).to_raise(Net::ReadTimeout)
     assert_equal :unknown, OcrBatches::Submit.call(@batch)
     assert @batch.reload.unknown?
     assert_includes @batch.error_message, "OpenRouter's logs"
@@ -146,5 +146,59 @@ class OcrBatches::SubmitTest < ActiveSupport::TestCase
 
     assert_equal :failed, OcrBatches::Submit.call(@batch)
     assert_equal "batch_too_large", @batch.reload.error_code
+  end
+
+  test "only a connection that never opened is tried again; one cut after sending is unknown" do
+    { Errno::ECONNREFUSED => :retry_later, Net::OpenTimeout => :retry_later, SocketError => :retry_later,
+      EOFError => :unknown, Errno::ECONNRESET => :unknown, Errno::EPIPE => :unknown, Net::ReadTimeout => :unknown }
+      .each do |failure, outcome|
+        batch = held_batch([ batch_receipt ], state: "pending")
+        stub_request(:post, ml_url("/ocr/batches")).to_raise(failure)
+        assert_equal outcome, OcrBatches::Submit.call(batch), failure.name
+        WebMock.reset!
+      end
+  end
+
+  test "a server error is tried again only when its code says nothing went out" do
+    { [ 503, "openrouter_rate_limited" ] => :retry_later, [ 502, "openrouter_unreachable" ] => :retry_later,
+      [ 503, "openrouter_catalogue_unavailable" ] => :retry_later, [ 500, "internal_error" ] => :unknown,
+      [ 502, "openrouter_upstream_error" ] => :unknown, [ 504, "openrouter_batch_submit_unknown" ] => :unknown,
+      [ 501, "openrouter_batch_not_allowed" ] => :failed }.each do |(status, code), outcome|
+      batch = held_batch([ batch_receipt ], state: "pending")
+      stub_ml_batch_error(:post, "/ocr/batches", status:, code:)
+      assert_equal outcome, OcrBatches::Submit.call(batch), code
+      WebMock.reset!
+    end
+  end
+
+  test "a photo over the provider's inline limit fails its receipt only; the rest are sent again" do
+    key = key_of(@batch, @receipts.second)
+    stub_ml_batch_error(:post, "/ocr/batches", status: 422, code: "batch_image_too_large",
+      message: "A photo of receipt key #{key} is larger than the batch provider takes inline.")
+
+    assert_equal :retry_later, OcrBatches::Submit.call(@batch)
+
+    assert @batch.reload.pending?
+    assert @receipts.second.reload.failed?
+    assert_equal "batch_image_too_large", @receipts.second.ocr_error["code"]
+    assert_nil @receipts.second.ocr_batch_id
+    assert @receipts.first.reload.in_ocr_batch?
+    assert_equal %w[waiting failed], @batch.entries.map(&:state)
+  end
+
+  test "a submission the poller gave up on meanwhile keeps the provider's id, so it is deleted" do
+    stub_request(:post, ml_url("/ocr/batches")).to_return do
+      @batch.reload.release!("unknown", "submit_unknown", "given up")
+      { status: 202, body: JSON.generate(ml_batch_status_body("batch_late1")), headers: { "Content-Type" => "application/json" } }
+    end
+
+    assert_equal :stale, OcrBatches::Submit.call(@batch)
+
+    @batch.reload
+    assert @batch.failed?
+    assert_equal "submit_late", @batch.error_code
+    assert_equal "batch_late1", @batch.provider_batch_id
+    assert @batch.awaiting_deletion?
+    assert @receipts.none? { |receipt| receipt.reload.in_ocr_batch? }
   end
 end

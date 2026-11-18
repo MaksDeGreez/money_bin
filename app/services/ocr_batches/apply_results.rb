@@ -24,6 +24,13 @@ module OcrBatches
   #   time records it), `failed`. "Read again" or "Read all" can try it one at a time.
   # An unexpected error on one entry (a bug) is reported, the entry is `released` and the receipt left as it
   # was; the others go on.
+  #
+  # The follow-ups (the categorise job of an `applied` entry, the read one at a time of a `sync_queued` one) are
+  # queued from the stored entries, not from this run's memory (`follow_up`), and each entry records that its
+  # follow-up was queued (`followed_up_at`). A run that died between storing a result and queuing its
+  # follow-up leaves the entry unmarked, and the next run (or the next check of the still `applying` batch)
+  # queues it then: at least once, and a duplicate is harmless (the categoriser refreshes suggestions; the
+  # read one at a time is queued once per receipt by Receipts::RequestOcr).
   class ApplyResults
     HELD_STATUSES = %w[uploaded failed].freeze
     SUPERSEDED_MESSAGE = "A person took the receipt over while it waited in the batch; the batch's result was not used."
@@ -39,6 +46,40 @@ module OcrBatches
       new(batch, results, now:).call
     end
 
+    # Queues the follow-ups of the batch's resolved entries that have none yet, and marks each entry whose
+    # follow-up was queued. Returns how many are still to do (a queue that cannot be reached leaves them).
+    def self.follow_up(batch, now: Time.current)
+      pending = batch.entries.where(state: OcrBatchEntry::FOLLOWED_UP_STATES, followed_up_at: nil).unscope(:order)
+      suggest_categories(pending.where(state: "applied"), now)
+      read_one_at_a_time(pending.where(state: "sync_queued"), now)
+      pending.count
+    end
+
+    # One ReceiptCategoriseJob per receipt (the same Receipts::SuggestCategories step as after a read one at a
+    # time), each entry marked once its job is queued. With suggestions switched off there is nothing to queue.
+    def self.suggest_categories(entries, now)
+      entries.order(:id).each do |entry|
+        if ItemSuggestions.enabled? && (receipt = entry.receipt)
+          ReceiptCategoriseJob.perform_later(receipt)
+        end
+        entry.update_columns(followed_up_at: now)
+      end
+    rescue StandardError => error
+      # The rest stay unmarked and are queued by a later run.
+      Rails.logger.warn("OcrBatches::ApplyResults: category suggestions could not be queued (#{error.class})")
+    end
+
+    # The receipts go to the normal queue in id order (the order every multi-row claim of these receipts locks
+    # them in). RequestOcr skips one a person took over meanwhile, and queues each receipt once.
+    def self.read_one_at_a_time(entries, now)
+      ids = entries.pluck(:receipt_id).compact
+      Receipts::RequestOcr.read_all(Receipt.where(id: ids).order(:id)) if ids.any?
+      entries.update_all(followed_up_at: now)
+    rescue Receipts::RequestOcr::QueueUnavailable
+      # Unmarked: the next run queues them again (a receipt already queued is not queued twice).
+      Rails.logger.warn("OcrBatches::ApplyResults: #{ids.size} receipt(s) could not be queued for a read one at a time")
+    end
+
     def initialize(batch, results, now:)
       @batch = batch
       @results = results.results.index_by { |item| item["key"] }
@@ -48,20 +89,14 @@ module OcrBatches
     # Returns the counts of the outcomes of this run.
     def call
       outcomes = Hash.new(0)
-      applied = []
-      sync = []
       @batch.entries.where(state: "waiting").to_a.each do |entry|
-        outcome = apply(entry)
-        outcomes[outcome] += 1
-        applied << entry.receipt_id if outcome == :applied
-        sync << entry.receipt_id if outcome == :sync_queued
+        outcomes[apply(entry)] += 1
       rescue StandardError => error
         Rails.error.report(error, handled: true, source: "ocr_batches.apply_results", context: { entry: entry.id })
         release(entry)
         outcomes[:released] += 1
       end
-      suggest_categories(applied)
-      read_one_at_a_time(sync)
+      self.class.follow_up(@batch, now: @now)
       outcomes
     end
 
@@ -138,22 +173,6 @@ module OcrBatches
             message: "The result could not be stored (an error in the app, reported); the receipt is as it was.",
             now: @now)
         end
-      end
-
-      def suggest_categories(ids)
-        return if ids.empty? || !ItemSuggestions.enabled?
-
-        Receipt.where(id: ids).find_each { |receipt| ReceiptCategoriseJob.perform_later(receipt) }
-      rescue StandardError => error
-        # The receipts keep their items without suggestions; "Suggest categories again" fills them later.
-        Rails.logger.warn("OcrBatches::ApplyResults: category suggestions could not be queued (#{error.class})")
-      end
-
-      def read_one_at_a_time(ids)
-        Receipts::RequestOcr.read_all(Receipt.where(id: ids)) if ids.any?
-      rescue Receipts::RequestOcr::QueueUnavailable
-        # Left `uploaded`/`failed` and out of the batch: "Read all in this filter" picks them up.
-        Rails.logger.warn("OcrBatches::ApplyResults: #{ids.size} receipt(s) could not be queued for a read one at a time")
       end
   end
 end

@@ -33,7 +33,10 @@ module OcrBatches
       raise ArgumentError, "batch mode is not available: #{@capability.code}" unless @capability.available
 
       batches = Receipt.transaction do
-        ids = Receipts::RequestOcr.readable(@relation, :read_all, now: @now).lock.pluck(:id)
+        # Rows are locked in id order, as every other multi-row claim of receipts locks them, so two claims
+        # cannot deadlock; the batches then follow the list's order.
+        locked = Receipts::RequestOcr.readable(@relation.reorder(:id), :read_all, now: @now).lock.pluck(:id)
+        ids = @relation.where(id: locked).pluck(:id)
         sizes = photo_bytes(ids)
         chunks(ids.select { |id| sizes.key?(id) }, sizes).map { |chunk| create_batch(chunk) }
       end

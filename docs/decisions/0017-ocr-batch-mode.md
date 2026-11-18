@@ -106,15 +106,27 @@ once it is ten minutes overdue. A PostgreSQL advisory lock keeps two runs from o
   same way as `ocr_requested_at`; each claim takes only rows where the other is not set. One column means a
   receipt is in at most one open batch.
 - **Submitting.** A batch moves `pending` -> `submitting` under its row lock, so a duplicate job does
-  nothing. A failure where nothing reached the provider returns it to `pending` with a growing wait. A
-  failure after the photos were sent (a lost answer, a server error after the upload) cannot be retried
-  safely: it could pay for the batch twice and leave a second copy at the provider. Such a batch becomes
-  `unknown`, its receipts are released, and the owner is told to look for it in OpenRouter's logs. A
-  submission that is still `submitting` after 15 minutes died mid-send and is treated the same way.
+  nothing. Only a failure that proves nothing reached the provider is retried: the Rails client never opened
+  its connection (refused, unreachable, an open timeout), or the service answered with a code that says
+  nothing went out (OpenRouter unreachable, rate limited, its model list unreadable). Every other failure (a
+  connection cut after the upload began, a read timeout, any other server error, an unreadable answer) may
+  come after OpenRouter stored the batch, and a retry could pay for it twice and leave a second copy at the
+  provider. Such a batch becomes `unknown`, its receipts are released, and the owner is told to look for it in
+  OpenRouter's logs. A submission still `submitting` after 15 minutes, while no submitter holds its lock, died
+  mid-send and is treated the same way. Every change after the claim is made under the batch's row lock and
+  only while it is still `submitting`, so a slow upload that the poller gave up on cannot come back as
+  `running`: its late answer only records the provider's id, and the batch is deleted upstream.
 - **Applying.** Each entry is resolved in its own transaction with the entry and the receipt locked, and
   only while it is `waiting`; the result is stored only while the receipt is still held by this batch and
   still `uploaded` or `failed`. A poll that runs twice applies nothing twice; one that dies half way leaves
   the rest `waiting` for the next poll; an unexpected error on one entry releases that receipt and goes on.
+  The follow-ups (category suggestions, a read one at a time) are queued from the stored entry states and
+  marked per entry (`followed_up_at`); the batch finishes only when nothing is waiting and every follow-up is
+  queued, so a run that died between storing and queuing is completed by the next one.
+- **Getting out.** Batch mode switched off in the service refuses every batch call, following and deleting
+  included (as the owner decided: every batch endpoint refuses without the opt-in). So a batch can get stuck:
+  the owner can release its waiting receipts from its page, and the poller releases them by itself after five
+  days without a successful check. The batch stays listed until it can be deleted upstream.
 - **A person's work wins.** "Enter by hand" clears the hold under the same row lock, so the batch's result
   for that receipt is not used. A reviewed receipt is never held (only unread and failed receipts are
   sent), and `Receipts::ApplyOcr` still refuses a reviewed receipt.

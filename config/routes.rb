@@ -30,10 +30,12 @@ Rails.application.routes.draw do
   end
 
   # OCR batches: receipts read together by a hosted model's batch mode (docs/domain.md, "OCR in a batch").
-  # `offer` is the receipts list's lazy "Read in a batch" button, `new` its confirmation; `check` asks now.
+  # `offer` is the receipts list's lazy "Read in a batch" button, `new` its confirmation; `check` asks now,
+  # `release` takes the waiting receipts out of a stuck or unwanted batch.
   resources :ocr_batches, path: "ocr-batches", only: %i[ index show new create ] do
     get :offer, on: :collection
     post :check, on: :member
+    post :release, on: :member
   end
 
   # The transactions list (with categorising an uncategorised line from it), one transaction (read-only), and an

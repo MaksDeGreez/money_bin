@@ -428,17 +428,26 @@ regrouped while the provider has them. A held receipt keeps its status (`uploade
 | `OcrBatch.state` | Meaning | Next |
 |---|---|---|
 | `pending` | created, receipts held, waiting for the submitter (also after a retry wait) | `submitting` |
-| `submitting` | the photos are being sent | `running`; `pending` (nothing reached the provider: tried again after 1, 5, 15 and 60 minutes, then `failed`); `failed` (refused for good); `unknown` (sent, answer lost); two `pending` batches (too large: split in half) |
-| `running` | the provider has it; checked when due | `applying`; `failed` (failed, expired, cancelled, or OpenRouter no longer has it) |
-| `applying` | completed; results being stored entry by entry | `finished` |
+| `submitting` | the photos are being sent | `running`; `pending` (nothing can have reached the provider: the service could not be reached at all, or its answer's code says nothing went out; tried again after 1, 5, 15 and 60 minutes, then `failed`); `pending` without one receipt (one photo over the provider's inline limit: that receipt fails); `failed` (refused for good); `unknown` (anything else: it may have been sent); two `pending` batches (too large: split in half) |
+| `running` | the provider has it; checked when due | `applying`; `failed` (failed, expired, cancelled, OpenRouter no longer has it, released by the owner, or not followable for five days) |
+| `applying` | completed; results being stored entry by entry, and their follow-ups queued | `finished` (once settled); `failed` (as above) |
 | `finished` | every entry resolved | deleted upstream |
 | `failed`, `unknown` | its waiting entries released | deleted upstream when the provider had it |
 
-`unknown` is the one case the app cannot settle: the photos were sent and the answer was lost (a timeout
-after sending, a server error after the upload, an answer whose batch id cannot be read, a worker stopped
-mid-send, noticed after 15 minutes). The provider may have the batch, but sending it again could pay for it
-twice, so the receipts are released and the batches page says to look for it in OpenRouter's logs and
-delete it there.
+`unknown` is the one case the app cannot settle: the photos may have been sent and the answer was lost (a
+connection cut after the upload began, a read timeout, any server error whose code does not say that nothing
+went out, an answer whose batch id cannot be read, a worker stopped mid-send: noticed after 15 minutes, and
+only while no submission holds the submitter's lock). The provider may have the batch, but sending it again
+could pay for it twice, so the receipts are released and the batches page says to look for it in
+OpenRouter's logs and delete it there. Every step of a submission after its claim happens under the batch's
+row lock and only while it is still `submitting`; an answer that arrives after the batch was given up only
+records the provider's id (`failed`, `submit_late`), so the batch is deleted upstream when it ends.
+
+**Getting out.** "Release the receipts" on a batch's page takes its waiting receipts out of a batch that is
+stuck (batch mode was switched off in the service, which then refuses to follow or delete it) or no longer
+wanted: the batch fails (`released_by_owner`), its results are not used, and it is deleted at OpenRouter
+once it ends there. The poller does the same by itself for a `running` or `applying` batch it could not
+follow for five days (`batch_abandoned`; the longest provider window is four).
 
 **Polling.** There is no webhook: the app has no public URL. `OcrBatchPollJob` runs `OcrBatches::Poll`
 (each due batch gets one `OcrBatches::Check`) and queues itself again for when the next batch is due,
@@ -463,7 +472,12 @@ with the entry row and then the receipt row locked:
 
 So a poll that runs twice, or dies half way, never applies a result twice, never loses one (an entry is
 either still `waiting` or resolved together with its receipt's change), and never leaves a receipt held by
-a finished batch. "Enter by hand" clears the hold under the row lock the batch also takes, so the batch's
+a finished batch. The follow-ups (the categorise job of an `applied` entry, the read one at a time of a
+`sync_queued` one) are queued from the stored entries, and each entry records when its follow-up was queued
+(`followed_up_at`); a batch is `finished` only once every entry is resolved and every follow-up queued
+(`OcrBatch#settled?`), so a run that died in between, or a job queue that could not be reached, is made good
+by the next check (at least once; a duplicate is harmless). The batch's cost is the completed batch's own: a
+cost seen while it ran is not kept as the final figure. "Enter by hand" clears the hold under the row lock the batch also takes, so the batch's
 later result for that receipt is `superseded`; acceptance needs a reviewable receipt, which a held one
 never is. The limit on hand-overs is there because a parse failure in most of a batch means something
 systematic (a model that cannot follow the schema), and reading hundreds again at full price is not done

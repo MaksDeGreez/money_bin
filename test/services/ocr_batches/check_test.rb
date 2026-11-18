@@ -305,4 +305,92 @@ class OcrBatches::CheckTest < ActiveSupport::TestCase
     assert_enqueued_with(job: OcrBatchSubmitJob) { OcrBatches::Poll.call }
     assert pending.reload.pending?
   end
+
+  test "the final cost is the completed batch's own, unknown when it is unknown" do
+    @batch.update!(cost_usd: BigDecimal("0.01"))
+    stub_ml_batch_status("batch_t1", state: "completed")
+    stub_request(:get, ml_url("/ocr/batches/batch_t1/results")).to_return(
+      status: 200, headers: { "Content-Type" => "application/json" },
+      body: JSON.generate(batch: ml_batch_status_body("batch_t1", state: "completed", cost_usd: nil),
+        results: [ ml_batch_ok(@a), ml_batch_ok(@b), ml_batch_ok(@c) ], counts: { ok: 3, parse_failed: 0, failed: 0, ignored: 0 }))
+    stub_ml_batch_delete("batch_t1")
+
+    check
+
+    assert @batch.finished?
+    assert_nil @batch.cost_usd
+  end
+
+  test "follow-ups that could not be queued are queued by the next check before the batch finishes" do
+    stub_ml_batch_status("batch_t1", state: "completed")
+    stub_ml_batch_results("batch_t1", [ ml_batch_ok(@a), ml_batch_error(@b, "ocr_parse_failed"), ml_batch_ok(@c) ])
+    stub_ml_batch_delete("batch_t1")
+    failing = ->(*) { raise RedisClient::CannotConnectError, "down" }
+
+    with_env("CATEGORISE_BACKEND" => "stub") do
+      with_singleton_method(ReceiptCategoriseJob, :perform_later, failing) do
+        with_singleton_method(Receipts::RequestOcr, :read_all, ->(*) { raise Receipts::RequestOcr::QueueUnavailable, "down" }) do
+          check
+        end
+      end
+      assert @batch.applying?, "not finished while follow-ups wait"
+      assert_equal [ nil ], @batch.entries.map(&:followed_up_at).uniq
+      assert_not_requested :delete, ml_url("/ocr/batches/batch_t1")
+
+      assert_enqueued_jobs(2, only: ReceiptCategoriseJob) do
+        assert_enqueued_jobs(1, only: ReceiptOcrJob) { check }
+      end
+    end
+    assert @batch.finished?
+    assert @batch.entries.where(state: %w[applied sync_queued]).all?(&:followed_up_at)
+    assert @receipts.second.reload.ocr_pending?
+  end
+
+  test "a poll that dies after storing a hand-over still queues the read one at a time" do
+    stub_ml_batch_status("batch_t1", state: "completed")
+    stub_ml_batch_results("batch_t1", [ ml_batch_error(@a, "ocr_parse_failed"), ml_batch_ok(@b), ml_batch_ok(@c) ])
+    stub_ml_batch_delete("batch_t1")
+    second_id = @receipts.second.id
+    original = Receipts::ApplyOcr.method(:call)
+    dying = ->(receipt, result) { receipt.id == second_id ? raise(SignalException, "TERM") : original.call(receipt, result) }
+
+    with_singleton_method(Receipts::ApplyOcr, :call, dying) { assert_raises(SignalException) { check } }
+    assert_equal "sync_queued", @batch.reload.entries.first.state
+    assert_not @receipts.first.reload.ocr_pending?
+
+    assert_enqueued_with(job: ReceiptOcrJob) { check }
+    assert @receipts.first.reload.ocr_pending?
+    assert @batch.finished?
+  end
+
+  test "a submission is not given up while the submitter still holds its lock" do
+    stuck = held_batch([ batch_receipt ], state: "submitting", provider_batch_id: nil, submit_started_at: 1.hour.ago)
+    with_singleton_method(OcrBatches::Exclusive, :run, ->(_name) { false }) { check(stuck) }
+    assert stuck.submitting?
+  end
+
+  test "a batch that cannot be followed for days is given up and its receipts released" do
+    stub_ml_batch_error(:get, "/ocr/batches/batch_t1", status: 501, code: "openrouter_batch_not_allowed", message: "Off.")
+    OcrBatches::Poll.call
+    assert @batch.reload.running?
+
+    @batch.update!(submitted_at: 6.days.ago, next_check_at: 1.minute.ago)
+    OcrBatches::Poll.call
+
+    @batch.reload
+    assert @batch.failed?
+    assert_equal "batch_abandoned", @batch.error_code
+    assert_includes @batch.error_message, "Off."
+    assert @receipts.none? { |receipt| receipt.reload.in_ocr_batch? }
+    assert @batch.awaiting_deletion?
+  end
+
+  test "releasing refreshes the released receipts' own pages" do
+    streams = []
+    capture = ->(stream, **) { streams << stream }
+    with_singleton_method(Turbo::StreamsChannel, :broadcast_refresh_to, capture) do
+      @batch.release!("failed", "batch_expired", "Expired.")
+    end
+    @receipts.each { |receipt| assert_includes streams, receipt }
+  end
 end
