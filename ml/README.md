@@ -131,8 +131,11 @@ run with the defaults sends both the same pixels. `MLX_OCR_IMAGE_MAX_SIDE`
 keeps its name and its behaviour.
 
 The service reads its settings from the real environment only. `bin/dev`
-starts it through foreman, which loads the repository's `.env`; for a command
-run by hand, pass the file: `uv run --env-file ../.env ...`.
+starts it with the repository's `.env` (`Procfile.dev`: `uv run --env-file
+../.env`, when the file exists; a variable set in the shell wins over the
+file), so a setting changed there takes effect after `bin/dev` is restarted.
+`GET /health` says which backends are running. For a command run by hand, pass
+the file yourself: `uv run --env-file ../.env ...`.
 
 ## Endpoints
 

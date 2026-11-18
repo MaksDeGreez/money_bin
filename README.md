@@ -591,7 +591,9 @@ tests generate every image they use.
 ## Configuration
 
 `bin/setup` copies `.env.example` to `.env` (never committed). dotenv loads it in development and
-production. Test runs read no `.env` file at all (`config/application.rb`), so a setting written there
+production, and `bin/dev` hands the same file to the ML service (`Procfile.dev`: `uv run --env-file
+../.env`), which reads only its environment; a variable set in the shell wins over the file. After a
+change to `.env`, restart `bin/dev`. Test runs read no `.env` file at all (`config/application.rb`), so a setting written there
 for development can never point the tests at development data; a real environment variable (as CI sets
 `DATABASE_URL` and `REDIS_URL`) still applies to the tests. Every setting is optional:
 
