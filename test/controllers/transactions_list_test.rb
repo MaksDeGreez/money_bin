@@ -91,11 +91,17 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     assert_equal [ categories(:cafes), "person" ], [ @line.reload.category, @line.category_origin ]
   end
 
-  test "Enter in the picker submits through Take, and the category picked there wins" do
+  test "Take always saves the suggestion shown, whatever the picker holds; Enter saves the picker" do
+    get transactions_path
+    assert_select "tr[id=?] form", "review_transaction_line_#{@line.id}" do |forms|
+      first = forms.first.css("button[type=submit], input[type=submit]").first
+      assert_equal "Save", first["value"], "the default (first) button is Save, so Enter never takes the suggestion"
+    end
+
     post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1",
       review: { category_id: categories(:cafes).id }, **shown }
 
-    assert_equal [ categories(:cafes), "person", nil ], [ @line.reload.category, @line.category_origin, @line.category_origin_probability ]
+    assert_equal [ categories(:household_supplies), "suggestion" ], [ @line.reload.category, @line.category_origin ]
   end
 
   test "a line booked from a receipt links to the receipt instead of offering a category" do
@@ -188,5 +194,9 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     assert_select "a[href^=?][href*='uncategorised=1'][href*='expense=1']", transactions_path
     get transactions_path(expense: "1")
     assert_select "tbody[id^=list_transaction]", Transaction.expenses.count
+    get transactions_path(expense: "1", status: "draft")
+    assert_select "tbody[id^=list_transaction]", 0
+    get transactions_path(expense: "1", status: "needs_review")
+    assert_select "tbody[id^=list_transaction]", 1
   end
 end

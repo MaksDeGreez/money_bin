@@ -58,7 +58,8 @@ class TransactionsQuery
     scope = scope.where(payee_id: Payee.where(Payee.arel_table[:name].matches(like(@payee))).select(:id)) if @payee.present?
     scope = scope.where(TransactionLine.uncategorised.where("transaction_lines.transaction_id = transactions.id").arel.exists) if @uncategorised
     scope = scope.where(account_id: Account.where(currency: @currency).select(:id)) if @currency
-    scope = scope.merge(Transaction.expenses) if @expense
+    # Not `merge`: it would replace the status filter with the booked statuses instead of narrowing it.
+    scope = scope.where(transfer_id: nil, amount: ...0).where(status: Transaction::BOOKED_STATUSES) if @expense
     scope.order(occurred_on: :desc, id: :desc)
   end
 

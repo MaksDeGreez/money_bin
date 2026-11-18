@@ -88,11 +88,12 @@ class BulkAcceptance < ApplicationRecord
     accepted_count + stale_count + changed_count + failed_count
   end
 
-  # A run that has not moved for LOST_AFTER is taken for dead (a worker killed mid-run); it can be resumed.
+  # A confirmed or running acceptance that has not moved for LOST_AFTER is taken for dead (its job lost, a worker
+  # killed mid-run); it can be resumed. Should the old job still be alive, each item is still applied once.
   LOST_AFTER = 1.hour
 
   def lost?
-    running? && updated_at < LOST_AFTER.ago
+    (queued? || running?) && updated_at < LOST_AFTER.ago
   end
 
   def resumable?

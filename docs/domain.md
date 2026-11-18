@@ -840,8 +840,8 @@ to the next waiting line. `Transactions::Categorise` does the write:
   under row locks on the transaction and its lines a newer version saves nothing ("changed somewhere
   else"), and so does a suggestion refreshed since it was shown: "Take" saves exactly the suggestion on
   screen, never a newer one, and a category picked by hand is refused too in that rare race. The row is then
-  shown as it is now. Enter in the picker submits through "Take" (the form's first button): a category
-  picked there wins;
+  shown as it is now. "Take" always means the suggestion shown; Enter submits through the form's default
+  button, "Save", so it saves the category picked, never the suggestion;
 - a transaction booked from a receipt is refused (`on_receipt`), and a save the model's rules refuse is
   `invalid`, never an exception;
 - the lines are saved through their transaction (nested autosave), so the line rules hold and the version
@@ -875,8 +875,9 @@ to the next waiting line. `Transactions::Categorise` does the write:
    both are skipped and counted, never overwritten. One the ledger's rules refuse is `failed` (nothing
    written) and the job goes on. An item whose transaction was deleted goes with it. A second acceptance over
    the same rows finds them stale or changed. The page follows the progress live; an unexpected error marks
-   the run `failed`, a run that has not moved for an hour (a worker killed mid-run) counts as lost, and
-   "Resume" carries on where either stopped.
+   the run `failed`, a confirmed or running one that has not moved for an hour (its job lost, a worker killed
+   mid-run) counts as lost, and "Resume" carries on where either stopped (should the old job still be alive,
+   each item is still applied once).
 
 **Limits, accepted.** The probabilities are the model's own, not calibrated on the ledger; the selection
 JSON has the precision at each threshold on the validation slice. Suggestions refresh only on "Refresh

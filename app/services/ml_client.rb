@@ -216,8 +216,11 @@ class MlClient
       model_version: body["model_version"], fitted_at: body["fitted_at"])
   end
 
-  # Which artefact the transaction categoriser serves (it loads the artefact, not the sentence encoder).
+  # Which artefact the transaction categoriser serves (it loads the artefact, not the sentence encoder). Asked of a
+  # service on this machine only, like the categorising (NotLocal otherwise).
   def transaction_categoriser
+    raise NotLocal, "the transaction categoriser is asked only on this machine, not at #{base_url.host}" unless local?
+
     body = request(Net::HTTP::Get.new(url("/categorise/transaction")), read_timeout: categorise_timeout)
     require_keys(body, %w[model_name model_version fitted_at], "")
     TransactionModel.new(body:, model_name: body["model_name"], model_version: body["model_version"], fitted_at: body["fitted_at"])

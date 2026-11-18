@@ -51,9 +51,8 @@ class TransactionsController < ApplicationController
   # suggestion refreshed since, saves nothing (Transactions::Categorise checks both under row locks).
   def categorise
     shown_category_id = integer(params[:shown_category_id])
-    picked = integer(params.dig(:review, :category_id))
-    # Enter in the picker submits through "Take", the form's first button: a category picked there wins.
-    category_id = params[:take].present? && (picked.nil? || picked == shown_category_id) ? shown_category_id : picked
+    # "Take" means the suggestion shown, always; Enter submits through the form's default button, "Save".
+    category_id = params[:take].present? ? shown_category_id : integer(params.dig(:review, :category_id))
     taken = category_id.present? && category_id == shown_category_id
     choice = Transactions::Categorise::Choice.new(line_id: integer(params[:line_id]), category_id:,
       origin: taken ? "suggestion" : "person", shown_category_id:, shown_model_version: params[:shown_model_version].presence)

@@ -180,6 +180,8 @@ class BulkAcceptanceTest < ActiveJob::TestCase
 
     acceptance.update_columns(updated_at: 2.hours.ago)
     assert acceptance.reload.lost?
+    acceptance.update_columns(status: "queued")
+    assert acceptance.reload.lost?, "a confirmed acceptance whose job was lost"
     assert acceptance.resume!
     BulkAcceptanceJob.perform_now(acceptance)
     assert_equal [ "done", 2 ], [ acceptance.reload.status, acceptance.accepted_count ]
