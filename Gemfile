@@ -36,6 +36,10 @@ gem "bcrypt", "~> 3.1"
 # [https://github.com/modelcontextprotocol/ruby-sdk]
 gem "mcp", "~> 1.10"
 
+# Charts on the dashboard: server-rendered data, drawn by Chart.js in the browser (vendored in the gem,
+# pinned through importmap). How it meets the Content Security Policy: docs/decisions/0013-dashboard-charts.md
+gem "chartkick", "~> 5.3"
+
 # XML parsing for the receipt ground-truth files (DpsXml::Reader); Rails already depends on it.
 gem "nokogiri", ">= 1.19"
 

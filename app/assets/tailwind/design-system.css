@@ -29,6 +29,11 @@
   --color-danger: oklch(64% 0.22 25);
   --color-danger-faded: oklch(96% 0.025 25);
   --color-danger-display: oklch(55% 0.20 25);
+
+  /* Chart series (app/javascript/charts.js): Okabe-Ito blue and orange, apart for colour-blind readers.
+     Hex only: Chart.js draws on a canvas, and charts.js turns these into solid rgb() colours. */
+  --color-chart-1: #0072b2;
+  --color-chart-2: #e69f00;
 }
 
 .dark {
@@ -49,6 +54,8 @@
   --color-danger: oklch(72% 0.20 22);
   --color-danger-faded: oklch(22% 0.05 22);
   --color-danger-display: oklch(82% 0.18 22);
+  --color-chart-1: #56b4e9;
+  --color-chart-2: #e69f00;
 }
 
 /* ---------------------------------------------------------------------------
@@ -285,6 +292,24 @@
   }
   .count-tab[aria-current="page"] { @apply border-accent bg-accent-faded text-ink-display; }
   .count-tab-number { @apply tabular-nums text-ink-muted; }
+
+  /* Dashboard (home page): headline figures, chart cards, and the chart container Chartkick fills
+     (config/initializers/chartkick.rb: `chart` plus a height class, never an inline style) */
+  .stat-tiles { @apply grid gap-4 sm:grid-cols-2 lg:grid-cols-4; }
+  .stat-tile { @apply rounded-md border border-hairline bg-surface p-4; }
+  .stat-label { @apply text-xs font-medium uppercase tracking-wide text-ink-muted; }
+  .stat-value { @apply mt-1 font-display text-2xl font-semibold tabular-nums text-ink-display; }
+  .stat-note { @apply mt-1 text-sm text-ink-muted; }
+  .chart-grid { @apply grid gap-6 lg:grid-cols-2; }
+  .chart-card { @apply min-w-0 space-y-4 rounded-md border border-hairline bg-page p-5 break-inside-avoid; }
+  .chart-card-wide { @apply lg:col-span-2; }
+  .chart-card-header { @apply flex flex-wrap items-start justify-between gap-3; }
+  .chart { @apply w-full; }
+  .chart-sm { @apply h-48; }
+  .chart-md { @apply h-72; }
+  .chart-lg { @apply h-96; }
+  .chart-figures > summary { @apply cursor-pointer text-sm text-ink-muted hover:text-ink-display; }
+  .chart-figures[open] > summary { @apply mb-3; }
 
   /* Pagination (ui/_pagination) */
   .pagination { @apply flex flex-wrap items-center justify-between gap-3 text-sm text-ink-muted; }

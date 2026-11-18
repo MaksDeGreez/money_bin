@@ -1,1 +1,50 @@
-= render "ui/page_header", title: "Money Bin", description: "A personal finance tracker: receipt photos become categorised entries in a ledger."
+/ The dashboard (Dashboard): the ledger at a glance for one period and one currency, from the same query
+/ objects as the REST API and the MCP server. Each chart is drawn by Chartkick (charts_controller.js loads
+/ it) and has the same figures as a table under it.
+- dashboard = @dashboard
+= render "ui/page_header", title: "Overview",
+  description: "Booked transactions only, transfers between own accounts left out, one currency at a time."
+
+div data-controller="charts"
+  - if dashboard.ledger_empty?
+    .mt-8
+      = render "ui/callout" do
+        p.text-sm
+          | Nothing is booked yet, so there is nothing to chart.
+          =< link_to "Add an expense", new_transaction_path
+          |  or accept a receipt to start the ledger.
+  - else
+    = form_with url: root_path, method: :get, class: "filter-bar mt-8", role: "search", aria: { label: "Choose the period and currency" } do |f|
+      .field
+        = f.label :period, "Period"
+        = f.select :period, options_for_select(dashboard_period_options(dashboard), dashboard.period.key)
+      .field
+        = f.label :currency, "Currency"
+        = f.select :currency, options_for_select(dashboard.currencies, dashboard.currency)
+      - if dashboard.grouping != Dashboard::GROUPINGS.first
+        = hidden_field_tag :by, dashboard.grouping, id: nil
+      .filter-bar-actions
+        = f.submit "Show", name: nil, variant: :secondary
+
+    = render "home/headline", dashboard: @dashboard
+
+    - if dashboard.empty?
+      .mt-8
+        = render "ui/callout" do
+          p.text-sm
+            = "Nothing was booked in #{dashboard.currency} in #{dashboard_period_label(dashboard.period)}."
+            - others = dashboard.currencies - [ dashboard.currency ]
+            - if others.any?
+              |  Other currencies with figures in this period:
+              - others.each_with_index do |code, index|
+                = index.zero? ? " " : ", "
+                = link_to code, root_path(dashboard.to_params(currency: code))
+              | .
+    - else
+      .chart-grid.mt-8
+        = render "home/months", dashboard: @dashboard
+        = render "home/categories", dashboard: @dashboard
+        = render "home/payees", dashboard: @dashboard
+
+  .mt-6
+    = render "home/receipts", counts: dashboard.receipts

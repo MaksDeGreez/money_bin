@@ -62,6 +62,13 @@ class UiPartialsTest < ActionView::TestCase
     assert_select "a[aria-current=page][href='/r?status=failed']", text: /Failed\s*3/
   end
 
+  test "count tabs without counts show only their labels" do
+    render partial: "ui/count_tabs", locals: { label: "Show", tabs: [ { label: "Categories", url: "/", current: true }, { label: "Groups", url: "/?by=group" } ] }
+
+    assert_select "a.count-tab", 2
+    assert_select ".count-tab-number", 0
+  end
+
   test "a callout can start hidden and carry data attributes" do
     render("ui/callout", tone: :signal, hidden: true, data: { form_guard_target: "notice" }) { "Changed elsewhere." }
 
