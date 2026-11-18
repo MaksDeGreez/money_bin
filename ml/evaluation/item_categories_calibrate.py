@@ -41,7 +41,7 @@ from evaluation.common import (
     read_jsonl,
     write_private_json,
 )
-from evaluation.item_categories_run import TASK, read_ground_truth, run_categorisers
+from evaluation.item_categories_run import TASK, prefilled_by_run, read_ground_truth
 from evaluation.ocr_run import read_ids
 
 DEFAULT_OUT = Path("~/Documents/money_bin_data/models")
@@ -131,10 +131,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     labels = {
         (receipt.ingest_id, item.position): item.label
         for receipt in receipts
-        if not any(
-            prefilled_by(receipt.categories_prefilled_by, name)
-            for name in run_categorisers(summary)
-        )
+        if not prefilled_by_run(receipt.categories_prefilled_by, summary)
         for item in receipt.items
         if item.label
     }

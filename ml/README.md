@@ -831,8 +831,11 @@ Items whose labels were chosen with one of the combined categorisers on screen
 (`categories_prefilled_by` names a categoriser behind one of the runs: its
 model, the label memory when it answered first, and every `combined_from`
 entry, which names the memory that supplied examples and the categorisers of a
-verified run; or is `source:unknown`) are neither fitted on nor counted
-(`item_categories_calibrate` applies the same list). The combined run's
+verified run; or is `source:unknown`; names compared by the harness's rule,
+`evaluation/models.py`, so another spelling of the same model counts) are
+neither fitted on nor counted (`item_categories_calibrate` applies the same
+rule). The forward split follows the order in which the runner processed the
+receipts (the order of their lines), and runs that disagree on it are refused. The combined run's
 `run.json` has `combined_from` with every categoriser behind every input, so
 the harness applies the same rule,
 and reports `agreement` (how often all runs agree on the best category and how
@@ -998,7 +1001,10 @@ numbers by name), `seconds_per_item`, `cost_usd`, `scores_calibrated` (true when
 calibrated, for example on a validation set; false when they are raw; absent or null when not
 known), `sources` (any `source` values its lines use besides `memory`, `model`, `decision` and
 `combined`) and, for a run made by combining other runs, `combined_from`: a list of
-`{"run_id", "backend", "model_name", "model_version"}`, one per run it combines. `predictions.jsonl`, one line per
+`{"run_id", "backend", "model_name", "model_version"}`, one per run it combines (any key may be
+missing). `item_categories_combine` lists every categoriser behind every input there, and a
+decision-model run lists the label memory that supplied its examples and the categoriser behind
+a verified run; the pre-fill rule then applies to all of them, and such a run counts as combined. `predictions.jsonl`, one line per
 item:
 
 ```json

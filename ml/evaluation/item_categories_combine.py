@@ -56,14 +56,13 @@ import numpy as np
 
 from app.decimals import exact_sum
 from evaluation.common import UsageError, inside_git_repository, read_jsonl, write_private_json
-from evaluation.item_categories_calibrate import UNKNOWN_CATEGORISER
 from evaluation.item_categories_run import (
     TASK,
     categoriser_entries,
+    prefilled_by_run,
     read_ground_truth,
     run_categorisers,
 )
-from evaluation.item_categories_run import _time_order as receipt_time_order
 from evaluation.item_scores import Scored
 from evaluation.item_scores import summary as score_summary
 from evaluation.ocr_run import _open_private, git_commit, make_run_dir
@@ -74,6 +73,27 @@ MIN_LEARNED_ITEMS = 20
 SCORE_PLACES = 6
 
 ItemKey = tuple[str, int]
+
+
+def processing_order(inputs: Sequence["InputRun"], keys: Sequence[ItemKey]) -> list[str]:
+    """The receipts in the order the runner processed them: the order of their first lines.
+
+    The runner writes a receipt's lines once it is done, in time order, and its label memory
+    knows only the receipts before; the forward split must follow that order, not one recomputed
+    from another export. Runs that processed the shared receipts in different orders are refused.
+    """
+    shared = {receipt_id for receipt_id, _ in keys}
+    orders = [
+        [
+            receipt_id
+            for receipt_id in dict.fromkeys(r for r, _ in one.candidates)
+            if receipt_id in shared
+        ]
+        for one in inputs
+    ]
+    if any(order != orders[0] for order in orders[1:]):
+        raise UsageError("the runs processed their receipts in different orders")
+    return orders[0]
 
 
 @dataclass(frozen=True)
@@ -341,8 +361,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if len(args.run) < 2:
         parser.error("give two --run folders or more")
-    if args.folds < 2 or args.c <= 0:
-        parser.error("--folds must be 2 or more and --c above 0")
+    if args.folds < 2 or not math.isfinite(args.c) or args.c <= 0:
+        parser.error("--folds must be 2 or more and --c a finite number above 0")
     return args
 
 
@@ -391,13 +411,17 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     truth_by_key: dict[ItemKey, str] = {}
     excluded: set[ItemKey] = set()
     for receipt in receipts:
-        prefilled = (receipt.categories_prefilled_by or "").strip()
+        # The harness's rule (another spelling of the same model is that model), for every
+        # categoriser behind every input.
+        left_out = any(
+            prefilled_by_run(receipt.categories_prefilled_by, dict(one.summary)) for one in inputs
+        )
         for item in receipt.items:
             if item.label is None:
                 continue
             key = (receipt.ingest_id, item.position)
             truth_by_key[key] = item.label
-            if prefilled and (prefilled == UNKNOWN_CATEGORISER or prefilled in categorisers):
+            if left_out:
                 excluded.add(key)
     truth = [truth_by_key.get(key) for key in keys]
     usable = [t is not None and key not in excluded for key, t in zip(keys, truth, strict=True)]
@@ -407,12 +431,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         | {t for t in truth if t is not None}
     )
     matrices = [score_matrix([one.candidates[key] for key in keys], labels) for one in inputs]
-    time_rank = {
-        receipt.ingest_id: rank
-        for rank, receipt in enumerate(sorted(receipts, key=receipt_time_order))
-    }
-    unknown = sorted({receipt_id for receipt_id, _ in keys} - set(time_rank))
-    time_rank.update({receipt_id: len(time_rank) + i for i, receipt_id in enumerate(unknown)})
+    time_rank = {receipt_id: rank for rank, receipt_id in enumerate(processing_order(inputs, keys))}
     order = [time_rank[receipt_id] for receipt_id, _ in keys]
     info: dict[str, Any] = {}
     deciders: list[int] | None = None

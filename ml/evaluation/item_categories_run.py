@@ -27,7 +27,10 @@ The run folder `OUT/<run id>/` gets:
   null: a call's time and cost split evenly over its items; memory costs
   nothing), and `error` (a code when the call failed, else null);
 - `run.json`: `"task": "item_categories"`, the backend, model, weights
-  revision, prompt version, categories version, git commit, whether the scores
+  revision, prompt version (`prompt_versions`: the answers' own, by count),
+  categories version, `combined_from` when another categoriser shaped the
+  answers (the label memory that supplied examples, a verified run's
+  categorisers), git commit, whether the scores
   are calibrated, counts, timings and, for a hosted backend, the cost.
 
 With `--backend decisions` (a decision model on OpenRouter, `DECISIONS_MODEL`
@@ -300,6 +303,31 @@ def categoriser_entries(summary: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(name, str) and name and name not in listed
     ]
     return entries
+
+
+def prefilled_by_run(categories_prefilled_by: str | None, summary: dict[str, Any]) -> bool:
+    """Whether labels chosen with `categories_prefilled_by`'s suggestions on screen may not score
+    this run: the evaluation harness's rule (`evaluation.models.prefill_exclusion`, which counts
+    another spelling of the same model as that model, and an unknown one as unknown), applied to
+    every categoriser behind the run."""
+    from evaluation.models import prefill_exclusion
+
+    if categories_prefilled_by is None or not categories_prefilled_by.strip():
+        return False
+    entries = categoriser_entries(summary) or [{"model_name": ""}]
+    return any(
+        prefill_exclusion(
+            categories_prefilled_by,
+            None,
+            (
+                entry.get("model_name") if isinstance(entry.get("model_name"), str) else "",
+                entry.get("model_version") if isinstance(entry.get("model_version"), str) else None,
+            ),
+            unknown_marker="source:unknown",
+        )
+        is not None
+        for entry in entries
+    )
 
 
 def run_categorisers(summary: dict[str, Any]) -> list[str]:

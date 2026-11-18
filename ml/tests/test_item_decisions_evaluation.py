@@ -575,3 +575,47 @@ def test_the_harness_reads_decision_and_combined_runs(
         assert run.task == "item_categories"
         assert run.records
     assert harness_read_run(combo["out"] / combined["run_id"]).is_combined
+
+
+def test_the_pre_fill_rule_is_the_harness_rule_for_every_categoriser() -> None:
+    summary = {
+        "model_name": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+        "combined_from": [{"model_name": "typesafe/jev-1.14"}],
+    }
+    # Another spelling of the same model is that model.
+    assert item_categories_run.prefilled_by_run("qwen/qwen3-vl-8b-instruct", summary)
+    assert item_categories_run.prefilled_by_run("typesafe/jev-1.14", summary)
+    assert item_categories_run.prefilled_by_run("source:unknown", summary)
+    assert not item_categories_run.prefilled_by_run("label-memory", summary)
+    assert not item_categories_run.prefilled_by_run(None, summary)
+    assert item_categories_run.prefilled_by_run("anything/else-1b", {})
+
+
+def test_runs_processed_in_different_orders_are_not_combined(
+    combo: dict[str, Any], tmp_path: Path
+) -> None:
+    lines = [
+        json.loads(text) for text in (combo["b"] / "predictions.jsonl").read_text().splitlines()
+    ]
+    reordered = write_run(tmp_path / "re", "run-r", list(reversed(lines)), model_name="model-r")
+    args = combine_args(combo, "--method", "average")
+    args.run = [combo["a"], reordered]
+    with pytest.raises(UsageError, match="different orders"):
+        combine.run(args, io.StringIO())
+    with pytest.raises(SystemExit):
+        combine.parse_args(
+            [
+                "--run",
+                "a",
+                "--run",
+                "b",
+                "--ground-truth",
+                "g",
+                "--out",
+                "o",
+                "--method",
+                "learned",
+                "--c",
+                "nan",
+            ]
+        )

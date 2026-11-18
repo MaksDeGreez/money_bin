@@ -858,7 +858,7 @@ class OpenRouterClient:
         )
         calls.append(call)
         embedded = _embedded_error(document, None)
-        if embedded is not None and call.provider is None and "answers" not in document:
+        if embedded is not None and call.provider is None and not document.get("answers"):
             # An error reported with HTTP 200 before any provider answered (no answers at all).
             raise embedded
         self._verify_provider(call, catalogue)
