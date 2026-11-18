@@ -7,8 +7,10 @@ the batch is deleted earlier, and the provider holds them while it works. So:
 
 - **Off unless allowed.** Every method refuses (501 `openrouter_batch_not_allowed`)
   unless `OPENROUTER_BATCH_ALLOW_RETENTION=true`. `capability` reports the same
-  refusal as "not available". No setting of the synchronous path reaches this
-  module, and nothing here changes the synchronous path.
+  refusal as "not available". No setting of the synchronous path can switch it
+  on (three request-shaping settings are shared: `OPENROUTER_MAX_TOKENS`,
+  `OPENROUTER_OCR_IMAGE_MAX_SIDE`, `OPENROUTER_STRUCTURED_OUTPUT`), and nothing
+  here changes the synchronous path.
 - **Named providers only.** A batch is routed with `provider.only` =
   `OPENROUTER_BATCH_PROVIDERS` (only those that serve the model's `:batch`
   variant and are known to read inline images in a batch) and
@@ -80,6 +82,7 @@ from app.batch.base import (
     OcrBatches,
 )
 from app.config import Settings
+from app.decimals import wide_context
 from app.ocr.images import prepare_images
 from app.ocr.parsing import AnswerError, parse_answer
 from app.ocr.postprocess import postprocess
@@ -565,15 +568,19 @@ class OpenRouterBatches(OcrBatches):
         )
         typical = receipts * TYPICAL_ANSWER_TOKENS
         most = receipts * self.settings.openrouter_max_tokens
-        prompt_cost = prompt_tokens * catalogue.prompt_price
+        # Exact: a price may have up to 50 digits, more than the default context's 28.
+        with wide_context():
+            prompt_cost = prompt_tokens * catalogue.prompt_price
+            cost = prompt_cost + typical * catalogue.completion_price
+            cost_max = prompt_cost + most * catalogue.completion_price
         return Estimate(
             receipts=receipts,
             images=images,
             prompt_tokens=prompt_tokens,
             completion_tokens_typical=typical,
             completion_tokens_max=most,
-            cost_usd=prompt_cost + typical * catalogue.completion_price,
-            cost_usd_max=prompt_cost + most * catalogue.completion_price,
+            cost_usd=cost,
+            cost_usd_max=cost_max,
             model_name=catalogue.model,
             model_version=catalogue.model_version,
             basis=(
@@ -667,10 +674,12 @@ class OpenRouterBatches(OcrBatches):
             raise batch_upstream_error(response.status_code, response.text)
         try:
             document = self._document(response.text)
-        except BackendError:
-            # Accepted (2xx), but the batch id cannot be read.
+            status = self._status_of(document, catalogue)
+        except Exception:
+            # Accepted (2xx), but the answer cannot be read: OpenRouter has the batch, and
+            # nothing here knows its id. Never a 5xx that a caller would retry.
+            logger.exception("A batch was accepted but its answer could not be read")
             raise _submit_unknown() from None
-        status = self._status_of(document, catalogue)
         return BatchStatus(**{**status.__dict__, "estimated_cost_usd": estimate.cost_usd})
 
     # Status, results, delete ------------------------------------------------------------
@@ -781,7 +790,10 @@ class OpenRouterBatches(OcrBatches):
 
     def results(self, batch_id: str) -> BatchResults:
         document = self._fetch(batch_id)
-        catalogue = self.catalogue()
+        # A batch sent earlier is read even if its model or provider has left the catalogue
+        # since: its answers are then checked against OPENROUTER_BATCH_PROVIDERS itself.
+        catalogue = self._catalogue_or_none()
+        allowed = catalogue.providers if catalogue is not None else frozenset(self.providers)
         status = self._status_of(document, catalogue)
         if status.state != "completed":
             raise _error(
@@ -789,7 +801,7 @@ class OpenRouterBatches(OcrBatches):
                 "batch_not_finished",
                 f"The batch is {status.state}; only a completed batch has results.",
             )
-        batch_provider_ok = status.provider is None or self._provider_ok(status.provider, catalogue)
+        batch_provider_ok = status.provider is None or self._provider_ok(status.provider, allowed)
         items: list[BatchItem] = []
         seen: set[str] = set()
         ignored = 0
@@ -799,20 +811,21 @@ class OpenRouterBatches(OcrBatches):
                 ignored += 1
                 continue
             seen.add(key)
-            items.append(self._item(key, entry, status, catalogue, batch_provider_ok))
+            items.append(self._item(key, entry, status, catalogue, allowed, batch_provider_ok))
         return BatchResults(status=status, items=items, ignored=ignored)
 
     @staticmethod
-    def _provider_ok(provider: str, catalogue: BatchCatalogue) -> bool:
+    def _provider_ok(provider: str, allowed: frozenset[str]) -> bool:
         key = _provider_key(provider)
-        return key in catalogue.providers or _provider_tag(key) in catalogue.providers
+        return key in allowed or _provider_tag(key) in allowed
 
     def _item(
         self,
         key: str,
         entry: Mapping[str, Any],
         status: BatchStatus,
-        catalogue: BatchCatalogue,
+        catalogue: BatchCatalogue | None,
+        allowed: frozenset[str],
         batch_provider_ok: bool,
     ) -> BatchItem:
         def failed(
@@ -853,7 +866,11 @@ class OpenRouterBatches(OcrBatches):
         model = body.get("model")
         accounting = {
             "provider": provider,
-            "model_version": model if isinstance(model, str) else catalogue.model_version,
+            "model_version": (
+                model
+                if isinstance(model, str)
+                else (catalogue.model_version if catalogue else status.model_name)
+            ),
             "cost_usd": _decimal(usage.get("cost")),
             "prompt_tokens": _count(usage.get("prompt_tokens")),
             "completion_tokens": _count(usage.get("completion_tokens")),
@@ -863,7 +880,7 @@ class OpenRouterBatches(OcrBatches):
                 else None
             ),
         }
-        if provider is None or not batch_provider_ok or not self._provider_ok(provider, catalogue):
+        if provider is None or not batch_provider_ok or not self._provider_ok(provider, allowed):
             return failed(
                 "openrouter_batch_provider_unverified",
                 "The answer came from a provider outside OPENROUTER_BATCH_PROVIDERS; "

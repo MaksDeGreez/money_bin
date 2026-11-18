@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 
 DEFAULT_MAX_IMAGE_BYTES = 15 * 1024 * 1024
@@ -107,3 +107,13 @@ class Settings(BaseSettings):
     # The providers a batch may run on, as OpenRouter's endpoint slugs separated
     # by commas (for example "anthropic"). No default: they are named, never picked.
     openrouter_batch_providers: str | None = None
+
+    @field_validator("openrouter_batch_allow_retention", mode="before")
+    @classmethod
+    def _batch_opt_in_is_explicit(cls, value: object) -> object:
+        """Only `true` or `false` (any case): "1", "yes" or "on" do not switch retention on."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+            return value.strip().lower() == "true"
+        raise ValueError("OPENROUTER_BATCH_ALLOW_RETENTION must be true or false")

@@ -972,3 +972,71 @@ def test_httpx_transport_sends_the_key_only_on_keyed_calls() -> None:
         assert request.headers["user-agent"] == "ocr-client"
         assert "http-referer" not in request.headers
         assert "x-title" not in request.headers
+
+
+# Fixes after review ------------------------------------------------------------------------------
+
+
+def test_the_opt_in_takes_only_true_or_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    for loose in ("1", "yes", "on", "y", ""):
+        monkeypatch.setenv("OPENROUTER_BATCH_ALLOW_RETENTION", loose)
+        with pytest.raises(ValueError):
+            Settings()
+    monkeypatch.setenv("OPENROUTER_BATCH_ALLOW_RETENTION", " TRUE ")
+    assert Settings().openrouter_batch_allow_retention is True
+
+
+def test_long_prices_are_multiplied_exactly() -> None:
+    long_price = "0." + "0" * 6 + "1234567890123456789012345678901234567"
+    endpoints = {
+        "data": {"endpoints": [batch_endpoint("anthropic", "Anthropic", prompt=long_price)]}
+    }
+    models = json.loads(json.dumps(MODELS))
+    models["data"][0]["pricing"] = {"prompt": long_price, "completion": long_price}
+    transport = FakeBatchTransport(models=models, endpoints=endpoints)
+    for item in transport.endpoints["data"]["endpoints"]:
+        item["pricing"]["completion"] = long_price
+    batches = OpenRouterBatches(settings(), transport=transport)
+
+    estimate = batches.estimate(7, 9)
+
+    # Computed from the digits, outside any decimal context: the integer and the exponent.
+    digits = (estimate.prompt_tokens + 7 * 1200) * int(long_price.replace("0.", "", 1))
+    expected = Decimal((0, tuple(int(d) for d in str(digits)), -(len(long_price) - 2)))
+    assert estimate.cost_usd == expected
+    assert len(estimate.cost_usd.as_tuple().digits) > 28
+
+
+def test_results_are_read_after_the_model_left_the_catalogue() -> None:
+    gone = {"data": [entry for entry in MODELS["data"] if entry["id"] != MODEL + ":batch"]}
+    transport = FakeBatchTransport(completed(result(KEY_A)), models=gone)
+    batches = OpenRouterBatches(settings(), transport=transport)
+
+    (item,) = batches.results("batch_abc123").items
+
+    assert item.extraction is not None
+    assert item.provider == "Anthropic"
+
+
+def test_answers_are_still_checked_against_the_setting_without_a_catalogue() -> None:
+    gone = {"data": []}
+    transport = FakeBatchTransport(completed(result(KEY_A), provider="Elsewhere"), models=gone)
+    batches = OpenRouterBatches(settings(), transport=transport)
+
+    (item,) = batches.results("batch_abc123").items
+
+    assert item.error is not None and item.error.code == "openrouter_batch_provider_unverified"
+
+
+def test_an_accepted_batch_whose_answer_breaks_the_reader_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batches, _ = make(accepted())
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise KeyError("a bug")
+
+    monkeypatch.setattr(batches, "_status_of", broken)
+    with pytest.raises(BackendError) as raised:
+        batches.submit(receipts(KEY_A))
+    assert (raised.value.status_code, raised.value.code) == (504, "openrouter_batch_submit_unknown")
