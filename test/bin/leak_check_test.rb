@@ -164,6 +164,45 @@ class LeakCheckTest < ActiveSupport::TestCase
       output.lines.grep(/term on line/).map(&:strip)
   end
 
+  # In a merge, git prints one path per entry, also for a rename ("RM", then one path). Reading two paths
+  # there would lose the place and skip the name of the file listed next.
+  test "a file a merge adds is checked by name, also next to a file renamed on one side" do
+    commit({ "b.txt" => "one\ntwo\nthree\nfour\nfive\n" }, "Add b")
+    git("switch", "-q", "-c", "side")
+    git("mv", "b.txt", "a-renamed.txt")
+    commit({}, "Rename b")
+    git("switch", "-q", "-c", "feature", "main")
+    commit({ "own.txt" => "plain own\n" }, "Own")
+    git("merge", "-q", "--no-ff", "--no-commit", "side")
+    File.write(File.join(@work, "a-renamed.txt"), "one\ntwo\nthree\nfour\nfive\nsix from the merge\n")
+    merge = commit({ "zorblax-new.txt" => "plain\n" }, "Merge side")
+    statuses = git("diff-tree", "-r", "-M", "--cc", "--name-status", "--no-commit-id", merge)
+    assert_match(/^R\S*M?\ta-renamed\.txt$|^MR\ta-renamed\.txt$/, statuses, "the merge must list the renamed file with a combined status")
+
+    output, status = push("feature")
+
+    assert_blocked output, status
+    assert_equal [ "commit #{merge[0, 12]} added file <term 3>-new.txt: term on line 3 of the terms file" ],
+      output.lines.grep(/term on line/).map(&:strip)
+  end
+
+  test "a file a merge renames against both parents is checked by its new name" do
+    commit({ "b.txt" => "one\ntwo\nthree\nfour\nfive\n" }, "Add b")
+    git("switch", "-q", "-c", "side")
+    commit({ "side.txt" => "plain side\n" }, "Side")
+    git("switch", "-q", "-c", "feature", "main")
+    commit({ "own.txt" => "plain own\n" }, "Own")
+    git("merge", "-q", "--no-ff", "--no-commit", "side")
+    git("mv", "b.txt", "quuxwidget.txt")
+    merge = commit({}, "Merge side")
+
+    output, status = push("feature")
+
+    assert_blocked output, status
+    assert_equal [ "commit #{merge[0, 12]} added file <term 4>.txt: term on line 4 of the terms file" ],
+      output.lines.grep(/term on line/).map(&:strip)
+  end
+
   test "an annotated tag is checked: its message and its new commits" do
     git("tag", "-a", "v1", "-m", "Release for Zorblax")
 
@@ -303,6 +342,39 @@ class LeakCheckTest < ActiveSupport::TestCase
 
     assert_blocked output, status
     assert_includes output, "commit #{sha[0, 12]} message line 1: term on line 4 of the terms file"
+  end
+
+  test "two terms in one line give two findings, and a term in another line of the file is not repeated" do
+    commit({ "notes.txt" => "plain\nzorblax and quuxwidget\nplain\nzorblax again\n" }, "Add notes")
+
+    output, status = leak_check("--tree")
+
+    assert_blocked output, status
+    assert_equal [
+      "  notes.txt line 2: term on line 3 of the terms file",
+      "  notes.txt line 2: term on line 4 of the terms file",
+      "  notes.txt line 4: term on line 3 of the terms file"
+    ], output.lines(chomp: true).grep(/notes\.txt/)
+  end
+
+  # A real terms file holds every payee and account name. The cost must not grow with terms x lines:
+  # the first version of the script built one regular expression per term for every line it read.
+  test "a terms file with thousands of terms checks a large tree and a large commit in seconds" do
+    File.write(@terms_file, (1..3000).map { |n| "Invented term #{n} qz" }.join("\n") + "\nZorblax\n")
+    lines = (1..4000).map { |n| "a clean line of text, number #{n}\n" }
+    sha = commit({ "big.txt" => lines.join, "docs/also-big.txt" => (lines + [ "a line with zorblax\n" ]).join }, "Add big files")
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    tree_output, tree_status = leak_check("--tree")
+    history_output, history_status = leak_check("--history")
+    seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_blocked tree_output, tree_status
+    assert_includes tree_output, "docs/also-big.txt line 4001: term on line 3001 of the terms file"
+    assert_match(/1 forbidden term found/, tree_output)
+    assert_blocked history_output, history_status
+    assert_includes history_output, "commit #{sha[0, 12]} docs/also-big.txt line 4001: term on line 3001 of the terms file"
+    assert_operator seconds, :<, 20, "the two checks took #{seconds.round(1)} s"
   end
 
   test "a wrong argument is a usage error" do

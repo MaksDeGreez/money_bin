@@ -93,21 +93,36 @@ module LeakCheck
 
     def initialize(terms)
       @terms = terms
+      @masks = terms.map { |term| [ /#{Regexp.escape(term.text)}/i, "<term #{term.line}>" ] }
       @findings = []
       @scanned = Set.new
     end
 
-    # Records a finding for every term in `text`; `where` says where the text came from.
-    def check(text, where)
-      lower = LeakCheck.fold(text)
-      @terms.each do |term|
-        @findings << "#{where}: term on line #{term.line} of the terms file" if lower.include?(term.text)
-      end
+    # Records a finding for every one of `terms` in `text`. The block says where the text came from. It runs
+    # only when a term was found: it usually masks a path, which costs one pass per term, and a terms file
+    # can hold thousands of terms.
+    def check(text, terms = @terms)
+      found = terms_in(text, terms)
+      return if found.empty?
+
+      where = yield
+      found.each { |term| @findings << "#{where}: term on line #{term.line} of the terms file" }
+    end
+
+    # Checks `text` line by line; the block gets a line number and says where that line is. The whole text
+    # is searched first and only the terms found there are looked for in each line, so a clean file costs
+    # one pass per term instead of one per term and line. Nothing is missed: a term has no line break, so a
+    # term that is in a line is in the whole text too.
+    def check_lines(text)
+      present = terms_in(text)
+      return if present.empty?
+
+      text.each_line.with_index(1) { |line, number| check(line, present) { yield number } }
     end
 
     # Replaces every term in text that is about to be printed.
     def mask(text)
-      @terms.reduce(LeakCheck.nfc(text)) { |masked, term| masked.gsub(/#{Regexp.escape(term.text)}/i, "<term #{term.line}>") }
+      @masks.reduce(LeakCheck.nfc(text)) { |masked, (pattern, label)| masked.gsub(pattern, label) }
     end
 
     def check_pre_push(remote, input)
@@ -118,7 +133,7 @@ module LeakCheck
 
         next if local_sha.match?(ZERO_SHA) # a deleted ref publishes nothing
 
-        check(remote_ref, "ref #{mask(remote_ref)}")
+        check(remote_ref) { "ref #{mask(remote_ref)}" }
         check_tag_message(local_sha, local_ref)
         next check_tagged_content(local_sha, local_ref) unless object?("#{local_sha}^{commit}")
 
@@ -141,16 +156,21 @@ module LeakCheck
     def check_tree
       paths = LeakCheck.git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0").uniq
       paths.each do |path|
-        check(path, "path #{mask(path)}")
+        check(path) { "path #{mask(path)}" }
         next unless File.lstat(path).file?
 
-        LeakCheck.utf8(File.binread(path)).each_line.with_index(1) { |text, number| check(text, "#{mask(path)} line #{number}") }
+        check_lines(LeakCheck.utf8(File.binread(path))) { |number| "#{mask(path)} line #{number}" }
       rescue Errno::ENOENT
         next # tracked but deleted in the working tree
       end
     end
 
     private
+
+    def terms_in(text, terms = @terms)
+      lower = LeakCheck.fold(text)
+      terms.select { |term| lower.include?(term.text) }
+    end
 
     def object?(sha)
       system("git", "cat-file", "-e", sha, out: File::NULL, err: File::NULL)
@@ -159,65 +179,70 @@ module LeakCheck
     # A tag of a blob or a tree publishes that content without a commit.
     def check_tagged_content(sha, ref)
       target = LeakCheck.git("rev-parse", "#{sha}^{}").strip
-      where = "tag #{mask(ref)}"
       case LeakCheck.git("cat-file", "-t", target).strip
-      when "blob" then check_blob(target, where)
+      when "blob" then check_blob(target) { "tag #{mask(ref)}" }
       when "tree"
         LeakCheck.git("ls-tree", "-r", "-z", target).split("\0").each do |entry|
           info, path = entry.split("\t", 2)
-          check(path, "#{where} path #{mask(path)}")
-          check_blob(info.split[2], "#{where} #{mask(path)}") if info.split[1] == "blob"
+          check(path) { "tag #{mask(ref)} path #{mask(path)}" }
+          check_blob(info.split[2]) { "tag #{mask(ref)} #{mask(path)}" } if info.split[1] == "blob"
         end
       end
     end
 
-    def check_blob(sha, where)
-      LeakCheck.git("cat-file", "blob", sha).each_line.with_index(1) { |text, number| check(text, "#{where} line #{number}") }
+    # The block says where the blob is; it runs only when a term was found.
+    def check_blob(sha)
+      check_lines(LeakCheck.git("cat-file", "blob", sha)) { |number| "#{yield} line #{number}" }
     end
 
     def check_tag_message(sha, ref)
       return unless LeakCheck.git("cat-file", "-t", sha).strip == "tag"
 
       body = LeakCheck.git("cat-file", "tag", sha).split("\n\n", 2)[1].to_s
-      body.each_line.with_index(1) { |text, number| check(text, "tag #{mask(ref)} message line #{number}") }
+      check_lines(body) { |number| "tag #{mask(ref)} message line #{number}" }
     end
 
     def check_commit(sha)
       return unless @scanned.add?(sha)
 
       short = sha[0, 12]
-      LeakCheck.git("log", "-1", "--format=%B", sha).each_line.with_index(1) do |text, number|
-        check(text, "commit #{short} message line #{number}")
+      check_lines(LeakCheck.git("log", "-1", "--format=%B", sha)) { |number| "commit #{short} message line #{number}" }
+      new_paths(sha).each { |path| check(path) { "commit #{short} added file #{mask(path)}" } }
+      added_lines(sha) do |path, number, text, present|
+        check(text, present) { "commit #{short} #{mask(path)} line #{number}" }
       end
-      new_paths(sha).each { |path| check(path, "commit #{short} added file #{mask(path)}") }
-      added_lines(sha) { |path, number, text| check(text, "commit #{short} #{mask(path)} line #{number}") }
     end
 
-    # Paths the commit adds or renames to. A merge (combined status such as "AA") counts only paths that
-    # are new against every parent: the others came from a parent, which is checked on its own.
+    # Paths the commit adds or renames to. A merge has a combined status, one letter per parent ("AA",
+    # "RM"): it counts only paths that are new against every parent (added, renamed or copied: "AA", "RR",
+    # "AR"); the others came from a parent, which is checked on its own.
+    #
+    # A rename or a copy against one parent comes with a score and two paths ("R100", old, new). A combined
+    # status has no score and one path, also when a letter is R or C.
     def new_paths(sha)
       fields = LeakCheck.git("diff-tree", "-r", "-z", "-M", "--cc", "--name-status", "--root", "--no-commit-id", sha)
         .split("\0")
       paths = []
       until fields.empty?
         status = fields.shift
-        if status.start_with?("R", "C")
-          fields.shift
-          paths << fields.shift
-        else
-          path = fields.shift
-          paths << path if status.match?(/\AA+\z/)
-        end
+        fields.shift if status.match?(/\A[RC]\d+\z/) # the old path
+        path = fields.shift
+        paths << path if status.match?(/\A[ARC]+\d*\z/)
       end
       paths
     end
 
-    # Yields path, line number and text of every line the commit adds. Works for plain and combined (merge)
-    # diffs: a combined diff has one marker column per parent, and a line is new only when every column is
-    # "+" (otherwise it came from a parent). --text shows binary files and files marked "-diff" as text.
+    # Yields path, line number and text of every line the commit adds, with the terms that occur somewhere
+    # in the commit's patch (the only ones an added line can hold). A patch without any term yields
+    # nothing. Works for plain and combined (merge) diffs: a combined diff has one marker column per
+    # parent, and a line is new only when every column is "+" (otherwise it came from a parent). --text
+    # shows binary files and files marked "-diff" as text.
     def added_lines(sha)
       patch = LeakCheck.git("diff-tree", "-p", "--text", "--cc", "-M", "-U0", "--root", "--no-commit-id", "--no-color",
                             "--no-ext-diff", "--no-textconv", sha)
+      present = terms_in(patch)
+      return if present.empty?
+
       path = nil
       columns = 1
       number = 0
@@ -233,7 +258,7 @@ module LeakCheck
           markers = line[0, columns].to_s
           next if markers.include?("-")
 
-          yield path, number, line[columns..].to_s if markers == "+" * columns
+          yield path, number, line[columns..].to_s, present if markers == "+" * columns
           number += 1
         end
       end
