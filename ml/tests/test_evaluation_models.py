@@ -44,16 +44,56 @@ DIFFERENT = [
     ("openai/gpt-4o", "openai/gpt-4o-mini"),
     ("anthropic/claude-sonnet-4.6", "anthropic/claude-opus-4.6"),
     ("anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5"),
-    ("qwen/qwen3-vl-8b-instruct", "qwen/qwen3-vl-8b-thinking"),
     ("qwen/qwen3-8b", "qwen/qwen3-vl-8b-instruct"),
     ("google/gemini-2.5-flash", "google/gemini-2.5-pro"),
     ("openai/gpt-4.1-mini", "anthropic/claude-sonnet-4.6"),
 ]
 UNKNOWN = [
+    ("qwen/qwen3-vl-8b-instruct", "qwen/qwen3-vl-8b-thinking"),  # a mode word is not proof
     ("openai/gpt-4", "openai/gpt-4o"),  # an unexplained word ("o")
     ("vendor/model-a", "vendor/model-a-special"),
     ("/Users/someone/models/qwen", "qwen/qwen3-vl-8b-instruct"),
 ]
+
+
+# Real names of one model that an earlier version judged "different" (a bypass of the pre-fill
+# rule). Each must come out "same" or "unknown": either way the record is left out.
+NEVER_DIFFERENT = [
+    ("mlx-community/Meta-Llama-3.1-8B-Instruct-4bit", "meta-llama/llama-3.1-8b-instruct"),
+    ("hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4", "llama3.1:8b"),
+    ("open-mistral-nemo", "mistralai/mistral-nemo"),
+    ("CohereForAI/c4ai-command-r-plus-08-2024", "command-r-plus-08-2024"),
+    ("qwen-qwq-32b", "qwen/qwq-32b"),
+    ("anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic/claude-3.5-sonnet"),
+    ("us.anthropic.claude-sonnet-4-20250514-v1:0", "anthropic/claude-sonnet-4"),
+    ("bartowski/Qwen3-VL-8B-Instruct-GGUF/Qwen3-VL-8B-Instruct-f16.gguf", "qwen/qwen3-vl-8b"),
+    ("mradermacher/Qwen3-VL-8B-Instruct-i1-GGUF", "qwen/qwen3-vl-8b-instruct"),
+    ("turboderp/Qwen3-VL-8B-Instruct-4.0bpw-h6-exl2", "qwen/qwen3-vl-8b-instruct"),
+    ("mlx-community/Qwen3-VL-8B-Instruct-8bit-gs32", "qwen/qwen3-vl-8b-instruct"),
+    ("mlx-community/Qwen3-VL-8B-Instruct-4bit-DWQ-v2", "qwen/qwen3-vl-8b-instruct"),
+    ("google/gemma-3-12b-it-qat-q4_0-gguf", "google/gemma-3-12b-it"),
+    ("google/gemma-3-12b-it-qat-q4_0-unquantized", "google/gemma-3-12b-it"),
+    ("mistralai/mixtral-8x7b-instruct", "mlx-community/Mixtral-8x7B-Instruct-v0.1"),
+    ("phi3:mini", "microsoft/Phi-3-mini-4k-instruct"),
+    ("claude-opus-4-0", "anthropic/claude-opus-4"),
+    ("google/gemini-2.5-flash-preview-09-2025", "google/gemini-2.5-flash"),
+    ("gemini-2.5-pro-preview-05-06", "google/gemini-2.5-pro"),
+    ("meta-llama/Llama-3.3-70B-Instruct-Turbo", "meta-llama/llama-3.3-70b-instruct"),
+    ("grok-4-1-fast-reasoning", "x-ai/grok-4.1-fast"),
+    ("Qwen/Qwen2.5-1.5B-Instruct", "qwen2.5:1.5b"),
+]
+
+
+@pytest.mark.parametrize(("a", "b"), NEVER_DIFFERENT)
+def test_one_model_is_never_judged_different(a: str, b: str) -> None:
+    assert compare(identity(a), identity(b)) != "different"
+    assert compare(identity(b), identity(a)) != "different"
+    assert prefill_exclusion(a, None, (b, None)) is not None
+
+
+def test_decimal_sizes_stay_whole() -> None:
+    assert identity("Qwen/Qwen2.5-1.5B-Instruct").sizes == frozenset({"1p5b"})
+    assert compare(identity("qwen2.5:1.5b"), identity("qwen2.5:7b")) == "different"
 
 
 @pytest.mark.parametrize(("a", "b"), SAME)
