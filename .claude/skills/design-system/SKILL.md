@@ -15,10 +15,10 @@ The system is already in place. This skill is for **extending** it (a new primit
 |---|---|
 | Tokens, dark mode, base element styles, component classes | `app/assets/tailwind/design-system.css` (imported by `app/assets/tailwind/application.css`) |
 | Helpers | `app/helpers/ui_helper.rb`: `ui_button`, `ui_link_button`, `ui_button_to`, `ui_button_classes`, `ui_badge`, `ui_icon`, `ui_flash_tone`, `ui_classes`; variant maps `BUTTON_VARIANTS`, `BUTTON_SIZES`, `BADGE_TONES`, `CALLOUT_TONES`, `ICON_SIZES` |
-| Partials | `app/views/ui/_page_header`, `_callout`, `_flash`, `_theme_toggle` |
+| Partials | `app/views/ui/_page_header`, `_callout`, `_flash`, `_theme_toggle`, `_pagination`, `_count_tabs` |
 | Forms | `app/form_builders/ui_form_builder.rb`, the default builder of `form_with` (set in `ApplicationController`) |
 | Behaviour | `app/javascript/controllers/theme_controller.js`, `clipboard_controller.js` |
-| CSS-only components | `.listing` / `.listing-item`, `.data-table` / `.data-row` (definition list), `.data-grid-wrapper > table.data-grid` with `.data-grid-num`, `.data-grid-link`, `.data-grid-actions`, `.data-grid-group`, `.data-grid-sub`, `.body-content` (long prose) |
+| CSS-only components | `.filter-bar` (a GET filter form above a list), `.photo-thumb` / `.photo-frame` (photos), `.listing` / `.listing-item`, `.data-table` / `.data-row` (definition list), `.data-grid-wrapper > table.data-grid` with `.data-grid-num`, `.data-grid-link`, `.data-grid-actions`, `.data-grid-group`, `.data-grid-sub`, `.body-content` (long prose) |
 | Fonts and the theme boot script | `app/views/layouts/_head.html.slim` |
 | Logo and favicons | `design/favicon/source.png`, `bin/favicon`, `app/assets/images/logo.png` (see `README.md`, "Logo and favicons") |
 | Rules for agents | `CLAUDE.md`, the "Views" and "Tailwind utilities" bullets under "Conventions"; `.claude/agents/implementer.md` and `reviewer.md` repeat the short form |

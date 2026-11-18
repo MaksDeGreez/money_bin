@@ -16,7 +16,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
-| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256` |
+| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
@@ -88,7 +88,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   `qr_receipt_number` are what a tax-service QR code says (see "QR ground truth").
   `batch` is a free label for a bulk upload (for a loaded receipt, the ingest batch). `ingest_id` is the
   stable number the receipt ingest tool gave the receipt (`rcpt_000123`, see "Receipt load"); nil for a
-  receipt uploaded in the app. `sha256` is the photo fingerprint.
+  receipt uploaded in the app. `sha256` is the photo fingerprint. `ocr_requested_at` is when OCR was last
+  queued for the receipt, nil when no request waits (see "Who enqueues OCR").
 - **Receipt item.** `amount` is what was paid for the item after its `discount`. It is normally positive,
   but it can be negative (a bottle deposit returned) or zero (a free item). `suggested_category` and
   `confidence` (0..1) are the categoriser's guess. `category` is the accepted category, and
@@ -136,6 +137,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A receipt's `ingest_id` is `rcpt_` and six or more digits, and unique when present | Model + DB (`receipts_ingest_id_format`, partial unique index) |
 | A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
 | OCR never writes the QR ground truth (`qr_*`, `qr_payload`), `ingest_id`, `batch` or `incomplete` | Model only (`Receipts::ApplyOcr` assigns only its own fields) |
+| A receipt is queued for OCR at most once while a request waits, and a `reviewed` one never | Model only (`Receipts::RequestOcr`, under a row lock; `ReceiptOcrJob` checks again when it starts) |
 | A receipt's `sha256` and photos change only through the receipt load, and only while the receipt is pristine | Model only (`ReceiptLoad::Writer`, under a row lock) |
 
 ### The line sum is enforced in the model, not by a trigger
@@ -272,9 +274,8 @@ the work:
   not depend on Active Storage, and returns value objects that keep the parsed body. It never retries.
   Every failure is a subclass of `MlClient::Error` with a short `code` and `transient?`.
 - `Receipts::ApplyOcr.call(receipt, result)` stores one OCR result (details below).
-- `ReceiptOcrJob` (Sidekiq) runs the two for one receipt. Nothing enqueues it on its own: no model
-  callback does it, and neither does the receipt load. The upload flow calls
-  `ReceiptOcrJob.perform_later(receipt)` after it saved the receipt.
+- `ReceiptOcrJob` (Sidekiq) runs the two for one receipt. Only `Receipts::RequestOcr` enqueues it (see
+  "Who enqueues OCR"): no model callback does, and neither does the receipt load.
 - The job has its own queue, `receipt_ocr`, worked by a Sidekiq capsule with one thread
   (`config/sidekiq.yml`). A local OCR model reads one receipt at a time; with several jobs in parallel each
   would wait for the others inside the ML service and run into the client's OCR timeout. Other jobs keep the
@@ -287,15 +288,102 @@ Who moves the status:
 |---|---|---|
 | (new) | `uploaded` | the upload (the column default) |
 | `uploaded`, `failed` | `processing` | `ReceiptOcrJob`, when it starts |
+| `extracted` | `processing` | `ReceiptOcrJob`, when it starts on a request to read it again (`ocr_requested_at` set) |
 | `processing` | `extracted` | `Receipts::ApplyOcr`, with the result |
 | `processing` | `failed` | `ReceiptOcrJob`, on a permanent failure or when the retries run out |
 | `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
 | `reviewed` | `extracted` | destroying its transaction (the receipt is unlinked, keeps its items and can be accepted again) |
 
-The job starts only on `uploaded`, `processing` (its own retry, or a run that died) and `failed` (try
-again by enqueuing it once more). It leaves `extracted` and `reviewed` receipts alone, so running it twice
-does the work once and never overwrites what a person is reviewing. A receipt deleted before the job runs
-is discarded quietly.
+The job starts only on `uploaded`, `processing` (its own retry, or a run that died), `failed` (try
+again by enqueuing it once more), and `extracted` while a request to read it again waits. It leaves other
+`extracted` receipts and every `reviewed` one alone, so running it twice does the work once and never
+overwrites what a person is reviewing. When it starts it clears `ocr_requested_at`; a request for a receipt
+that was accepted in the meantime is cleared without reading it. A receipt deleted before the job runs is
+discarded quietly.
+
+### Who enqueues OCR
+
+`Receipts::RequestOcr` is the one place that queues `ReceiptOcrJob`, from three places in the app:
+
+| When | Which receipts | Method |
+|---|---|---|
+| A receipt page is opened, and right after an upload | the receipt, when it is `uploaded` (never read) | `first_read` |
+| "Read again" on a receipt page | the receipt, when it is `failed`, or `extracted` after a confirmation (its items are replaced) | `read_again` |
+| "Read all in this filter" on the list | every `uploaded` and `failed` receipt of the filter, on every page, in the list's order | `read_all` |
+
+A `reviewed` receipt is never queued: it was accepted into the ledger, and a new OCR result must not change
+it (`Receipts::ApplyOcr` refuses it too). A `processing` one is being read already.
+
+**Once.** A request claims its receipts by setting `ocr_requested_at`, in one database transaction that
+locks the rows and takes only those where it is nil. The job clears it when it starts. So opening a page
+twice, clicking twice, or "Read all" over receipts that are already waiting queues nothing more; two
+requests at the same moment are serialised by the row lock, and the second sees the first one's value. The
+job is queued after the claim commits; when the queue (Redis) cannot be reached, the claim is taken back
+and the page says so, so the receipt never looks queued when it is not. A request older than a day counts
+as lost (the queue was emptied by hand) and may be made again. A duplicate job would be harmless anyway:
+the OCR queue runs one job at a time, and the second finds the receipt read and does nothing.
+
+**What "opening" means.** A real GET of the receipt page. Turbo's link prefetch (on hover) and the
+browser's speculative loads send `Sec-Purpose: prefetch`; such a request, and a HEAD request, queue
+nothing. Links to receipt pages also carry `data-turbo-prefetch="false"`, so a prefetched page (which
+queued nothing) is never shown in place of a real visit.
+
+**Re-reading an `extracted` receipt** needs `ocr_requested_at` set when the job starts: a stray duplicate
+job finds it nil and leaves the receipt alone. A re-read that fails leaves the receipt `failed`, with its
+earlier items still there (only a successful read replaces them).
+
+"Read all" can queue hundreds of receipts; the OCR capsule reads them one at a time, so with a local model
+this takes hours. The confirmation and the notice say so.
+
+### Receipt pages
+
+- `/receipts` (`ReceiptsController#index`): 50 receipts to a page (`Pagination`, a COUNT and an OFFSET; no
+  gem for a list of a few thousand rows). Newest first (`Receipt.newest_first`): receipts uploaded in the
+  app (no ingest number) by upload time, then loaded ones by ingest number, highest first, compared as a
+  number. The filter (`Receipt::Filter`: batch, status, kind, tax QR, incomplete) is a GET form; its state
+  is the URL, carried by every link (rows, pages, counts, receipt pages and back). A value that is not a
+  choice is ignored. The counts per status apply every filter but the status.
+- `/receipts/:id`: the photos in upload order next to the data, read-only for now (the review form comes
+  later). Previous / next walk the filtered list (the ids of the whole filter, plucked: cheap at this
+  size). A `failed` receipt shows the stored failure code and message.
+- `/receipts/new`: one to three photos and an optional batch, sent with the form (no direct upload: Rails'
+  Active Storage routes are not drawn). The model's rules are the form's errors; a photo set that was
+  already uploaded links to the existing receipt.
+
+**How photos are served.** Rails' own Active Storage routes are not drawn: they skip sign-in.
+`Receipts::PhotosController` (`GET /receipts/:receipt_id/photos/:id/:size`) is an ordinary controller
+behind sign-in, so a request without a session gets the sign-in redirect like any page. `:id` is the
+photo's attachment, looked up among this receipt's photos only: a photo of another receipt or any other
+attachment is a 404. Sizes: `thumb` (240 px) and `page` (1600 px) are JPEG variants named on
+`Receipt#images`, made by libvips on the first request and kept (`active_storage_variant_records`); `full`
+is the photo as uploaded when it is a JPEG, PNG or WebP, and a full-size JPEG copy otherwise (HEIC), so
+every browser shows it. Variants are stripped of metadata. The `Content-Type` comes from an allow-list,
+never from the stored blob; a blob that is not a photo, or a file that is gone, is a 404, a photo that
+cannot be decoded a 422. Responses are `Cache-Control: private, max-age=86400` with an ETag: the photo of
+an attachment never changes (a regrouped receipt gets new attachments).
+
+**QR match.** The receipt page shows the tax QR values next to the OCR values of the same fields
+(`Receipt::QrComparison`). Both present: "Match" or "Mismatch". A total matches when the two decimals are
+equal (125.4 and 125.40 match, nothing is rounded); a time when it is the same minute in Kyiv time (the QR
+code carries minutes only, so OCR's seconds are left out); a fiscal or receipt number when the texts are
+equal after trimming spaces at the ends, with nothing else normalised. One side only is shown as such,
+never as a match.
+
+**Live updates.** The receipt page subscribes to its receipt's Turbo stream and the list to the
+`receipts` stream (`turbo_stream_from`, signed stream names, over Action Cable through Redis, so a job in
+the Sidekiq process reaches the browser). `Receipts::LiveUpdate` is called explicitly, because the job
+writes with `update_columns`: by `ReceiptOcrJob` when it starts and when it fails, by
+`Receipts::ApplyOcr` with the result, and by `Receipts::RequestOcr` when OCR is queued. It sends a Turbo
+"refresh" (morph, scroll kept) after the database transaction commits: the page fetches itself again with
+its own filter and morphs, so the status badge, the data column, the rows and the counts change and
+nothing else moves. A refresh rather than replacing parts with rendered partials, because Action Cable
+does not promise the order of messages: a job that fails within milliseconds of starting could otherwise
+leave "Reading" on the page. A failed broadcast is logged and reported, never raised into the job.
+
+Only a signed-in browser opens the WebSocket (`ApplicationCable::Connection` reads the same signed
+session cookie as the pages), and a stream is joined only through a name the app signed. The connection
+is identified by its session: signing out, and a new password (which ends every other session), close
+the ended sessions' sockets at once, and their reconnect is refused.
 
 What is stored where:
 
@@ -652,8 +740,9 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   place: the read API (transactions, accounts with balances, the category tree, a spending summary and
   receipts; `docs/openapi.yaml`, `docs/decisions/0007-read-api.md`) and the read-only MCP server at `/mcp`,
   whose tools call the same query objects (`docs/decisions/0008-mcp-server.md`).
-- The upload flow that enqueues `ReceiptOcrJob`, and a call to `/categorise` that fills
-  `suggested_category` and `confidence` on the items.
+- A call to `/categorise` that fills `suggested_category` and `confidence` on the items.
+- The receipt review form (correcting OCR, choosing categories, accepting into the ledger) and a labelling
+  mode for the OCR evaluation set.
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view.

@@ -27,7 +27,7 @@ runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-o
 ## Status
 
 Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
-owner signs in, AI agents authenticate with personal API tokens and read the ledger through a read-only
+owner signs in, sees the receipts, uploads new ones and has them read by OCR, AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
 with a local vision model (`OCR_BACKEND=mlx`, Apple silicon), and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
@@ -66,7 +66,7 @@ processes in `Procfile.dev` with foreman:
 | `ml`      | the ML service (`uvicorn app.main:app`)      | 8100 |
 
 Without `uv` (or without `ml/`), `bin/dev` starts everything except the ML service. Useful URLs:
-`/` (home), `/session/new` (sign in), `/settings/api_tokens` (API tokens), `/sidekiq` (background jobs,
+`/` (home), `/session/new` (sign in), `/receipts` (receipts, upload, OCR), `/settings/api_tokens` (API tokens), `/sidekiq` (background jobs,
 signed in only), `/api/v1/status` (API check; the whole read API is under `/api/v1`, see "The read
 API"), `/up` (health check), <http://127.0.0.1:8100/docs> (ML
 service API docs).
@@ -88,7 +88,7 @@ the reset. Seeds never create a user.
 
 Every page needs a signed-in session, except the sign-in page and `/up`. Sign in at `/session/new`.
 Rails' own Active Storage routes (`/rails/active_storage/...`) are not drawn, because they would skip
-the sign-in check: receipt photos will be served by the app's own controllers. Every page is sent with a
+the sign-in check: receipt photos are served by the app's own controller (`Receipts::PhotosController`). Every page is sent with a
 strict Content Security Policy, and in production the app answers only to `localhost`, `127.0.0.1`,
 `::1` and `APP_HOST`.
 
@@ -324,6 +324,27 @@ It runs locally only. The model file holds payee names, so it and the metrics JS
 the repository (the command refuses one inside a git repository); the console prints counts and metrics
 only. Details: [`ml/README.md`](ml/README.md); reasons:
 [`docs/decisions/0006-transaction-categoriser.md`](docs/decisions/0006-transaction-categoriser.md).
+
+## Receipts in the app
+
+`/receipts` lists every receipt, 50 to a page, newest first, with a thumbnail, its status, kind, tax QR
+data, merchant, date, total and items. The filter (batch, status, kind, tax QR, incomplete) is a GET form,
+so a filtered list is a URL; the counts per status above the list follow the other filters. A receipt page
+shows its photos (each opens the full photo) next to what is stored: the fields, the items with their sum
+against the printed total, and the tax QR values next to the OCR values with a match / mismatch mark.
+`/receipts/new` uploads one to three photos of one receipt.
+
+OCR runs in Sidekiq (`bin/dev` starts it) with the ML service (`OCR_BACKEND`, see `ml/README.md`):
+
+- opening a receipt that was never read, and uploading one, queues it once;
+- "Read again" queues a failed receipt, or (after a confirmation) an extracted one, whose items it replaces;
+  an accepted receipt is never read again;
+- "Read all in this filter" queues every unread and failed receipt the filter shows. The OCR queue reads
+  one receipt at a time, so a few hundred receipts take hours with a local model.
+
+The pages follow OCR live (Turbo Streams over Action Cable, through Redis): the status and the data change
+when a job starts, finishes or fails, without a reload. The rules are in
+[`docs/domain.md`](docs/domain.md), "Receipt pages".
 
 ## Tests and checks
 
