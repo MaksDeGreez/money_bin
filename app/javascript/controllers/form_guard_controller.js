@@ -40,6 +40,10 @@ export default class extends Controller {
       [this.element, "submit", () => { this.submitting = true }]
     ]
     this.listeners.forEach(([target, name, handler]) => target.addEventListener(name, handler))
+  }
+
+  // On connect and when a refused save's response is morphed in (the controller stays connected then).
+  errorsValueChanged() {
     if (this.errorsValue) this.element.querySelector("[aria-invalid='true']")?.focus()
   }
 
