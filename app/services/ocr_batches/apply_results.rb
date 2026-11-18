@@ -12,7 +12,8 @@ module OcrBatches
   #   hand, or it was deleted): `superseded`, the result is not used. The person's work wins;
   # - an answer: stored exactly as a read one at a time stores it (Receipts::ApplyOcr: fields, items, status
   #   `extracted`, `ocr_raw` with the model and prompt), the hold taken off: `applied`. Then the same follow-up
-  #   step as after a read one at a time, the category suggestions (Receipts::SuggestCategories), runs through
+  #   step as after a read one at a time, the category suggestions (Receipts::SuggestCategories for items,
+  #   Receipts::SuggestSlipCategory for a card slip, chosen as ReceiptOcrJob chooses), runs through
   #   ReceiptCategoriseJob on the OCR capsule's queue, one receipt at a time, so thousands of results do not
   #   hold up the poller and a local categoriser reads one receipt at a time as it always does;
   # - an answer that needs the repair pass (`ocr_parse_failed` with `retry_sync`), while the batch has handed
@@ -55,8 +56,8 @@ module OcrBatches
       pending.count
     end
 
-    # One ReceiptCategoriseJob per receipt (the same Receipts::SuggestCategories step as after a read one at a
-    # time), each entry marked once its job is queued. With suggestions switched off there is nothing to queue.
+    # One ReceiptCategoriseJob per receipt (the same step as after a read one at a time: item suggestions, or a
+    # card slip's own suggestion; the job chooses as ReceiptOcrJob does), each entry marked once its job is queued. With suggestions switched off there is nothing to queue.
     def self.suggest_categories(entries, now)
       entries.order(:id).each do |entry|
         if ItemSuggestions.enabled? && (receipt = entry.receipt)

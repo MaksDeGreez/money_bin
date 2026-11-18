@@ -468,7 +468,7 @@ with the entry row and then the receipt row locked:
 
 | Entry outcome | When | The receipt |
 |---|---|---|
-| `applied` | an answer | stored by `Receipts::ApplyOcr` exactly as a read one at a time (fields, items, `extracted`, `ocr_raw` with the model and prompt plus the batch accounting); then its category suggestions come from `ReceiptCategoriseJob` (the same `Receipts::SuggestCategories` step), one receipt at a time on the OCR capsule, so a batch of thousands does not hold up the poller |
+| `applied` | an answer | stored by `Receipts::ApplyOcr` exactly as a read one at a time (fields, items, `extracted`, `ocr_raw` with the model and prompt plus the batch accounting); then its category suggestions come from `ReceiptCategoriseJob` (the same step as after a read one at a time: `Receipts::SuggestCategories` for items, `Receipts::SuggestSlipCategory` for a card slip), one receipt at a time on the OCR capsule, so a batch of thousands does not hold up the poller |
 | `sync_queued` | the answer needs the repair pass (`ocr_parse_failed`), while the batch has handed over fewer than max(5, 10%) of its receipts | handed to the normal queue (`Receipts::RequestOcr.read_all`) after the commit |
 | `failed` | any other error, a parse failure over that limit, or no result for the key | `failed` with the reason in `ocr_raw`, as a read one at a time records it; "Read again" can try |
 | `released` | the batch failed, expired or was lost; or storing this entry raised (a bug, reported) | back to what it was, hold cleared |

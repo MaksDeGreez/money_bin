@@ -144,7 +144,8 @@ the receipt `failed` with the reason; the message says when a read one at a time
 ### What follows a result
 
 A batch result goes through exactly what follows a synchronous read: `Receipts::ApplyOcr`, then the
-category suggestions (`Receipts::SuggestCategories`). The suggestions are queued as one
+category suggestions (`Receipts::SuggestCategories` for items, `Receipts::SuggestSlipCategory` for a card
+slip, chosen by `ReceiptCategoriseJob` as `ReceiptOcrJob` chooses). The suggestions are queued as one
 `ReceiptCategoriseJob` per receipt on the OCR capsule's `receipt_categorise` queue rather than run in the
 poller: a local categoriser reads one receipt at a time on that capsule, and a batch of thousands must not
 hold up polling and deleting.

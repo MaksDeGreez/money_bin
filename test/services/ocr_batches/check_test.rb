@@ -398,4 +398,22 @@ class OcrBatches::CheckTest < ActiveSupport::TestCase
     end
     @receipts.each { |receipt| assert_includes streams, receipt }
   end
+
+  test "a card slip read in a batch gets the slip's own suggestion step, as after a read one at a time" do
+    stub_ml_batch_status("batch_t1", state: "completed")
+    slip = { kind: "card_slip", merchant: "Example Cafe", items: [] }
+    stub_ml_batch_results("batch_t1", [ ml_batch_ok(@a, receipt: slip), ml_batch_ok(@b), ml_batch_ok(@c) ])
+    stub_ml_batch_delete("batch_t1")
+
+    with_env("CATEGORISE_BACKEND" => "stub") do
+      assert_enqueued_with(job: ReceiptCategoriseJob, args: [ @receipts.first ]) { check }
+    end
+    assert @receipts.first.reload.card_slip?
+
+    called = []
+    with_singleton_method(Receipts::SuggestSlipCategory, :call, ->(receipt, **) { called << receipt.id }) do
+      with_env("CATEGORISE_BACKEND" => "stub") { ReceiptCategoriseJob.perform_now(@receipts.first) }
+    end
+    assert_equal [ @receipts.first.id ], called
+  end
 end
