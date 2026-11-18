@@ -199,3 +199,67 @@ tests/
 
 The methods are synchronous. The API runs them in a worker thread, so a slow
 model does not block the server.
+
+## Transaction categoriser (training)
+
+`categoriser/` trains and evaluates a model that suggests a ledger category for a
+transaction from its text and bank fields. It is not part of the HTTP service
+yet. It runs only on this machine: transaction data is never sent anywhere.
+The reasons behind the design are in
+`docs/decisions/0006-transaction-categoriser.md`.
+
+```sh
+uv run python -m categoriser.train ~/path/to/export          # writes to ~/Documents/money_bin_data/models/
+uv run python -m categoriser.train ~/path/to/export --out ~/elsewhere --seed 42
+```
+
+The input is a history export (`docs/import-contract.md`). The command checks
+the manifest's file hashes before it reads anything. Options: `--out DIR`,
+`--seed N` (42), `--test-fraction` (0.2), `--validation-fraction` (0.15),
+`--c-grid` (0.1 0.3 1 3 10), `--resamples` (1000 bootstrap resamples),
+`--min-df` (2).
+
+**Rows.** One per transaction that is not a transfer leg. A split transaction
+is represented by its largest line by absolute amount (the first line on a
+tie). The label is that line's category, as the export names it (`"Group /
+Category"`). A line without a category, or one the export leaves unmapped or
+maps to Uncategorised, has no label: the row is dropped and counted.
+
+**Features.** Payee, merchant, bank description and comment (TF-IDF over word
+1-2-grams and character 2-5-grams), plus one-hot MCC, amount sign, amount size
+bucket (a power of ten, per currency), account kind and payee. The model is a
+logistic regression with balanced class weights.
+
+**Split.** Rows are ordered by date; the last 20% are the test set, and a
+calendar day is never split between the sides. The last 15% of the training
+rows are a validation slice: the regularisation strength `C` and the best
+baseline are chosen there. Then everything is fitted again on the whole
+training period and evaluated once on the test set. Nothing is fitted on test
+rows.
+
+**Baselines.** `majority` (always the most frequent category) and `payee_mcc`
+(the payee's most frequent category, else the MCC's, else the majority).
+
+**Metrics** (one JSON per run, next to the model file):
+
+| Key | Meaning |
+| --- | --- |
+| `test.systems.<name>` | macro-F1 (the main metric), weighted F1, accuracy and top-3 accuracy, each with a 95% bootstrap interval (`ci95`); `coverage`: precision when only the most confident rows are kept, by coverage level and by confidence threshold |
+| `model_minus_best_baseline_ci95` | the interval of the model's gain over the best baseline (paired resamples) |
+| `mcnemar_model_vs_best_baseline` | McNemar's test: rows only the model got right, rows only the baseline got right, exact and chi-square p-values |
+| `segments` | the same headline metrics for test rows with and without bank fields, and with a payee seen or not seen in training |
+| `profile` | the share of rows with bank fields, an MCC, a payee, a comment, for training and test: how the two periods differ |
+| `per_class` | per category: training and test support, F1 of each system |
+| `rows`, `split`, `labels`, `tuning` | row counts (transfers, splits, ties, drops), the split dates, categories missing from training, the validation scores |
+| `export`, `reproducibility` | the manifest SHA-256, the seed, the git commit, Python and library versions, every parameter |
+
+Macro-F1 averages over the categories present in the evaluated rows. The test
+period differs from the training period (more bank feeds, new payees); read
+the `segments` and `profile` keys before quoting a headline number.
+
+**Files.** The model file (`transaction-categoriser-<time>-<manifest>.joblib`)
+holds the training vocabulary, which includes payee names, so it never goes
+into git: the command refuses an output folder inside a git repository and
+writes both files with mode 600. The metrics JSON and the console hold
+category names and numbers only, never a payee, comment, description or
+amount. The tests build a small synthetic export with invented data.
