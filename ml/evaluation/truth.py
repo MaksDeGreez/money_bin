@@ -16,21 +16,16 @@ own record, which no model helped make), then the `manual` one. Each purpose tak
 record, in that order, that has what it needs: items (`items_known`), a merchant, a kind, a total,
 or item categories.
 
-**The pre-fill rule.** A record whose `prefilled_by` is the model a run evaluates is not ground
-truth for that run: a person correcting a model's answer leans towards it. When the record chosen
-for a purpose is such a record, the receipt has no ground truth for that purpose in that run and is
-counted as left out (`excluded_prefilled`); the next source is not tried, since the person's record
-is the receipt's last. The same holds for `categories_prefilled_by` and an item-category run. Only
-`manual` records carry `prefilled_by` today, but the rule does not look at the source, so it cannot
-be bypassed by one (categories on a `dps_xml` record would be a person's work too). The QR fields
-are independent of every model and are never left out.
-
-**Same model** (`same_model`): the names are compared without case and surrounding spaces, after
-dropping a `backend:` prefix and a `:variant` suffix; a run is the same model as `prefilled_by` when
-that equals the run's `model_name` or `model_version` (a hosted model's dated slug), or when their
-last path segments are equal (`mlx-community/Qwen3-VL-8B-Instruct-4bit` and
-`Qwen3-VL-8B-Instruct-4bit`). The prompt version, the image size and the crops do not matter: a
-model with another prompt is still the model that wrote the pre-fill.
+**The pre-fill rule.** A record whose `prefilled_by` (with `prefilled_model_version`) is the model a
+run evaluates is not ground truth for that run: a person correcting a model's answer leans towards
+it. When the record chosen for a purpose is such a record, the receipt has no ground truth for that
+purpose in that run and is counted as left out (`excluded_prefilled_*`, with the reason); the next
+source is not tried, since the person's record is the receipt's last. `source:hand` and
+`source:dps_xml` count for every model; `source:unknown-model`, an unknown `source:` value or a name
+that cannot be identified leaves the record out of every run. Categories: `categories_prefilled_by`
+against an item-category run, `source:unknown` left out of every one. Which names are the same
+model is decided in one place, `evaluation.models`. The rule does not look at the record's source,
+so no source can slip past it. The QR fields are independent of every model and are never left out.
 """
 
 from collections import Counter
@@ -39,30 +34,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from evaluation.inputs import SOURCES, GroundTruthRecord, ReceiptInfo, Run
-
-BACKEND_PREFIXES = ("mlx:", "openrouter:", "stub:", "local:", "hosted:")
-
-
-def _model_key(name: str) -> str:
-    key = name.strip().casefold()
-    for prefix in BACKEND_PREFIXES:
-        if key.startswith(prefix):
-            key = key[len(prefix) :]
-    last = key.rsplit("/", 1)[-1]
-    if ":" in last:
-        key = key[: len(key) - len(last)] + last.split(":", 1)[0]
-    return key
+from evaluation.models import prefill_exclusion
 
 
-def same_model(prefilled_by: str | None, run: Run) -> bool:
-    if not prefilled_by:
-        return False
-    wanted = _model_key(prefilled_by)
-    if not wanted:
-        return False
-    names = [_model_key(name) for name in (run.model_name, run.model_version) if name]
-    tail = wanted.rsplit("/", 1)[-1]
-    return any(wanted == name or tail == name.rsplit("/", 1)[-1] for name in names if name)
+def prefill_reason(record: GroundTruthRecord, run: Run, *, categories: bool) -> str | None:
+    """Why `record` is left out of `run` by the pre-fill rule (`same_model`, `unknown`), or None."""
+    names = (run.model_name, run.model_version)
+    if categories:
+        return prefill_exclusion(
+            record.categories_prefilled_by, None, names, unknown_marker="source:unknown"
+        )
+    return prefill_exclusion(record.prefilled_by, record.prefilled_model_version, names)
 
 
 def exclusion_reason(record: GroundTruthRecord) -> str | None:
@@ -79,6 +61,7 @@ class Chosen:
 
     record: GroundTruthRecord | None
     excluded_prefilled: bool = False
+    reason: str | None = None
 
 
 class GroundTruth:
@@ -102,6 +85,19 @@ class GroundTruth:
             self.by_receipt.setdefault(record.ingest_id, []).append(record)
         for listed in self.by_receipt.values():
             listed.sort(key=lambda record: SOURCES.index(record.source))
+
+    def category_slugs(self) -> frozenset[str]:
+        """Every category slug the receipt set's records use: the labels a prediction may have."""
+        slugs: set[str] = set()
+        for records in self.by_receipt.values():
+            for record in records:
+                slug = record.document.get("category_slug")
+                if isinstance(slug, str):
+                    slugs.add(slug)
+                for item in record.items:
+                    if isinstance(item, dict) and isinstance(item.get("category_slug"), str):
+                        slugs.add(item["category_slug"])
+        return frozenset(slugs)
 
     def summary(self) -> dict[str, int]:
         keys = (
@@ -139,20 +135,21 @@ class GroundTruth:
 
     def items(self, receipt_id: str, run: Run, *, checked_only: bool = False) -> Chosen:
         record = self._first(receipt_id, checked_only, lambda r: r.items_known)
-        return self._for_run(record, run, prefill=lambda r: r.prefilled_by)
+        return self._for_run(record, run, categories=False)
 
     def field(self, receipt_id: str, run: Run, key: str) -> Chosen:
         record = self._first(receipt_id, False, lambda r: r.document.get(key) is not None)
-        return self._for_run(record, run, prefill=lambda r: r.prefilled_by)
+        return self._for_run(record, run, categories=False)
 
     def categories(self, receipt_id: str, run: Run) -> Chosen:
         record = self._first(receipt_id, False, lambda r: r.items_known and r.categories_known)
-        return self._for_run(record, run, prefill=lambda r: r.categories_prefilled_by)
+        return self._for_run(record, run, categories=True)
 
     @staticmethod
-    def _for_run(record: GroundTruthRecord | None, run: Run, *, prefill: Any) -> Chosen:
+    def _for_run(record: GroundTruthRecord | None, run: Run, *, categories: bool) -> Chosen:
         if record is None:
             return Chosen(None)
-        if same_model(prefill(record), run):
-            return Chosen(None, excluded_prefilled=True)
+        reason = prefill_reason(record, run, categories=categories)
+        if reason is not None:
+            return Chosen(None, excluded_prefilled=True, reason=reason)
         return Chosen(record)

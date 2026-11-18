@@ -31,7 +31,7 @@ QR = {
 PARTS = {"rcpt_000001": 1, "rcpt_000002": 2, "rcpt_000003": 1, "rcpt_000004": 1}
 
 
-def item(name: str, amount: str, slug: str | None = None, *, v2: bool = False) -> dict[str, Any]:
+def item(name: str, amount: str, slug: str | None = None, *, v2: bool = True) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "name": name,
         "quantity": "1.000",
@@ -51,7 +51,7 @@ def document(
     merchant: str | None = None,
     total: str | None = None,
     category_slug: str | None = None,
-    v2: bool = False,
+    v2: bool = True,
 ) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "kind": kind,
@@ -70,34 +70,49 @@ def document(
     return doc
 
 
+PREFILL_KIND = {"source:hand": "hand", "source:dps_xml": "dps_xml"}
+
+
 def truth_line(
     ingest_id: str,
     source: str,
     doc: dict[str, Any],
     *,
     prefilled_by: str | None = None,
+    prefilled_model_version: str | None = None,
     categories_prefilled_by: str | None = None,
+    categories_known: bool | None = None,
     checked: str | None = None,
     qr_check: str = "agrees",
     items_known: bool = True,
-    schema_version: int = 1,
     **extra: Any,
 ) -> dict[str, Any]:
+    """A line as `GroundTruthExport` writes it (schema version 2)."""
+    if prefilled_by is None and source == "manual":
+        prefilled_by = "source:hand"
+    if categories_known is None:
+        slugs = [doc.get("category_slug")] + [i.get("category_slug") for i in doc["items"]]
+        categories_known = source == "manual" and any(slug is not None for slug in slugs)
     line: dict[str, Any] = {
         "receipt_id": 1,
         "ingest_id": ingest_id,
         "source": source,
         "source_format": "check01:1" if source == "dps_xml" else None,
+        "saved_at": "2026-11-01T09:00:00+02:00",
         "prefilled_by": prefilled_by,
+        "prefill_kind": None if prefilled_by is None else PREFILL_KIND.get(prefilled_by, "model"),
+        "prefilled_model_version": prefilled_model_version,
+        "prefilled_prompt_version": None,
+        "categories_prefilled_by": categories_prefilled_by,
         "checked_at": "2026-11-01T10:00:00+02:00" if checked else None,
         "check_outcome": checked,
         "qr_check": qr_check,
         "items_known": items_known,
-        "schema_version": schema_version,
+        "categories_known": categories_known,
+        "schema_version": 2,
+        "stored_schema_version": 2,
         "document": doc,
     }
-    if schema_version >= 2:
-        line["categories_prefilled_by"] = categories_prefilled_by
     line.update(extra)
     return line
 
@@ -290,7 +305,7 @@ def category_line(
     candidates: list[tuple[str, float]],
     *,
     source: str = "model",
-    ground_truth_source: str | None = "dps_xml",
+    ground_truth_source: str | None = "manual",
     seconds: float = 0.01,
     cost_usd: str | None = None,
 ) -> dict[str, Any]:

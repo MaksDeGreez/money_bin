@@ -7,6 +7,7 @@ value from it.
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,7 @@ class GroundTruthRecord:
     ingest_id: str
     source: str
     prefilled_by: str | None
+    prefilled_model_version: str | None
     categories_prefilled_by: str | None
     checked: bool
     check_outcome: str | None
@@ -104,6 +106,14 @@ def read_receipt_set(folder: Path) -> dict[str, ReceiptInfo]:
     return receipts
 
 
+def _finite_or_none(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return math.isfinite(value)
+
+
 def _check_ocr_record(record: dict[str, Any], name: str, number: int) -> None:
     if not isinstance(record.get("receipt_id"), str):
         raise UsageError(f"{name}: line {number} has no receipt_id")
@@ -114,6 +124,8 @@ def _check_ocr_record(record: dict[str, Any], name: str, number: int) -> None:
         raise UsageError(f"{name}: line {number} has a receipt that is not an object")
     if isinstance(receipt, dict) and not isinstance(receipt.get("items") or [], list):
         raise UsageError(f"{name}: line {number} has items that are not a list")
+    if not _finite_or_none(record.get("seconds")):
+        raise UsageError(f"{name}: line {number} has seconds that are not a finite number")
 
 
 def _check_category_record(record: dict[str, Any], name: str, number: int) -> None:
@@ -130,9 +142,10 @@ def _check_category_record(record: dict[str, Any], name: str, number: int) -> No
     for candidate in candidates:
         if not isinstance(candidate, dict) or not isinstance(candidate.get("category_slug"), str):
             raise UsageError(f"{name}: line {number} has a candidate without a category_slug")
-        score = candidate.get("score")
-        if score is not None and (not isinstance(score, int | float) or isinstance(score, bool)):
+        if not _finite_or_none(candidate.get("score")):
             raise UsageError(f"{name}: line {number} has a candidate score that is not a number")
+    if not _finite_or_none(record.get("seconds")):
+        raise UsageError(f"{name}: line {number} has seconds that are not a finite number")
     if record.get("source") not in (*CATEGORY_SOURCES, None):
         raise UsageError(f"{name}: line {number} has an unknown source")
     source = record.get("ground_truth_source")
@@ -154,6 +167,9 @@ def read_run(folder: Path) -> Run:
     run_id = meta.get("run_id") or folder.name
     if not isinstance(run_id, str):
         raise UsageError(f"{folder.name}: run.json has a run_id that is not text")
+    for key in ("backend", "model_name"):
+        if not isinstance(meta.get(key), str) or not meta[key].strip():
+            raise UsageError(f"{run_id}: run.json has no {key}")
     name = f"{run_id}/predictions.jsonl"
     records = list(read_jsonl(folder / "predictions.jsonl"))
     seen: set[tuple[str, Any]] = set()
@@ -196,14 +212,15 @@ def _optional_text(value: Any) -> str | None:
 
 
 def _categories_known(line: dict[str, Any]) -> bool:
-    """Schema version 2 says whether the categories are known; version 1 has none.
-
-    Accepted spellings: `categories_known: false` or `categories_unknown: true`. Without either a
-    version 2 record's categories count as known, item by item (a null `category_slug` is unknown).
-    """
-    if line.get("categories_known") is False or line.get("categories_unknown") is True:
-        return False
-    return int(line.get("schema_version") or 1) >= 2
+    """The export's `categories_known` (true only when every category is given). A line without
+    the key (an older export) has categories when its document carries any non-null slug."""
+    if "categories_known" in line:
+        return line["categories_known"] is True
+    document = line.get("document") or {}
+    items = document.get("items") or []
+    return document.get("category_slug") is not None or any(
+        isinstance(item, dict) and item.get("category_slug") is not None for item in items
+    )
 
 
 def read_ground_truth(folder: Path | None) -> tuple[list[GroundTruthRecord], dict[str, int]]:
@@ -240,6 +257,7 @@ def read_ground_truth(folder: Path | None) -> tuple[list[GroundTruthRecord], dic
                 ingest_id=ingest_id,
                 source=source,
                 prefilled_by=_optional_text(line.get("prefilled_by")),
+                prefilled_model_version=_optional_text(line.get("prefilled_model_version")),
                 categories_prefilled_by=_optional_text(line.get("categories_prefilled_by")),
                 checked=bool(line.get("checked_at")),
                 check_outcome=_optional_text(line.get("check_outcome")),
