@@ -21,7 +21,10 @@ from app.config import Settings
 #   endpoint reported them; not renormalised over the slugs;
 # - fixed: the endpoint gave no log-probabilities; the answer gets FALLBACK_SCORE;
 # - stub: invented by the stub from a hash of the text.
-ScoreKind = Literal["label_probability", "token_logprobs", "fixed", "stub"]
+# - decision_probability: a decision model's probability of each option
+#   (`app.categorise.decisions`): per item over the listed categories (or groups, then
+#   categories), adding up to at most 1.
+ScoreKind = Literal["label_probability", "token_logprobs", "fixed", "stub", "decision_probability"]
 
 MAX_CANDIDATES = 3
 
@@ -31,11 +34,14 @@ class CategoriseInput:
     """One receipt's items to categorise.
 
     `merchant` is context for a local model only; a hosted backend never sends it.
+    `examples`: per item, labelled items like it (name, category slug) from a label memory, or
+    empty. Only the decisions categoriser uses them, and only offline runs fill them for now.
     """
 
     categories: tuple[CategoryOption, ...]
     texts: tuple[str, ...]
     merchant: str | None = None
+    examples: tuple[tuple[tuple[str, str], ...], ...] = ()
 
 
 @dataclass(frozen=True)

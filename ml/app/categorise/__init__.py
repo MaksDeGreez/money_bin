@@ -7,6 +7,7 @@ from app.categorise.base import (
     CategoriseInput,
     Categoriser,
 )
+from app.categorise.decisions import DecisionsCategoriser
 from app.categorise.mlx import MlxCategoriser
 from app.categorise.off import OffCategoriser
 from app.categorise.openrouter import OpenRouterCategoriser
@@ -18,6 +19,7 @@ CATEGORISERS: dict[str, type[Categoriser]] = {
     MlxCategoriser.name: MlxCategoriser,
     OpenRouterCategoriser.name: OpenRouterCategoriser,
     OffCategoriser.name: OffCategoriser,
+    DecisionsCategoriser.name: DecisionsCategoriser,
 }
 # The categorisers that suggest anything (`off` is the switch, not a model).
 SUGGESTING = tuple(sorted(name for name in CATEGORISERS if name != OffCategoriser.name))

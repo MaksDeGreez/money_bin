@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.categorise import CATEGORISERS, UnknownCategoriserError, create_categoriser
+from app.categorise.decisions import DecisionsCategoriser
 from app.categorise.mlx import MlxCategoriser
 from app.categorise.off import OffCategoriser
 from app.categorise.openrouter import OpenRouterCategoriser
@@ -227,6 +228,7 @@ def test_registry_lists_every_categoriser() -> None:
         "mlx": MlxCategoriser,
         "openrouter": OpenRouterCategoriser,
         "off": OffCategoriser,
+        "decisions": DecisionsCategoriser,
     } == CATEGORISERS
 
 
