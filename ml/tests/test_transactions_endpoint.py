@@ -1,7 +1,7 @@
 """`/categorise/transaction`: the served transaction categoriser over HTTP.
 
-Every test here runs with the network refused (`conftest.no_network`): the endpoint, the artefact and
-the encoder never need it.
+Every test here runs with the network refused (`conftest.no_network`): the endpoint, the artefact
+and the encoder never need it.
 """
 
 from __future__ import annotations

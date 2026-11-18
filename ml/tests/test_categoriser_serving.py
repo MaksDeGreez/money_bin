@@ -1,4 +1,4 @@
-"""The fit for serving: what it is fitted on, what it refuses, and that serving scores as training does."""
+"""The fit for serving: what it fits on, what it refuses, and that it scores as training does."""
 
 from __future__ import annotations
 
