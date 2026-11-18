@@ -24,8 +24,9 @@ module Receipts
   #   places, a negative discount) is skipped. Its position stays free, so the gap and `ocr_raw` show what was left out, and the items no
   #   longer sum to the total, which the person sees at review.
   #
-  # Everything runs in one database transaction with the receipt row locked. Applying the same result twice
-  # gives the same rows. A `reviewed` receipt is never changed: it raises AlreadyReviewed. The open pages
+  # Everything runs in one database transaction with the receipt row locked, and it always moves the
+  # receipt's `lock_version`, so a review form rendered before the result refuses to save over it. Applying
+  # the same result twice gives the same rows. A `reviewed` receipt is never changed: it raises AlreadyReviewed. The open pages
   # get the result once it is committed (Receipts::LiveUpdate).
   class ApplyOcr
     RECEIPT_FIELDS = {
@@ -73,7 +74,10 @@ module Receipts
           merchant_name: text(data["merchant"]), fiscal_number: text(data["fiscal_number"]),
           receipt_number: text(data["receipt_number"]), issued_at: time(data["issued_at"]),
           total: decimal(data["total"]), currency: text(data["currency"]),
-          kind: kind(data["kind"]), card_last4: card_last4(data["card_last4"])
+          kind: kind(data["kind"]), card_last4: card_last4(data["card_last4"]),
+          # Always writes the row, so lock_version moves even when the receipt's own fields came out the same:
+          # the items are replaced (new ids), and a review form rendered before must not save over them.
+          updated_at: Time.current
         )
         clear_refused(@receipt, RECEIPT_FIELDS.keys)
       end

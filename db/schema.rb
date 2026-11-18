@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -172,12 +172,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_140000) do
     t.string "qr_receipt_number"
     t.string "ingest_id"
     t.timestamptz "ocr_requested_at"
+    t.integer "lock_version", default: 0, null: false
+    t.bigint "category_id"
+    t.bigint "suggested_category_id"
+    t.float "suggested_category_confidence"
     t.index "COALESCE(issued_at, (created_at AT TIME ZONE 'UTC'::text)) DESC, id DESC", name: "index_receipts_on_sort_time_and_id"
     t.index ["batch"], name: "index_receipts_on_batch"
+    t.index ["category_id"], name: "index_receipts_on_category_id"
     t.index ["ingest_id"], name: "index_receipts_on_ingest_id", unique: true, where: "(ingest_id IS NOT NULL)"
     t.index ["kind"], name: "index_receipts_on_kind"
     t.index ["sha256"], name: "index_receipts_on_sha256", unique: true
     t.index ["status"], name: "index_receipts_on_status"
+    t.index ["suggested_category_id"], name: "index_receipts_on_suggested_category_id"
     t.index ["transaction_id"], name: "index_receipts_on_transaction_id", unique: true
     t.check_constraint "card_last4::text ~ '^[0-9]{4}$'::text", name: "receipts_card_last4_format"
     t.check_constraint "currency::text ~ '^[A-Z]{3}$'::text", name: "receipts_currency_format"
@@ -185,6 +191,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_140000) do
     t.check_constraint "kind::text = ANY (ARRAY['fiscal'::character varying, 'card_slip'::character varying]::text[])", name: "receipts_kind_allowed"
     t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipts_sha256_format"
     t.check_constraint "status::text = ANY (ARRAY['uploaded'::character varying, 'processing'::character varying, 'extracted'::character varying, 'reviewed'::character varying, 'failed'::character varying]::text[])", name: "receipts_status_allowed"
+    t.check_constraint "suggested_category_confidence >= 0::double precision AND suggested_category_confidence <= 1::double precision", name: "receipts_suggested_category_confidence_range"
   end
 
   create_table "sessions", force: :cascade do |t|
@@ -262,6 +269,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_140000) do
   add_foreign_key "receipt_items", "categories"
   add_foreign_key "receipt_items", "categories", column: "suggested_category_id"
   add_foreign_key "receipt_items", "receipts"
+  add_foreign_key "receipts", "categories"
+  add_foreign_key "receipts", "categories", column: "suggested_category_id"
   add_foreign_key "receipts", "transactions", on_delete: :nullify
   add_foreign_key "sessions", "users", on_delete: :cascade
   add_foreign_key "transaction_lines", "categories"

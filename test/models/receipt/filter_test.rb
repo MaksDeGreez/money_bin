@@ -20,6 +20,7 @@ class Receipt::FilterTest < ActiveSupport::TestCase
   end
 
   test "each value narrows the scope and comes back in the parameters" do
+    receipts(:corner_receipt).update_columns(kind: "card_slip")
     filter = Receipt::Filter.new("status" => "extracted", "kind" => "card_slip", "qr" => "without", "batch" => "october-shopping")
 
     assert_equal [ receipts(:corner_receipt).id ], ids(filter)
@@ -58,5 +59,27 @@ class Receipt::FilterTest < ActiveSupport::TestCase
 
   test "the batches are the distinct labels in order" do
     assert_equal %w[november-shopping october-shopping], Receipt::Filter.batches
+  end
+
+  test "the next receipt to review follows the filtered order, wraps around, and skips everything but extracted" do
+    receipts(:new_receipt).update_columns(status: "extracted")
+    receipts(:new_receipt).update_columns(created_at: 1.minute.from_now)
+    filter = Receipt::Filter.new
+    order = filter.scope.pluck(:id)
+    assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:failed_receipt), receipts(:market_receipt) ].map(&:id), order
+
+    assert_equal receipts(:corner_receipt).id, filter.next_to_review(receipts(:new_receipt))
+    assert_equal receipts(:new_receipt).id, filter.next_to_review(receipts(:corner_receipt)), "wraps to the start"
+    assert_equal receipts(:new_receipt).id, filter.next_to_review(receipts(:market_receipt))
+  end
+
+  test "the next receipt to review is found after one that just left a status filter" do
+    filter = Receipt::Filter.new("status" => "extracted")
+    receipts(:new_receipt).update_columns(status: "extracted")
+    receipts(:corner_receipt).update_columns(status: "reviewed")
+
+    assert_equal receipts(:new_receipt).id, filter.next_to_review(receipts(:corner_receipt))
+    assert_nil Receipt::Filter.new("status" => "failed").next_to_review(receipts(:corner_receipt))
+    assert_nil Receipt::Filter.new("batch" => "november-shopping").next_to_review(receipts(:corner_receipt))
   end
 end
