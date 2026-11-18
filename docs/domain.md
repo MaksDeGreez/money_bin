@@ -287,16 +287,16 @@ Who moves the status:
 | From | To | By |
 |---|---|---|
 | (new) | `uploaded` | the upload (the column default) |
-| `uploaded`, `failed` | `processing` | `ReceiptOcrJob`, when it starts |
-| `extracted` | `processing` | `ReceiptOcrJob`, when it starts on a request to read it again (`ocr_requested_at` set) |
+| `uploaded` | `processing` | `ReceiptOcrJob`, when it starts |
+| `failed`, `extracted` | `processing` | `ReceiptOcrJob`, when it starts on a request to read it again (`ocr_requested_at` set) |
 | `processing` | `extracted` | `Receipts::ApplyOcr`, with the result |
 | `processing` | `failed` | `ReceiptOcrJob`, on a permanent failure or when the retries run out |
 | `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
 | `reviewed` | `extracted` | destroying its transaction (the receipt is unlinked, keeps its items and can be accepted again) |
 
-The job starts only on `uploaded`, `processing` (its own retry, or a run that died), `failed` (try
-again by enqueuing it once more), and `extracted` while a request to read it again waits. It leaves other
-`extracted` receipts and every `reviewed` one alone, so running it twice does the work once and never
+The job starts only on `uploaded`, `processing` (its own retry, or a run that died), and on `failed` and
+`extracted` while a request to read it again waits (a failed receipt stays failed until a person asks).
+It leaves other `failed` and `extracted` receipts and every `reviewed` one alone, so running it twice does the work once and never
 overwrites what a person is reviewing. When it starts it clears `ocr_requested_at`; a request for a receipt
 that was accepted in the meantime is cleared without reading it. A receipt deleted before the job runs is
 discarded quietly.
@@ -308,11 +308,15 @@ discarded quietly.
 | When | Which receipts | Method |
 |---|---|---|
 | A receipt page is opened, and right after an upload | the receipt, when it is `uploaded` (never read) | `first_read` |
-| "Read again" on a receipt page | the receipt, when it is `failed`, or `extracted` after a confirmation (its items are replaced) | `read_again` |
-| "Read all in this filter" on the list | every `uploaded` and `failed` receipt of the filter, on every page, in the list's order | `read_all` |
+| "Read again" on a receipt page | the receipt, when it is `failed`, `extracted` (after a confirmation: its items are replaced), or `processing` for over an hour (stuck: the job was lost) | `read_again` |
+| "Read all in this filter" on the list | every `uploaded` receipt of the filter and every `failed` one without items, on every page, in the list's order | `read_all` |
 
 A `reviewed` receipt is never queued: it was accepted into the ledger, and a new OCR result must not change
-it (`Receipts::ApplyOcr` refuses it too). A `processing` one is being read already.
+it (`Receipts::ApplyOcr` refuses it too). A `processing` one is being read already, unless it has been
+for longer than `Receipt::OCR_STUCK_AFTER` (an hour, while one read takes minutes with its retries): then
+the job was most likely lost (Sidekiq killed mid-job loses it) and the page says so and offers "Read
+again". A `failed` receipt can still hold items from an earlier read (a re-read of an `extracted` one that
+failed); "Read all" leaves it alone and "Read again" asks first, because a new read replaces them.
 
 **Once.** A request claims its receipts by setting `ocr_requested_at`, in one database transaction that
 locks the rows and takes only those where it is nil. The job clears it when it starts. So opening a page
@@ -321,7 +325,7 @@ requests at the same moment are serialised by the row lock, and the second sees 
 job is queued after the claim commits, one push per job (Sidekiq's bulk push does not report which jobs it
 queued); when the queue (Redis) cannot be reached, the claims of the jobs not queued are taken back and the
 page says so, so a receipt never looks queued when it is not. A request older than a day counts
-as lost (the queue was emptied by hand) and may be made again. A duplicate job would be harmless anyway:
+as lost (the queue was emptied by hand) and may be made again; the page then offers "Read again" again. A duplicate job would be harmless anyway:
 the OCR queue runs one job at a time, and the second finds the receipt read and does nothing.
 
 **What "opening" means.** A real GET of the receipt page. Turbo's link prefetch (on hover) and the
@@ -329,8 +333,8 @@ browser's speculative loads send `Sec-Purpose: prefetch`; such a request, and a 
 nothing. Links to receipt pages also carry `data-turbo-prefetch="false"`, so a prefetched page (which
 queued nothing) is never shown in place of a real visit.
 
-**Re-reading an `extracted` receipt** needs `ocr_requested_at` set when the job starts: a stray duplicate
-job finds it nil and leaves the receipt alone. A re-read that fails leaves the receipt `failed`, with its
+**Re-reading a `failed` or `extracted` receipt** needs `ocr_requested_at` set when the job starts: a stray
+duplicate job finds it nil and leaves the receipt alone. A re-read that fails leaves the receipt `failed`, with its
 earlier items still there (only a successful read replaces them).
 
 "Read all" can queue hundreds of receipts; the OCR capsule reads them one at a time, so with a local model

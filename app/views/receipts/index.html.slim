@@ -18,7 +18,7 @@ div data-controller="live-refresh"
       @status_counts.map { |status, count| { label: receipt_status_label(status), count:, url: receipts_path(@filter.merge(status:).to_params), current: @filter.status == status } }
   - if @readable_count.positive?
     = ui_button_to read_all_receipts_path(@filter.to_params), variant: :secondary, size: :sm,
-      form: { data: { turbo_confirm: "Queue #{pluralize(@readable_count, 'receipt')} for OCR (the ones in this filter that were never read or failed)? The OCR model reads one receipt at a time, so this can take hours." } } do
+      form: { data: { turbo_confirm: "Queue #{pluralize(@readable_count, 'receipt')} for OCR (the ones in this filter that were never read, or failed with no items to lose)? The OCR model reads one receipt at a time, so this can take hours." } } do
       = ui_icon "scan-text"
       span = "Read all in this filter (#{@readable_count})"
 

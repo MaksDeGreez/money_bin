@@ -25,7 +25,7 @@ class ReceiptsController < ApplicationController
 
   def show
     request_first_read unless prefetch? || request.head?
-    flash.now[:alert] = QUEUE_UNAVAILABLE if @queue_unavailable
+    flash.now[:alert] = @queue_unavailable if @queue_unavailable
     @previous_id, @next_id = @filter.neighbours(@receipt)
   end
 
@@ -40,7 +40,7 @@ class ReceiptsController < ApplicationController
       if queued
         redirect_to @receipt, status: :see_other, notice: "Uploaded. OCR is queued; this page updates when it is done."
       else
-        redirect_to @receipt, status: :see_other, alert: "Uploaded. #{QUEUE_UNAVAILABLE}"
+        redirect_to @receipt, status: :see_other, alert: "Uploaded. #{@queue_unavailable}"
       end
     else
       @duplicate = Receipt.find_by(sha256: @receipt.sha256) if @receipt.errors.include?(:sha256) && @receipt.sha256.present?
@@ -48,12 +48,12 @@ class ReceiptsController < ApplicationController
     end
   end
 
-  # "Read again": a failed receipt, or an extracted one (its items are replaced). Never a reviewed one,
-  # and nothing while a request is already waiting or the receipt is being read.
+  # "Read again": a failed receipt, an extracted one (its items are replaced), or one stuck in processing.
+  # Never a reviewed one, and nothing while a request is already waiting.
   def read
     queued = @receipt.reviewed? ? [] : queue { Receipts::RequestOcr.read_again(@receipt) }
     if queued.nil?
-      flash[:alert] = QUEUE_UNAVAILABLE
+      flash[:alert] = @queue_unavailable
     elsif queued.any?
       flash[:notice] = "Queued to read again. This page updates when it is done."
     elsif @receipt.reviewed?
@@ -66,12 +66,12 @@ class ReceiptsController < ApplicationController
     redirect_back_or_to receipt_path(@receipt), status: :see_other
   end
 
-  # "Read all in this filter": every uploaded or failed receipt the filter shows (all pages), except those
-  # already queued.
+  # "Read all in this filter": every unread receipt the filter shows (all pages), and every failed one
+  # without items, except those already queued.
   def read_all
     queued = queue { Receipts::RequestOcr.read_all(@filter.scope) }
     if queued.nil?
-      flash[:alert] = QUEUE_UNAVAILABLE
+      flash[:alert] = @queue_unavailable
     elsif queued.any?
       flash[:notice] = "Queued #{helpers.pluralize(queued.size, 'receipt')} for OCR. The OCR model reads one receipt " \
         "at a time, so this can take a long while; the list updates as they finish."
@@ -101,11 +101,13 @@ class ReceiptsController < ApplicationController
       @receipt.reload
     end
 
-    # The ids queued, or nil when the queue cannot be reached.
+    # The ids queued, or nil when the queue cannot be reached (@queue_unavailable then holds the message,
+    # with how many were queued before it stopped).
     def queue
       yield
-    rescue Receipts::RequestOcr::QueueUnavailable
-      @queue_unavailable = true
+    rescue Receipts::RequestOcr::QueueUnavailable => error
+      @queue_unavailable = QUEUE_UNAVAILABLE
+      @queue_unavailable += " #{helpers.pluralize(error.queued.size, 'receipt')} were queued before it stopped." if error.queued.any?
       nil
     end
 

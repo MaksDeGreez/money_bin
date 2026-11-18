@@ -90,7 +90,7 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     assert_equal [ "Oat milk 1 l", "Apples" ], receipt.reload.items.map(&:name)
   end
 
-  test "picks up a receipt stuck in processing and retries a failed one" do
+  test "picks up a receipt stuck in processing and retries a failed one on request" do
     stub_ml_ocr
     stuck = new_receipt(1)
     stuck.update_columns(status: "processing")
@@ -98,6 +98,7 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     failed.update_columns(status: "failed", ocr_raw: { "error" => { "code" => "ml_timeout", "message" => "Too slow." } })
 
     ReceiptOcrJob.perform_now(stuck)
+    Receipts::RequestOcr.read_again(failed)
     ReceiptOcrJob.perform_now(failed)
 
     assert stuck.reload.extracted?
@@ -305,6 +306,17 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     assert_equal "Second Read", receipt.merchant_name
     assert_equal [ "Bread" ], receipt.items.map(&:name)
     assert_nil receipt.ocr_requested_at
+  end
+
+  test "a stray job leaves a failed receipt failed: only a request reads it again" do
+    stub_ml_ocr
+    receipt = receipts(:failed_receipt)
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    assert receipt.reload.failed?
+    assert_equal "unsupported_media_type", receipt.ocr_error["code"]
+    assert_empty ml_requests(:ocr)
   end
 
   test "a request for a receipt accepted in the meantime is dropped without reading it" do

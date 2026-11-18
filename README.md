@@ -337,9 +337,10 @@ against the printed total, and the tax QR values next to the OCR values with a m
 OCR runs in Sidekiq (`bin/dev` starts it) with the ML service (`OCR_BACKEND`, see `ml/README.md`):
 
 - opening a receipt that was never read, and uploading one, queues it once;
-- "Read again" queues a failed receipt, or (after a confirmation) an extracted one, whose items it replaces;
-  an accepted receipt is never read again;
-- "Read all in this filter" queues every unread and failed receipt the filter shows. The OCR queue reads
+- "Read again" queues a failed receipt, an extracted one (after a confirmation: its items are replaced) or
+  one stuck "reading" for over an hour; an accepted receipt is never read again;
+- "Read all in this filter" queues every unread receipt the filter shows, and every failed one that has no
+  items to lose. The OCR queue reads
   one receipt at a time, so a few hundred receipts take hours with a local model.
 
 The pages follow OCR live (Turbo Streams over Action Cable, through Redis): the status and the data change

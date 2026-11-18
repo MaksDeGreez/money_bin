@@ -50,8 +50,13 @@ class Receipt < ApplicationRecord
   CARD_LAST4_FORMAT = /\A[0-9]{4}\z/
   QR_FIELDS = %i[qr_issued_at qr_total qr_fiscal_number qr_receipt_number].freeze
   CHUNK_SIZE = 64.kilobytes
-  # Statuses that "Read all" queues for OCR, and that "Read again" accepts without a confirmation.
+  # Statuses that "Read all" queues for OCR (a failed one only without items: Receipts::RequestOcr).
   OCR_READABLE_STATUSES = %w[uploaded failed].freeze
+  # A request for OCR older than this counts as lost (the queue was emptied) and may be made again.
+  OCR_REQUEST_LOST_AFTER = 24.hours
+  # A receipt `processing` for longer than this counts as stuck (Sidekiq killed mid-job lost the job): "Read
+  # again" is offered. One read takes minutes at most, retries included.
+  OCR_STUCK_AFTER = 1.hour
 
   enum :status, { uploaded: "uploaded", processing: "processing", extracted: "extracted", reviewed: "reviewed", failed: "failed" },
     validate: true
@@ -162,9 +167,20 @@ class Receipt < ApplicationRecord
     images.attachments.sort_by(&:id)
   end
 
-  # A request for OCR is waiting in the queue (Receipts::RequestOcr); the job clears it when it starts.
+  # A request for OCR was recorded (Receipts::RequestOcr) and no job has started on it yet; the job clears
+  # it when it starts. It also authorises the job to read a `failed` or `extracted` receipt again.
   def ocr_pending?
     ocr_requested_at.present?
+  end
+
+  # A request is waiting and is not old enough to count as lost.
+  def ocr_request_waiting?
+    ocr_pending? && ocr_requested_at > OCR_REQUEST_LOST_AFTER.ago
+  end
+
+  # Being read for longer than any read takes: the job was most likely lost.
+  def ocr_stuck?
+    processing? && updated_at < OCR_STUCK_AFTER.ago
   end
 
   # The reason of the last OCR failure, { "code" => ..., "message" => ... }, or nil.

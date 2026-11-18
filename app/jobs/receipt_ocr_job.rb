@@ -6,8 +6,8 @@
 # and for "Read again" and "Read all". It records the request in `ocr_requested_at`, and the job clears it
 # when it starts.
 #
-# - It works on `uploaded`, `processing` (a retry, or a run that died) and `failed` (a manual retry)
-#   receipts, and on an `extracted` one only while a request to read it again is recorded. It moves the
+# - It works on `uploaded` and `processing` (a retry, or a run that died) receipts, and on a `failed` or
+#   `extracted` one only while a request to read it again is recorded. It moves the
 #   receipt to `processing`, sends its photos in upload order, and Receipts::ApplyOcr moves it to
 #   `extracted`, replacing its items.
 # - It leaves other `extracted` receipts and every `reviewed` one alone: they already have a result, and a
@@ -33,7 +33,9 @@ class ReceiptOcrJob < ApplicationJob
   queue_as QUEUE
 
   ATTEMPTS = 5
-  STARTABLE_STATUSES = %w[uploaded processing failed].freeze
+  STARTABLE_STATUSES = %w[uploaded processing].freeze
+  # Read again only on request (`ocr_requested_at` set by Receipts::RequestOcr), never by a stray job.
+  REQUESTED_STATUSES = %w[failed extracted].freeze
   # Receipt allows HEIF; the ML service only names HEIC, the same container.
   SERVICE_CONTENT_TYPES = { "image/heif" => "image/heic" }.freeze
   MAX_MESSAGE_LENGTH = 300
@@ -95,10 +97,11 @@ class ReceiptOcrJob < ApplicationJob
       started
     end
 
-    # An `extracted` receipt is read again only on request (Receipts::RequestOcr.read_again), never by a
-    # stray duplicate job.
+    # A `failed` or `extracted` receipt is read again only on request (Receipts::RequestOcr), never by a
+    # stray duplicate job: a failed receipt stays failed, and a read result is not replaced unasked.
     def startable?(receipt)
-      STARTABLE_STATUSES.include?(receipt.status) || (receipt.extracted? && receipt.ocr_pending?)
+      STARTABLE_STATUSES.include?(receipt.status) ||
+        (REQUESTED_STATUSES.include?(receipt.status) && receipt.ocr_pending?)
     end
 
     # The photos in upload order, read into memory (at most three phone photos).

@@ -16,7 +16,8 @@ class Pagination
     @per_page = per_page
     @total_count = relation.unscope(:order, :select).count
     @pages = [ (total_count + per_page - 1) / per_page, 1 ].max
-    @page = page.to_i.clamp(1, pages)
+    # Anything but a plain number (page[]=1 arrives as an Array) is page 1.
+    @page = (Integer(page.to_s, 10, exception: false) || 1).clamp(1, pages)
   end
 
   def records

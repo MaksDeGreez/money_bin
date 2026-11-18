@@ -123,6 +123,9 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "tbody tr", Receipt.count
+
+    get "/receipts?page[]=2&status[]=failed"
+    assert_response :success
   end
 
   test "an empty filter says so and links to the whole list" do
@@ -219,6 +222,39 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_empty ocr_jobs, "opening a failed receipt does not queue it"
   end
 
+  test "a failed receipt with items from an earlier read asks before reading it again" do
+    receipt = receipts(:failed_receipt)
+    receipt.items.create!(position: 1, name: "Bread", amount: BigDecimal("30.00"))
+
+    get receipt_path(receipt)
+
+    assert_select "form[action=?][data-turbo-confirm*=?]", read_receipt_path(receipt), "earlier read"
+  end
+
+  test "a lost request (older than a day) offers 'Read again' once more; a waiting one does not" do
+    receipt = receipts(:failed_receipt)
+    receipt.update_columns(ocr_requested_at: 2.hours.ago)
+    get receipt_path(receipt)
+    assert_select "form[action=?]", read_receipt_path(receipt), false
+    assert_select ".callout-danger", text: /Queued to read again/
+
+    receipt.update_columns(ocr_requested_at: (Receipt::OCR_REQUEST_LOST_AFTER + 1.hour).ago)
+    get receipt_path(receipt)
+    assert_select "form[action=?]", read_receipt_path(receipt)
+  end
+
+  test "a receipt stuck in processing says so and offers 'Read again'" do
+    receipt = receipts(:failed_receipt)
+    receipt.update_columns(status: "processing", updated_at: 2.hours.ago)
+
+    get receipt_path(receipt)
+
+    assert_select ".callout-signal", text: /most likely lost/
+    assert_select "form[action=?]", read_receipt_path(receipt)
+    post read_receipt_path(receipt)
+    assert_equal 1, ocr_jobs.size
+  end
+
   test "an extracted receipt offers to read it again behind a confirmation; a reviewed one does not" do
     get receipt_path(receipts(:corner_receipt))
     assert_select "form[action=?][data-turbo-confirm*=?]", read_receipt_path(receipts(:corner_receipt)), "replaced"
@@ -299,6 +335,22 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select ".callout-danger", text: /OCR could not be queued/
     assert_nil receipt.reload.ocr_requested_at
+    assert_select ".callout", text: /Not read yet, and not queued/
+  end
+
+  test "when the queue goes away during 'Read all' the notice says how many were queued" do
+    receipts(:new_receipt).update_columns(created_at: 1.day.ago)
+    pushes = 0
+    flaky = lambda do |job|
+      pushes += 1
+      raise RedisClient::CannotConnectError, "down" if pushes > 1
+
+      enqueued_jobs << { "job_class" => job.class.name, "arguments" => job.serialize["arguments"] }
+    end
+
+    with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue, flaky) { post read_all_receipts_path }
+
+    assert_match(/OCR could not be queued.*1 receipt were queued before it stopped/, flash[:alert])
   end
 
   # --- Read again -----------------------------------------------------------------------------------------

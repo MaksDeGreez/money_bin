@@ -37,6 +37,23 @@ module Receipts
       assert_nil receipts(:market_receipt).reload.ocr_requested_at
     end
 
+    test "read_again takes a receipt stuck in processing, not one being read now" do
+      receipt = receipts(:new_receipt)
+      receipt.update_columns(status: "processing", updated_at: 10.minutes.ago)
+      assert_equal [], RequestOcr.read_again(receipt)
+
+      receipt.update_columns(updated_at: (Receipt::OCR_STUCK_AFTER + 1.minute).ago)
+      assert_equal [ receipt.id ], RequestOcr.read_again(receipt)
+      assert receipt.reload.ocr_stuck?
+    end
+
+    test "read_all leaves a failed receipt with items from an earlier read alone" do
+      receipts(:failed_receipt).items.create!(position: 1, name: "Bread", amount: BigDecimal("30.00"))
+
+      assert_equal [ receipts(:new_receipt).id ], RequestOcr.read_all(Receipt.all)
+      assert_equal [ receipts(:failed_receipt).id ], RequestOcr.read_again(receipts(:failed_receipt)), "it can still be read again by hand"
+    end
+
     test "a request uses the receipt's current row, not a stale copy" do
       stale = Receipt.find(receipts(:corner_receipt).id)
       receipts(:corner_receipt).update_columns(status: "reviewed", transaction_id: transactions(:snack).id)
@@ -89,6 +106,8 @@ module Receipts
         assert_raises(RequestOcr::QueueUnavailable) { RequestOcr.read_all(Receipt.newest_first) }
       end
 
+      error = assert_raises(RequestOcr::QueueUnavailable) { raise RequestOcr::QueueUnavailable.new("x", queued: [ 1 ]) }
+      assert_equal [ 1 ], error.queued
       assert receipts(:new_receipt).reload.ocr_pending?, "queued: still claimed"
       assert_nil receipts(:failed_receipt).reload.ocr_requested_at, "not queued: claim taken back"
       assert_equal 2, pushes, "after the first error the rest is not tried"
@@ -103,6 +122,7 @@ module Receipts
       original_adapter = ReceiptOcrJob.queue_adapter
       ReceiptOcrJob.queue_adapter = ActiveJob::QueueAdapters::SidekiqAdapter.new
       Thread.current[:sidekiq_client_class] = fake_client
+      Thread.current[:sidekiq_redis_pool] = :no_redis_in_this_test
 
       ids = RequestOcr.read_all(Receipt.newest_first)
 
@@ -112,6 +132,7 @@ module Receipts
       assert Receipt.where(id: ids).all?(&:ocr_pending?), "a real push must not look like a failure"
     ensure
       Thread.current[:sidekiq_client_class] = nil
+      Thread.current[:sidekiq_redis_pool] = nil
       ReceiptOcrJob.queue_adapter = original_adapter
     end
 

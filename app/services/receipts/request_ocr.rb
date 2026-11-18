@@ -3,8 +3,10 @@ module Receipts
   # (docs/domain.md, "Who enqueues OCR").
   #
   #   Receipts::RequestOcr.first_read(receipt)   # opening a receipt page, or after an upload: `uploaded` only
-  #   Receipts::RequestOcr.read_again(receipt)   # "Read again": `failed`, or `extracted` (replaces its items)
-  #   Receipts::RequestOcr.read_all(relation)    # "Read all in this filter": its `uploaded` and `failed` receipts
+  #   Receipts::RequestOcr.read_again(receipt)   # "Read again": `failed`, `extracted` (replaces its items), or
+  #                                              # `processing` for longer than Receipt::OCR_STUCK_AFTER
+  #   Receipts::RequestOcr.read_all(relation)    # "Read all in this filter": its `uploaded` receipts, and its
+  #                                              # `failed` ones that have no items to lose
   #
   # Each returns the ids it queued (empty when there was nothing to do). A `reviewed` receipt is never
   # queued: a person accepted it into the ledger, and a new OCR result must not change it.
@@ -16,38 +18,53 @@ module Receipts
   # the claims of the jobs that were not queued are taken back and QueueUnavailable is raised, so a receipt
   # never looks queued when it is not.
   #
-  # A request older than STALE_AFTER counts as lost (the queue was emptied by hand, Redis lost its data)
+  # A request older than STALE_AFTER (Receipt::OCR_REQUEST_LOST_AFTER) counts as lost (the queue was emptied by hand, Redis lost its data)
   # and may be made again. A duplicate job is harmless: the OCR queue runs one job at a time, and the second
   # finds the receipt read and does nothing.
   class RequestOcr
-    STALE_AFTER = 24.hours
-    FIRST_READ_STATUSES = %w[uploaded].freeze
-    READ_AGAIN_STATUSES = %w[failed extracted].freeze
+    STALE_AFTER = Receipt::OCR_REQUEST_LOST_AFTER
 
-    class QueueUnavailable < StandardError; end
+    # Some jobs could not be queued; `queued` were.
+    class QueueUnavailable < StandardError
+      attr_reader :queued
+
+      def initialize(message, queued: [])
+        @queued = queued
+        super(message)
+      end
+    end
 
     def self.first_read(receipt)
-      new(Receipt.where(id: receipt.id), FIRST_READ_STATUSES).call
+      new(Receipt.where(id: receipt.id), :first_read).call
     end
 
     def self.read_again(receipt)
-      new(Receipt.where(id: receipt.id), READ_AGAIN_STATUSES).call
+      new(Receipt.where(id: receipt.id), :read_again).call
     end
 
     def self.read_all(relation)
-      new(relation, Receipt::OCR_READABLE_STATUSES).call
+      new(relation, :read_all).call
     end
 
-    # The receipts of `relation` that a request would queue now.
-    def self.readable(relation, statuses = Receipt::OCR_READABLE_STATUSES, now: Time.current)
-      relation.where(status: statuses).where(
-        "receipts.ocr_requested_at IS NULL OR receipts.ocr_requested_at < ?", now - STALE_AFTER
-      )
+    # The receipts of `relation` that a request of `kind` would queue now.
+    def self.readable(relation, kind = :read_all, now: Time.current)
+      candidates =
+        case kind
+        when :first_read then relation.where(status: "uploaded")
+        when :read_again
+          relation.where(status: %w[failed extracted])
+            .or(relation.where(status: "processing", updated_at: ...(now - Receipt::OCR_STUCK_AFTER)))
+        when :read_all
+          relation.where(status: "uploaded")
+            .or(relation.where(status: "failed").where.not(id: ReceiptItem.select(:receipt_id)))
+        else raise ArgumentError, "unknown request #{kind.inspect}"
+        end
+      candidates.where("receipts.ocr_requested_at IS NULL OR receipts.ocr_requested_at < ?", now - STALE_AFTER)
     end
 
-    def initialize(relation, statuses)
+    def initialize(relation, kind)
       @relation = relation
-      @statuses = statuses
+      @kind = kind
     end
 
     def call
@@ -59,7 +76,9 @@ module Receipts
       queued, failed = enqueue(ids)
       release(failed, now) if failed.any?
       LiveUpdate.requested(queued) if queued.any?
-      raise QueueUnavailable, "#{failed.size} of #{ids.size} OCR job(s) could not be queued" if failed.any?
+      if failed.any?
+        raise QueueUnavailable.new("#{failed.size} of #{ids.size} OCR job(s) could not be queued", queued:)
+      end
 
       queued
     end
@@ -67,8 +86,9 @@ module Receipts
     private
       def claim(now)
         Receipt.transaction do
-          ids = self.class.readable(@relation, @statuses, now:).lock.pluck(:id)
-          Receipt.where(id: ids).update_all(ocr_requested_at: now, updated_at: now) if ids.any?
+          ids = self.class.readable(@relation, @kind, now:).lock.pluck(:id)
+          # updated_at stays: it dates the receipt's own state (Receipt#ocr_stuck? reads it).
+          Receipt.where(id: ids).update_all(ocr_requested_at: now) if ids.any?
           ids
         end
       end

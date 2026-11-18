@@ -25,6 +25,9 @@ class PaginationTest < ActiveSupport::TestCase
     assert_equal 1, Pagination.new(relation, page: "-3", per_page: 3).page
     assert_equal 1, Pagination.new(relation, page: "abc", per_page: 3).page
     assert_equal 2, Pagination.new(relation, page: "99", per_page: 3).page
+    assert_equal 1, Pagination.new(relation, page: [ "2" ], per_page: 3).page
+    assert_equal 1, Pagination.new(relation, page: { "x" => "2" }, per_page: 3).page
+    assert_equal 2, Pagination.new(relation, page: 2, per_page: 3).page
   end
 
   test "an empty relation is one empty page" do
