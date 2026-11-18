@@ -15,7 +15,8 @@ class BulkAcceptanceItem < ApplicationRecord
 
   # Applies this item at most once: under the item's row lock, an item that already has an outcome is left alone
   # (a retried or doubled job), and the categorising and the outcome are written in one database transaction.
-  # Returns the outcome.
+  # Returns the outcome, or nil when the item is gone (its transaction was deleted meanwhile: the foreign key
+  # removes the item with it).
   def apply!
     transaction do
       lock!
@@ -24,6 +25,8 @@ class BulkAcceptanceItem < ApplicationRecord
       update!(outcome: decide)
       outcome
     end
+  rescue ActiveRecord::RecordNotFound
+    nil
   end
 
   private

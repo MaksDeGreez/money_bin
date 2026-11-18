@@ -97,6 +97,18 @@ class BulkAcceptanceTest < ActiveJob::TestCase
     assert_equal "needs_review", @transaction.reload.status
   end
 
+  test "a transaction deleted after the preview takes its item with it and the rest carries on" do
+    acceptance = preview
+    acceptance.confirm!
+    items = acceptance.items.to_a
+    @others.first.destroy!
+
+    assert_nil items.find { |item| item.transaction_id == @others.first.id }.apply!
+    BulkAcceptanceJob.perform_now(acceptance)
+
+    assert_equal [ "done", 1 ], [ acceptance.reload.status, acceptance.accepted_count ]
+  end
+
   test "a suggestion refreshed by another artefact after the preview is not taken" do
     acceptance = preview
     acceptance.confirm!

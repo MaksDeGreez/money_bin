@@ -1,6 +1,7 @@
-- content_for :title, "Accept suggestions · Money Bin"
-- acceptance = @acceptance
-- filter_params = @filter.to_params
+ruby:
+  content_for :title, "Accept suggestions · Money Bin"
+  acceptance = @acceptance
+  filter_params = @filter.to_params
 / Live while the job runs: BulkAcceptanceJob broadcasts a refresh every few dozen transactions.
 - unless acceptance.finished? || acceptance.previewed?
   div data-controller="live-refresh" data-live-refresh-pending-value="true"

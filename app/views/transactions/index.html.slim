@@ -22,7 +22,7 @@
 - else
   / The review keys work across the rows (review_queue_controller.js): j / k move, t takes the suggestion, c opens
   / the category picker.
-  .data-grid-wrapper.mt-4 data-controller="review-queue" data-action="keydown->review-queue#keydown"
+  .data-grid-wrapper.mt-4 data-controller="review-queue" data-action="keydown@window->review-queue#keydown"
     table.data-grid
       thead
         tr
