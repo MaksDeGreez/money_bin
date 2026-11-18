@@ -2,14 +2,18 @@
 #
 #   ReceiptOcrJob.perform_later(receipt)
 #
-# Nothing enqueues it automatically: the upload flow calls perform_later after it saved the receipt.
+# No model callback enqueues it: Receipts::RequestOcr does, when a receipt page is opened, after an upload,
+# and for "Read again" and "Read all". It records the request in `ocr_requested_at`, and the job clears it
+# when it starts.
 #
 # - It works on `uploaded`, `processing` (a retry, or a run that died) and `failed` (a manual retry)
-#   receipts. It moves the receipt to `processing`, sends its photos in upload order, and
-#   Receipts::ApplyOcr moves it to `extracted`.
-# - It leaves `extracted` and `reviewed` receipts alone: they already have a result, and a person may be
-#   working on it. So running the job twice does the work once.
+#   receipts, and on an `extracted` one only while a request to read it again is recorded. It moves the
+#   receipt to `processing`, sends its photos in upload order, and Receipts::ApplyOcr moves it to
+#   `extracted`, replacing its items.
+# - It leaves other `extracted` receipts and every `reviewed` one alone: they already have a result, and a
+#   person may be working on it. So running the job twice does the work once.
 # - A receipt deleted before the job ran is discarded quietly.
+# - Every change of status is pushed to the open pages (Receipts::LiveUpdate).
 #
 # Failures:
 # - transient (the service cannot be reached, a timeout, a 5xx answer other than 501): retried with a
@@ -70,18 +74,31 @@ class ReceiptOcrJob < ApplicationJob
 
       reason = { "code" => error.code, "message" => error.message.squish.truncate(MAX_MESSAGE_LENGTH) }
       # update_columns: a failure must be recorded even if some other validation of the receipt fails.
-      receipt.update_columns(status: "failed", ocr_raw: { "error" => reason }, updated_at: Time.current)
+      receipt.update_columns(status: "failed", ocr_raw: { "error" => reason }, ocr_requested_at: nil, updated_at: Time.current)
     end
+    Receipts::LiveUpdate.changed(receipt)
   end
 
   private
     def start(receipt)
-      receipt.with_lock do
-        next false unless STARTABLE_STATUSES.include?(receipt.status)
+      started = receipt.with_lock do
+        unless startable?(receipt)
+          # A request for a receipt that was accepted in the meantime: nothing is waiting any more.
+          receipt.update_columns(ocr_requested_at: nil) if receipt.ocr_pending?
+          next false
+        end
 
-        receipt.update_columns(status: "processing", updated_at: Time.current) unless receipt.processing?
+        receipt.update_columns(status: "processing", ocr_requested_at: nil, updated_at: Time.current)
         true
       end
+      Receipts::LiveUpdate.changed(receipt) if started
+      started
+    end
+
+    # An `extracted` receipt is read again only on request (Receipts::RequestOcr.read_again), never by a
+    # stray duplicate job.
+    def startable?(receipt)
+      STARTABLE_STATUSES.include?(receipt.status) || (receipt.extracted? && receipt.ocr_pending?)
     end
 
     # The photos in upload order, read into memory (at most three phone photos).

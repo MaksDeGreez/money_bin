@@ -25,7 +25,8 @@ module Receipts
   #   longer sum to the total, which the person sees at review.
   #
   # Everything runs in one database transaction with the receipt row locked. Applying the same result twice
-  # gives the same rows. A `reviewed` receipt is never changed: it raises AlreadyReviewed.
+  # gives the same rows. A `reviewed` receipt is never changed: it raises AlreadyReviewed. The open pages
+  # get the result once it is committed (Receipts::LiveUpdate).
   class ApplyOcr
     RECEIPT_FIELDS = {
       merchant_name: "merchant", fiscal_number: "fiscal_number", receipt_number: "receipt_number",
@@ -59,6 +60,7 @@ module Receipts
         @receipt.save!
         replace_items
       end
+      LiveUpdate.changed(@receipt)
       @receipt
     end
 

@@ -13,4 +13,16 @@ class Session < ApplicationRecord
     id = cookie_jar.signed[COOKIE_NAME]
     find_by(id:) if id
   end
+
+  # Closes the Action Cable connections (live page updates) of `sessions`, which are ending. Call it before
+  # the rows go: the connection is identified by the row. Works across processes through the cable's
+  # Redis adapter, so `bin/rails user:password` reaches the web server too. A failure is logged, never
+  # raised: signing out must not fail because Redis is down, and a reconnect is refused anyway.
+  def self.disconnect_sockets(sessions)
+    sessions.each do |session|
+      ActionCable.server.remote_connections.where(current_session: session, current_user: session.user).disconnect(reconnect: false)
+    end
+  rescue StandardError => error
+    Rails.logger.warn("Session.disconnect_sockets: #{error.class}: #{error.message}")
+  end
 end

@@ -34,6 +34,8 @@ class User < ApplicationRecord
     # Keeps the browser session that made the change (Current.session), if any. On the command line there
     # is none, so every session ends.
     def end_other_sessions
-      sessions.where.not(id: Current.session&.id).delete_all
+      ending = sessions.where.not(id: Current.session&.id)
+      Session.disconnect_sockets(ending.includes(:user).to_a)
+      ending.delete_all
     end
 end
