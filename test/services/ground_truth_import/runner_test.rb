@@ -207,6 +207,29 @@ module GroundTruthImport
       assert_equal before, record.attributes
     end
 
+    test "new records are written in schema version 2, with no categories" do
+      write_dps_file(MARKET, dps_xml)
+      import
+      assert_equal 2, record.schema_version
+      assert_not record.categories_known
+      assert_nil record.document["category_slug"]
+      assert record.document["items"].all? { |item| item.key?("category_slug") && item["category_slug"].nil? }
+    end
+
+    test "a checked record stored in schema version 1 stays as it is when its file is unchanged, never a conflict" do
+      write_dps_file(MARKET, dps_xml)
+      import
+      v1 = record.document.except("category_slug").merge("items" => record.document["items"].map { |item| item.except("category_slug") })
+      record.update_columns(schema_version: 1, document: v1)
+      record.record_check!(matches: true)
+      before = record.reload.attributes
+
+      report = import
+
+      assert_equal({ unchanged: 1, conflict: 0, replaced: 0 }, counts(report, :unchanged, :conflict, :replaced))
+      assert_equal before, record.reload.attributes
+    end
+
     test "a record read by an older format variant is read again" do
       write_dps_file(MARKET, dps_xml)
       import

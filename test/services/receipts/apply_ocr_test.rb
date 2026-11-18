@@ -314,4 +314,17 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
     assert_equal BigDecimal("1.00"), receipt.total
     assert_equal before, receipt.attributes.slice(*kept)
   end
+  test "stores the prompt version and clears what filled the form before: a fill from the tax-service record, the categoriser" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(filled_from: "dps_xml", categoriser_model_name: "invented-categoriser", ocr_prompt_version: "old")
+
+    apply(receipt, ml_ocr_result(prompt_version: " p-1a2b "))
+    receipt.reload
+    assert_equal "p-1a2b", receipt.ocr_prompt_version
+    assert_nil receipt.filled_from
+    assert_nil receipt.categoriser_model_name
+
+    apply(receipt, ml_ocr_result(prompt_version: nil))
+    assert_nil receipt.reload.ocr_prompt_version, "the stub sends none"
+  end
 end

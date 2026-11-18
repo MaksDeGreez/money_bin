@@ -88,7 +88,9 @@ module DpsXml
           "quantity" => quantity(row),
           "unit_price" => money(row, "PRICE", "item_unit_price"),
           "amount" => (decimal_string(cost - discount, 2, "item_amount") if cost && discount),
-          "discount" => (decimal_string(discount.negative? ? BigDecimal("0") : discount, 2, "item_discount") if discount)
+          "discount" => (decimal_string(discount.negative? ? BigDecimal("0") : discount, 2, "item_discount") if discount),
+          # The file has no categories (schema version 2 keeps the key, null).
+          "category_slug" => nil
         }
       end
 

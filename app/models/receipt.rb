@@ -5,9 +5,15 @@
 # into the ledger (Receipts::Accept), which links it to its transaction (`ledger_transaction`).
 #
 # ReceiptOcrJob and Receipts::ApplyOcr fill the OCR part (docs/domain.md, "OCR"). `ocr_raw` keeps the OCR
-# service's full answer, or { "error" => { "code", "message" } } after a failure. `ocr_model_name` and `ocr_model_version` say which model
-# produced it. They are not called `model_name`: every Active Record class and record already has a
+# service's full answer, or { "error" => { "code", "message" } } after a failure. `ocr_model_name`,
+# `ocr_model_version` and `ocr_prompt_version` say which model and prompt produced the fields and items (they
+# stay when "Enter by hand" keeps the items of an earlier read). They are not called `model_name`: every Active Record class and record already has a
 # `model_name` method (ActiveModel::Naming), which would hide the column's value.
+#
+# What filled the review form, for ground truth (ReceiptGroundTruth::Prefill): `filled_from` is `dps_xml` once a
+# person filled the fields and items from the receipt's tax-service record; `categoriser_model_name` names the
+# categoriser whose suggestions the items (and a slip) carry. Whatever fills the suggestions sets it (nothing
+# does yet). A new OCR result clears both: it replaces the fields and items.
 #
 # `currency` is what the OCR read from the receipt (nil when unknown). `batch` is a free label for a bulk
 # upload ("october-shopping").
@@ -81,6 +87,10 @@ class Receipt < ApplicationRecord
   scope :without_tax_qr, -> { where(QR_FIELDS.index_with(nil)) }
   scope :incomplete_only, -> { where(incomplete: true) }
   scope :in_batch, ->(batch) { where(batch:) }
+  # Receipts with (or without) a ground-truth record of `source` (any source when nil); `checked:` true or
+  # false narrows to records a person checked or did not.
+  scope :with_ground_truth, ->(source = nil, checked: nil) { where(ground_truth_exists(source, checked:).exists) }
+  scope :without_ground_truth, ->(source = nil) { where.not(ground_truth_exists(source).exists) }
   # Newest first: receipts uploaded in the app (no ingest number) by upload time, then loaded ones by
   # ingest number, highest first. The number is compared by length first: `rcpt_1000000` follows
   # `rcpt_999999`, which a plain text order would get wrong.
@@ -118,6 +128,7 @@ class Receipt < ApplicationRecord
   validates :qr_total, numericality: { greater_than: -Transaction::AMOUNT_LIMIT, less_than: Transaction::AMOUNT_LIMIT }, allow_nil: true
   validates :qr_total, decimal_places: { maximum: Transaction::MONEY_DECIMAL_PLACES }
   validates :incomplete, inclusion: { in: [ true, false ] }
+  validates :filled_from, inclusion: { in: %w[dps_xml], message: "must be dps_xml or empty" }, allow_nil: true
   validates :card_last4, format: { with: CARD_LAST4_FORMAT, message: "must be four digits" }, allow_nil: true
   validates :ingest_id, format: { with: INGEST_ID_FORMAT, message: "must be rcpt_ and at least six digits" },
     uniqueness: true, allow_nil: true
@@ -178,6 +189,13 @@ class Receipt < ApplicationRecord
     super(resolved)
   end
 
+  # The ground-truth records of the receipt in the outer query (for EXISTS), as Arel.
+  def self.ground_truth_exists(source, checked: nil)
+    records = ReceiptGroundTruth.where(ReceiptGroundTruth.arel_table[:receipt_id].eq(arel_table[:id]))
+    records = records.where(source:) if source
+    records = checked ? records.checked : records.unchecked unless checked.nil?
+    records.select(1).arel
+  end
   # True when the tax-service QR code gave at least one ground-truth value.
   def tax_qr?
     QR_FIELDS.any? { |field| !self[field].nil? }
