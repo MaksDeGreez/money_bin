@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from app.decimals import bounded, exact_sum
+from app.decimals import exact_sum
 
 FILE_MODE = 0o600
 DIR_MODE = 0o700
@@ -100,7 +100,9 @@ def _cost(value: Any) -> Decimal | None:
         cost = Decimal(value)
     except InvalidOperation:
         return None
-    return bounded(cost)
+    # A receipt's cost is a sum of bounded call costs, so it may be longer than
+    # one call's: only a finite value is required here.
+    return cost if cost.is_finite() else None
 
 
 def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:

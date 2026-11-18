@@ -70,7 +70,9 @@ So the backend does not rely on the account setting alone:
 3. Every answer names the provider that served it. An answer from a provider outside the list (or without
    one) is discarded with 424 `openrouter_provider_unverified`, and from then on the backend sends
    nothing until the service is restarted (an evaluation run stops): a photo may already have gone to the
-   wrong place, and a person has to look before any more do.
+   wrong place, and a person has to look before any more do. Chat calls go one at a time, from sending to this check
+   (a lock), so a concurrent request cannot slip out in between; the Rails OCR queue reads one receipt at
+   a time anyway, so nothing is lost.
 
 The owner should still set the account's privacy settings to "ZDR only" for every model group and leave
 prompt logging off: it closes the same door twice and also covers any request made outside this code.

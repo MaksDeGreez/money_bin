@@ -1166,3 +1166,77 @@ def test_a_malformed_key_is_refused_before_it_reaches_the_http_client(
 def test_a_key_is_valid_only_when_set() -> None:
     assert not key_is_valid(Settings())
     assert key_is_valid(settings())
+
+
+def test_a_waiting_request_sends_nothing_after_an_unverified_provider() -> None:
+    import threading
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    class Slow(FakeTransport):
+        def post_json(self, url: str, body: Mapping[str, Any], **kwargs: Any) -> HttpResponse:
+            entered.set()
+            release.wait(5)
+            return super().post_json(url, body, **kwargs)
+
+    transport = Slow(HttpResponse(200, chat_answer(provider="Gamma")))
+    backend, _ = make_backend(transport)
+    errors: list[str] = []
+
+    def read() -> None:
+        try:
+            backend.extract_receipt([jpeg()])
+        except BackendError as error:
+            errors.append(error.code)
+
+    first = threading.Thread(target=read)
+    first.start()
+    assert entered.wait(5)
+    second = threading.Thread(target=read)
+    second.start()
+    second.join(0.2)
+    assert second.is_alive()  # waiting for the first call to be checked
+    release.set()
+    first.join(5)
+    second.join(5)
+
+    assert errors == ["openrouter_provider_unverified"] * 2
+    assert len(transport.posts) == 1
+
+
+def test_a_receipt_cost_longer_than_one_call_cost_is_kept_by_the_summary() -> None:
+    from evaluation.common import cost_summary
+
+    answers = [
+        HttpResponse(200, chat_answer("bad", cost='"0.5"')),
+        HttpResponse(200, chat_answer(cost='"0.' + "0" * 48 + '1"')),
+    ]
+    backend, _ = make_backend(FakeTransport(*answers))
+
+    diagnostics = backend.extract_receipt([jpeg()]).diagnostics
+
+    assert diagnostics["cost_usd"] == "0.5" + "0" * 47 + "1"
+    summary = cost_summary([{"diagnostics": diagnostics}])
+    assert summary is not None
+    assert summary["total_usd"] == diagnostics["cost_usd"]
+    assert summary["complete"] is True
+
+
+def test_exact_sum_keeps_every_digit() -> None:
+    from app.decimals import exact_sum
+
+    big = Decimal("9" * 50 + "E+50")
+    tiny = Decimal("1E-50")
+
+    assert exact_sum([big, tiny, Decimal("0")]) - big == tiny
+    assert exact_sum([]) == 0
+    assert exact_sum([Decimal("0"), Decimal("0.00")]) == 0
+
+
+def test_bounded_refuses_what_is_not_a_price() -> None:
+    from app.decimals import bounded
+
+    assert bounded(Decimal("0.25")) == Decimal("0.25")
+    for value in ("NaN", "Infinity", "1E+51", "1E-51", "1" * 51):
+        assert bounded(Decimal(value)) is None

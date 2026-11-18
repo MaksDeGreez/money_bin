@@ -352,7 +352,10 @@ nothing. The code enforces it; no setting can switch it off:
 3. The provider each answer names must be one of those endpoints' providers
    (compared without case); any other answer is discarded (424
    `openrouter_provider_unverified`), and from then on the backend sends
-   nothing until the service is restarted (`ocr_run` stops the run).
+   nothing until the service is restarted (`ocr_run` stops the run). Chat
+   calls go one at a time, from sending to this check, so no request slips
+   out while another one's answer is being checked; the Rails OCR queue reads
+   one receipt at a time anyway.
 
 A model that is unknown, takes no images or has no such endpoint stops the
 service at start-up. When the list cannot be read, no request is sent (503).

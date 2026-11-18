@@ -524,6 +524,10 @@ class OpenRouterBackend(Backend):
         # Set when an answer came from a provider outside the list: from then on
         # nothing is sent until the service is restarted.
         self._halted = False
+        # One chat call at a time, from sending to checking the provider, so no
+        # request can slip out after another one found a wrong provider. The Rails
+        # OCR queue reads one receipt at a time anyway.
+        self._call_lock = threading.Lock()
 
     # Start-up -----------------------------------------------------------------
 
@@ -639,6 +643,13 @@ class OpenRouterBackend(Backend):
     def _call(
         self, body: Mapping[str, Any], catalogue: Catalogue, calls: list[Call], deadline: float
     ) -> str:
+        with self._call_lock:
+            return self._call_alone(body, catalogue, calls, deadline)
+
+    def _call_alone(
+        self, body: Mapping[str, Any], catalogue: Catalogue, calls: list[Call], deadline: float
+    ) -> str:
+        """One call, under `_call_lock`: the halt and the deadline are checked after waiting."""
         transport = self._transport_or_new()
         api_key = self._api_key()
         self._check_not_halted()
