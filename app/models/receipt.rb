@@ -76,6 +76,8 @@ class Receipt < ApplicationRecord
 
   belongs_to :ledger_transaction, class_name: "Transaction", foreign_key: :transaction_id, optional: true, inverse_of: :receipt
   has_many :items, -> { order(:position) }, class_name: "ReceiptItem", inverse_of: :receipt, dependent: :destroy
+  # What the receipt really says, per source (ReceiptGroundTruth). Only the ground-truth writers change it.
+  has_many :ground_truths, class_name: "ReceiptGroundTruth", inverse_of: :receipt, dependent: :delete_all
   # Resized copies for the pages, made once by Active Storage and kept (active_storage_variant_records).
   # Always JPEG, so a HEIC photo shows in every browser; metadata stripped. Served by
   # Receipts::PhotosController, never through Rails' own Active Storage routes (they are not drawn).
@@ -186,10 +188,10 @@ class Receipt < ApplicationRecord
     error if error.is_a?(Hash)
   end
 
-  # Nothing has happened to the receipt since it was stored: no OCR result, no items, no transaction. Only
-  # such a receipt may be changed or removed by the receipt load.
+  # Nothing has happened to the receipt since it was stored: no OCR result, no items, no transaction, no
+  # ground truth. Only such a receipt may be changed or removed by the receipt load.
   def pristine?
-    uploaded? && transaction_id.nil? && !items.exists?
+    uploaded? && transaction_id.nil? && !items.exists? && !ground_truths.exists?
   end
 
   # The sum of the item amounts, as a BigDecimal.

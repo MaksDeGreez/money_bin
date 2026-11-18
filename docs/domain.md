@@ -17,6 +17,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
 | `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at` |
+| `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
@@ -138,7 +139,13 @@ listed, the model gives a readable error and the database is the safety net for 
 | A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
 | OCR never writes the QR ground truth (`qr_*`, `qr_payload`), `ingest_id`, `batch` or `incomplete` | Model only (`Receipts::ApplyOcr` assigns only its own fields) |
 | A receipt is queued for OCR at most once while a request waits, and a `reviewed` one never | Model only (`Receipts::RequestOcr`, under a row lock; `ReceiptOcrJob` checks again when it starts) |
-| A receipt's `sha256` and photos change only through the receipt load, and only while the receipt is pristine | Model only (`ReceiptLoad::Writer`, under a row lock) |
+| A ground-truth document has exactly the OCR receipt's keys, money as two-place and quantities as three-place decimal strings (never JSON numbers) | Model only (`ReceiptGroundTruth::Document`); DB checks that it is an object with an `items` list (`receipt_ground_truths_document_shape`) |
+| One ground-truth record per receipt and source; `source` is `dps_xml` or `manual` | Model + DB (unique index, `receipt_ground_truths_source_allowed`) |
+| A ground-truth record without item lines from its source has an empty item list | Model + DB (`receipt_ground_truths_unknown_items_empty`) |
+| An imported (`dps_xml`) record has its file digest and format variant and no `prefilled_by`; a `manual` one has neither digest nor variant | Model + DB (`receipt_ground_truths_imported_fields`, `receipt_ground_truths_manual_fields`) |
+| A check has both its time and its outcome (`matches` / `differs`); a note only with a check | Model + DB (`receipt_ground_truths_check_consistent`, `receipt_ground_truths_check_outcome_allowed`) |
+| Nothing that books a receipt or runs OCR writes a ground-truth record, and the import writes nothing else; a checked record is never replaced by the import | Model only (`GroundTruthImport::Runner` writes `receipt_ground_truths` only) |
+| A receipt's `sha256` and photos change only through the receipt load, and only while the receipt is pristine (no OCR result, items, transaction or ground truth) | Model only (`ReceiptLoad::Writer`, under a row lock) |
 
 ### The line sum is enforced in the model, not by a trigger
 
@@ -552,7 +559,7 @@ Finding the receipt of a line: by `ingest_id` first, then by `sha256` (the line'
 |---|---|
 | nothing | a new receipt: `uploaded`, the photos in part order, `sha256` = the fingerprint, `ingest_id`, `batch`, `qr_payload` and the `qr_*` columns |
 | a receipt with the same `sha256` (and the same or no `ingest_id`) | only the ingest fields are written (`ingest_id` when blank, `batch`, `qr_payload`, `qr_*`), and only when they differ; OCR fields, `kind`, `incomplete`, items, status and the transaction are never touched. A photo file missing from storage is uploaded again |
-| the same `ingest_id`, another `sha256` (the tool regrouped the photos) | while the receipt is pristine (`uploaded`, no items, no transaction), checked again under a row lock: its photos are replaced and its `sha256` set to the new fingerprint; otherwise a conflict |
+| the same `ingest_id`, another `sha256` (the tool regrouped the photos) | while the receipt is pristine (`uploaded`, no items, no transaction, no ground truth), checked again under a row lock: its photos are replaced and its `sha256` set to the new fingerprint; otherwise a conflict |
 | one receipt by `ingest_id` and another by `sha256`, or a `sha256` match that carries another `ingest_id` | a conflict |
 
 A conflict is left alone and reported with ids. A loaded receipt whose `ingest_id` is no longer in the file
@@ -588,6 +595,107 @@ the batch folder name, as the ingest tool's own summary does) and warnings with 
 payload, a raw photo name, a total or a date; Active Record's SQL log
 is silenced while it runs, for the same reason. A real run needs Redis: attaching a photo enqueues Active
 Storage's analysis job, and the task checks Redis before it writes.
+
+## Receipt ground truth
+
+The OCR evaluation needs to know what a receipt really says. The QR code gives the total, the date and time
+and the two fiscal numbers ("QR ground truth"), but not the items. A `receipt_ground_truths` row
+(`ReceiptGroundTruth`) is "what this receipt says, according to one source", items included:
+
+| Column | Meaning |
+|---|---|
+| `receipt_id` | the receipt (required) |
+| `source` | `dps_xml`: a receipt file a person saved from the tax service's receipt page, read by the ground-truth import; `manual`: a person's reading of the print, from the review form (a later change). One row per receipt and source |
+| `document` | the receipt in the shape of the OCR contract's `receipt` object (`ml/README.md`): `kind`, `merchant`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `card_last4`, `is_return` and `items` (`name`, `quantity`, `unit_price`, `amount`, `discount`). Every key is present; any value but an item's name may be null (not known), an item's `amount` and `discount` too, unlike in an OCR answer |
+| `schema_version` | the shape of `document` (1 today) |
+| `items_known` | whether the source gave item lines at all |
+| `prefilled_by` | the model or source that filled the form before a person corrected it; nil for an imported record |
+| `source_sha256`, `source_format` | for an imported record: the SHA-256 of the file and the format variant that read it. Never the file's path or content |
+| `checked_at`, `check_outcome`, `check_note` | a person compared the record with the printed receipt: `matches` or `differs`, with an optional note |
+
+Why it is built this way:
+
+- **A table of its own, not columns on the receipt or its items.** The receipt's own columns and items are
+  what OCR read and a person then corrected for the ledger; they change on every review. Ground truth must
+  stay put while the receipt is reworked, and a receipt can have it from more than one source (a saved file
+  and a person's reading) to compare. A JSON document per row fits that: a receipt's items are read and
+  written as one unit, and the evaluation never queries one item.
+- **Never part of booking.** A ground-truth record never creates or changes a transaction, a receipt item,
+  a receipt's status or its OCR or QR columns, and nothing that changes those writes here: editing the
+  receipt, accepting it, deleting its transaction or running OCR again leaves the record as it was. If the
+  evaluation's answers could move with the ledger, a model would be scored against values it helped make.
+  Only deleting the receipt removes its records (`ON DELETE CASCADE`): ground truth for a receipt that no
+  longer exists has nothing to score. A receipt with a ground-truth record is not pristine
+  (`Receipt#pristine?`), so the receipt load neither deletes it when it leaves the ingest set nor replaces
+  its photos when the ingest tool regroups them: it keeps the receipt and reports it.
+- **The OCR shape, with decimal strings.** Money is a string with exactly two places and a quantity one with
+  three (`"12.50"`, `"0.500"`), never a JSON number: a float never holds money, nothing is rounded, and one
+  spelling per value means the evaluation compares a prediction with the ground truth through one code
+  path. `ReceiptGroundTruth::Document` is the explicit validator (keys, types, formats; problems name keys,
+  never values), and the database checks what a constraint can express.
+- **`items_known` is stored, not inferred.** "This receipt has no items" (a card slip) and "the source gave
+  no item lines" are different facts that an empty list cannot tell apart. With `items_known` false the list
+  must be empty (`receipt_ground_truths_unknown_items_empty`), and the evaluation leaves the receipt out of
+  item scores instead of counting every predicted item as wrong.
+- **`prefilled_by`.** A person who corrects a form a model filled in tends to keep what looks right, so the
+  result leans towards that model's answer. Such a record is not test ground truth for that model
+  (`independent_of?(model_name)`); it still is for every other model. An imported record was filled by no
+  model, so it has no `prefilled_by` (a database constraint).
+- **Checked.** An imported record is what the file says. A person can compare it with the printed receipt and
+  record `matches` or `differs` (`record_check!`, `clear_check!`; the screen for it is a later change). Once
+  checked, the import no longer replaces it when the file changes: the person's judgement is about this
+  version, and the change is reported as a conflict instead.
+
+### Ground-truth import
+
+`bin/rails "receipts:import_ground_truth_xml[DIR]"` (`GroundTruthImport::Runner`, `DRY_RUN=1` rolls back)
+reads the receipt files a person saved by hand from the tax service's receipt page, one file per receipt,
+named after the receipt's ingest number (`rcpt_000123.xml`), from a private folder outside the repository
+(`~/Documents/money_bin_data/dps_xml/`). It reads local files only: nothing in this app requests anything
+from the tax service (`docs/decisions/0010-receipt-ground-truth.md` says why).
+
+- The folder must be outside every git repository. Only plain files named `rcpt_NNNNNN.xml` are read;
+  other entries (other names, folders, symbolic links) are counted and ignored. Nothing is written in the
+  folder.
+- `DpsXml::Reader` turns a file into a document. It refuses, with a counted warning, a file over 2 MB, a
+  file with a document type declaration (entity expansion and external entities are how an XML file
+  explodes or reads other files; libxml2 is also told not to substitute entities, load a DTD or use the
+  network), a file that is not well-formed, a layout it does not know and a document that is neither a sale
+  nor a return. The format knowledge is in one class per variant (`DpsXml::Check01` today). A value that is
+  not an exact decimal with at most two places (three for a quantity), or too large for the document, is
+  left out and counted, never rounded; so is a time that does not exist (inside the spring clock change).
+  A file without item lines gives a record with `items_known` false, and so does a file with an item row
+  the reader cannot keep (no name): a shorter list would look complete. The cashier's name and other
+  fields it does not use are never read.
+- The receipt is found by `ingest_id`; a file whose receipt is not loaded is skipped with a warning.
+- **Cross-check** (`GroundTruthImport::CrossCheck`). The file is compared with the receipt's QR ground
+  truth where both have a value: the register's fiscal number, the receipt's fiscal number, the total, and
+  the date and time to the minute in Kyiv time. A disagreement means another receipt's file was saved under
+  this number, so the file is not imported; the warning names the receipt id and the fields, never the
+  values. Agreeing on the register's number proves little (every receipt of that register shares it), so a
+  file agrees only when it also matches on the receipt's own fiscal number, or on the total and the time
+  together. A file that cannot show this is still imported, as unverified: with a warning naming the
+  receipt when the QR code has those values and the file lacks them (`unverifiable`: most likely a tag the
+  reader does not know), and counted only when the QR code itself lacks them (`no_qr`: no QR code, or one
+  read only in part). The export carries the status, so the evaluation can keep to verified records. A
+  file refused for a disagreement never deletes a record stored from it earlier; the warning says so, and
+  the export marks the record.
+- The receipt's `dps_xml` record is created; left alone when the file's digest and the format variant are
+  the same as last time; replaced when either changed (a corrected variant reads the files again), unless a
+  person has checked the record: that is a counted conflict and the record stays.
+- One database transaction per file; nothing in one file stops the others (an unexpected error is counted
+  as failed, and the task then exits with status 1). The output is counts per outcome, counts of values left
+  out by kind, and warnings with receipt ids; never a shop name, an item, an amount, a date or a file's
+  content. The SQL log is silenced while it runs.
+
+`bin/rails "receipts:export_ground_truth[OUT_DIR]"` (`GroundTruthExport`) writes every record to
+`OUT_DIR/ground_truth.jsonl` for the offline evaluation (`ml/evaluation/` reads files): `receipt_id`,
+`ingest_id`, `source`, `source_format`, `prefilled_by`, `checked_at`, `check_outcome`, `qr_check`,
+`items_known`, `schema_version` and `document`. `qr_check` is the cross-check made again at export time
+(`agrees`, `disagrees`, `unverifiable`, `no_qr`), so a record that QR values loaded or changed later
+contradict is marked and the evaluation can leave it out. It refuses a folder inside a git repository, creates it readable by the
+owner only and writes the file with mode 0600 through a new temporary file (exclusive, never through a
+link); it prints the count only.
 
 ## Reports
 
@@ -753,7 +861,9 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   whose tools call the same query objects (`docs/decisions/0008-mcp-server.md`).
 - A call to `/categorise` that fills `suggested_category` and `confidence` on the items.
 - The receipt review form (correcting OCR, choosing categories, accepting into the ledger) and a labelling
-  mode for the OCR evaluation set.
+  mode for the OCR evaluation set: "save as gold" (a `manual` ground-truth record with `prefilled_by`) and
+  the screen for checking an imported record against the print. The item-level metrics over the exported
+  ground truth.
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view.

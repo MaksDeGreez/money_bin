@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_130000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_140000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -94,6 +94,33 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_130000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["normalized_name"], name: "index_payees_on_normalized_name", unique: true
+  end
+
+  create_table "receipt_ground_truths", force: :cascade do |t|
+    t.bigint "receipt_id", null: false
+    t.string "source", null: false
+    t.integer "schema_version", null: false
+    t.jsonb "document", null: false
+    t.boolean "items_known", null: false
+    t.string "prefilled_by"
+    t.string "source_sha256", limit: 64
+    t.string "source_format"
+    t.timestamptz "checked_at"
+    t.string "check_outcome"
+    t.text "check_note"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["receipt_id", "source"], name: "index_receipt_ground_truths_on_receipt_id_and_source", unique: true
+    t.index ["source"], name: "index_receipt_ground_truths_on_source"
+    t.check_constraint "(checked_at IS NULL) = (check_outcome IS NULL) AND (check_note IS NULL OR checked_at IS NOT NULL)", name: "receipt_ground_truths_check_consistent"
+    t.check_constraint "check_outcome::text = ANY (ARRAY['matches'::character varying, 'differs'::character varying]::text[])", name: "receipt_ground_truths_check_outcome_allowed"
+    t.check_constraint "items_known OR (document -> 'items'::text) = '[]'::jsonb", name: "receipt_ground_truths_unknown_items_empty"
+    t.check_constraint "jsonb_typeof(document) = 'object'::text AND document ? 'items'::text AND jsonb_typeof(document -> 'items'::text) = 'array'::text", name: "receipt_ground_truths_document_shape"
+    t.check_constraint "schema_version > 0", name: "receipt_ground_truths_schema_version_positive"
+    t.check_constraint "source::text <> 'dps_xml'::text OR source_sha256 IS NOT NULL AND source_format IS NOT NULL AND prefilled_by IS NULL", name: "receipt_ground_truths_imported_fields"
+    t.check_constraint "source::text <> 'manual'::text OR source_sha256 IS NULL AND source_format IS NULL", name: "receipt_ground_truths_manual_fields"
+    t.check_constraint "source::text = ANY (ARRAY['dps_xml'::character varying, 'manual'::character varying]::text[])", name: "receipt_ground_truths_source_allowed"
+    t.check_constraint "source_sha256::text ~ '^[0-9a-f]{64}$'::text", name: "receipt_ground_truths_source_sha256_format"
   end
 
   create_table "receipt_items", force: :cascade do |t|
@@ -231,6 +258,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_130000) do
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "api_tokens", "users", on_delete: :cascade
   add_foreign_key "categories", "categories", column: "parent_id"
+  add_foreign_key "receipt_ground_truths", "receipts", on_delete: :cascade
   add_foreign_key "receipt_items", "categories"
   add_foreign_key "receipt_items", "categories", column: "suggested_category_id"
   add_foreign_key "receipt_items", "receipts"

@@ -333,6 +333,13 @@ class ReceiptTest < ActiveSupport::TestCase
     assert_not receipt.pristine?
   end
 
+  test "a receipt with ground truth is not pristine: the receipt load keeps it" do
+    receipt = receipts(:new_receipt)
+    receipt.ground_truths.create!(source: :manual, schema_version: 1, items_known: false,
+      document: ReceiptGroundTruth::Document.blank)
+    assert_not receipt.pristine?
+  end
+
   test "a transaction has at most one receipt" do
     receipt = receipts(:corner_receipt)
     receipt.ledger_transaction = transactions(:market_split)

@@ -309,6 +309,31 @@ value, a total, a date or a photo name, and exits with status 1 when the check f
 not be written. A real run needs Redis (Active Storage analyses photos in background jobs). The rules are
 in [`docs/domain.md`](docs/domain.md), "Receipt load".
 
+### Item ground truth from saved receipt files
+
+The QR code gives no items. For item-level ground truth the owner saves receipts by hand from the tax
+service's receipt page (signed in, "save as XML"), one file per receipt named after its ingest number
+(`rcpt_000123.xml`), into `~/Documents/money_bin_data/dps_xml/`. The app reads those local files only: it
+never requests anything from the tax service, and nothing in this repository can.
+
+```sh
+DRY_RUN=1 bin/rails "receipts:import_ground_truth_xml[$HOME/Documents/money_bin_data/dps_xml]"  # check and count, then roll back
+bin/rails "receipts:import_ground_truth_xml[$HOME/Documents/money_bin_data/dps_xml]"            # import
+bin/rails "receipts:export_ground_truth[$HOME/Documents/money_bin_data/ground_truth]"           # JSONL for ml/evaluation/
+```
+
+Each file becomes the receipt's `dps_xml` ground-truth record (`receipt_ground_truths`), after a check
+against the receipt's QR code: a file that disagrees (saved under the wrong number) is not imported; one
+that cannot be matched on the receipt number or on the total and time is imported as unverified (with a
+warning when the QR code has those values), and the export says which. Running it again changes nothing unless a file
+changed; a record a person has checked is never replaced. The import never touches the receipt, its items
+or the ledger. It prints counts and receipt ids only and skips, with a counted warning, any file that is
+not well-formed, not a receipt or carries a document type declaration. The file format is implemented from
+public documentation and not yet confirmed against a real file. The export writes `ground_truth.jsonl`
+(mode 0600) and refuses a folder inside a git repository. Rules: [`docs/domain.md`](docs/domain.md),
+"Receipt ground truth"; reasons:
+[`docs/decisions/0010-receipt-ground-truth.md`](docs/decisions/0010-receipt-ground-truth.md).
+
 ## Training the transaction categoriser
 
 `ml/categoriser/` trains a model that suggests a category for a transaction (TF-IDF + logistic
