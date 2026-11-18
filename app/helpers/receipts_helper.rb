@@ -58,6 +58,28 @@ module ReceiptsHelper
     number_to_percentage(confidence * 100, precision: 0) if confidence
   end
 
+  # False while suggestions are switched off (ItemSuggestions): the form then shows none and no control.
+  def item_suggestions_shown?
+    ItemSuggestions.enabled?
+  end
+
+  # Where an item's suggestion came from (ReceiptItem#suggested_by), in words.
+  def receipt_suggestion_source(item)
+    { "memory" => "from your labels", "model" => "from the model" }[item.suggested_by] if item.suggested_category_id
+  end
+
+  # One line about a receipt's category suggestions: how many items have one, and from where.
+  def receipt_suggestions_summary(receipt)
+    items = receipt.items.to_a
+    sources = items.select(&:suggested_category_id).map(&:suggested_by).tally
+    return "No category suggestions yet." if sources.empty?
+
+    parts = []
+    parts << "#{sources['memory']} from your earlier labels" if sources["memory"]
+    parts << "#{sources['model']} from #{receipt.categoriser_model_name.presence || 'the model'}" if sources["model"]
+    "Category suggestions for #{sources.values.sum} of #{pluralize(items.size, 'item')}: #{parts.to_sentence}."
+  end
+
   # The value of one side of a QR comparison row, formatted for its field.
   def receipt_qr_value(field, value, currency = nil)
     return tag.span("—", class: "text-ink-muted") if value.nil?

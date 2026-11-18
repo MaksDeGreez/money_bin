@@ -1,7 +1,14 @@
-"""The hosted OCR backend: a vision-language model reached through OpenRouter.
+"""The hosted OCR backend, and the zero-retention OpenRouter client it shares.
 
-It uses the same prompt, parsing with one repair pass and post-processing as
-the local backend (`app.ocr`), so a comparison differs only in the model.
+`OpenRouterBackend` reads receipts with a vision-language model. It uses the
+same prompt, parsing with one repair pass and post-processing as the local
+backend (`app.ocr`), so a comparison differs only in the model.
+
+`OpenRouterClient` holds everything that keeps a hosted call private: the
+catalogue of strict zero-retention endpoints, the fixed provider preferences,
+the provider check of every answer and the halt after a wrong one, the key, the
+deadline and the accounting. The OCR backend and the hosted item categoriser
+(`app.categorise.openrouter`) both call through it, so the rules exist once.
 
 Privacy rules (`docs/decisions/0012-hosted-ocr-backend.md`):
 
@@ -50,7 +57,6 @@ from app.backends.base import (
     Backend,
     BackendConfigError,
     BackendError,
-    BackendNotImplementedError,
     Extraction,
     ImageInput,
 )
@@ -60,7 +66,6 @@ from app.ocr.images import prepare_images
 from app.ocr.parsing import OcrParseError, read_with_repair
 from app.ocr.postprocess import postprocess
 from app.ocr.prompt import ANSWER_SCHEMA, PROMPT_VERSION, Repair, build_messages
-from app.schemas import CategoriseResult
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +96,21 @@ SCHEMA_NAME = "receipt"
 PRIVACY_PREFERENCES: Mapping[str, Any] = {"zdr": True, "data_collection": "deny"}
 
 NOT_STARTED = "not-started"
+OCR_MODEL_SETTING = "OPENROUTER_OCR_MODEL"
+
+# Set when an answer came from a provider outside the zero-retention list. From
+# then on no hosted call of any task (OCR or categorisation) is sent until the
+# service restarts: routing can no longer be trusted, and a person has to look.
+_HALT = threading.Event()
+# One chat call at a time, from sending to checking the provider, so no request
+# can slip out after another one found a wrong provider. The Rails OCR queue
+# sends one request at a time anyway.
+_CALL_LOCK = threading.Lock()
+
+
+def reset_halt() -> None:
+    """Forget a halt. Only the tests call it; the service restarts instead."""
+    _HALT.clear()
 
 
 @dataclass(frozen=True)
@@ -206,6 +226,20 @@ class Catalogue:
     structured_endpoints: tuple[str, ...]
     providers: frozenset[str]
     read_at: float
+    # The endpoints that return token log-probabilities (`logprobs` and `top_logprobs`).
+    logprob_endpoints: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Answer:
+    """The text of a model's answer, and its token log-probabilities when the endpoint gave them.
+
+    `logprobs` is the `choices[0].logprobs.content` list as OpenRouter returns it
+    (one entry per token: `token`, `logprob`, `top_logprobs`), or None.
+    """
+
+    text: str
+    logprobs: list[Any] | None = None
 
 
 @dataclass
@@ -257,11 +291,11 @@ def key_is_valid(settings: Settings) -> bool:
     return _KEY_PATTERN.fullmatch(key.get_secret_value().strip()) is not None
 
 
-def missing_settings(settings: Settings) -> list[str]:
-    """The settings the backend needs that are not set."""
+def missing_settings(settings: Settings, model_setting: str = OCR_MODEL_SETTING) -> list[str]:
+    """The settings a hosted task needs that are not set (`model_setting` names its model)."""
     missing = []
-    if _setting(settings.openrouter_ocr_model) is None:
-        missing.append("OPENROUTER_OCR_MODEL")
+    if _setting(getattr(settings, model_setting.lower())) is None:
+        missing.append(model_setting)
     key = settings.openrouter_api_key
     if key is None or not key.get_secret_value().strip():
         missing.append("OPENROUTER_API_KEY")
@@ -273,10 +307,10 @@ _INVALID_KEY_MESSAGE = (
 )
 
 
-def _missing_message(missing: Sequence[str]) -> str:
+def _missing_message(missing: Sequence[str], model_setting: str = OCR_MODEL_SETTING) -> str:
     return (
         f"The openrouter backend is not configured: set {' and '.join(missing)} "
-        "(OPENROUTER_OCR_MODEL is a model id from openrouter.ai/models; see ml/README.md)."
+        f"({model_setting} is a model id from openrouter.ai/models; see ml/README.md)."
     )
 
 
@@ -427,12 +461,15 @@ def read_catalogue(
     structured: bool,
     now: float,
     timeout: float = CATALOGUE_TIMEOUT_SECONDS,
+    needs_images: bool = True,
+    setting: str = OCR_MODEL_SETTING,
 ) -> Catalogue:
     """Read the model and its strict zero-retention endpoints from OpenRouter's public lists.
 
-    Raises `BackendConfigError` when the model is unknown, takes no images or
-    has no endpoint with zero retention and no Safety Retention, and a 503
-    `BackendError` when the lists cannot be read.
+    Raises `BackendConfigError` when the model is unknown, takes no images
+    (when `needs_images`) or has no endpoint with zero retention and no Safety
+    Retention, and a 503 `BackendError` when the lists cannot be read.
+    `setting` names the model's setting in the messages.
     """
     models = _get_json(transport, MODELS_URL, timeout)
     entry = next(
@@ -446,14 +483,14 @@ def read_catalogue(
     if entry is None:
         raise BackendConfigError(
             "openrouter_model_unknown",
-            f"OPENROUTER_OCR_MODEL {model!r} is not in OpenRouter's model list.",
+            f"{setting} {model!r} is not in OpenRouter's model list.",
         )
     architecture = entry.get("architecture")
     modalities = architecture.get("input_modalities") if isinstance(architecture, dict) else None
-    if not isinstance(modalities, list) or "image" not in modalities:
+    if needs_images and (not isinstance(modalities, list) or "image" not in modalities):
         raise BackendConfigError(
             "openrouter_model_without_images",
-            f"OPENROUTER_OCR_MODEL {model!r} does not take images.",
+            f"{setting} {model!r} does not take images.",
         )
     ids = {entry.get("id"), entry.get("canonical_slug")} - {None}
     listed = [
@@ -502,7 +539,7 @@ def read_catalogue(
     if not endpoints:
         raise BackendConfigError(
             "openrouter_no_zdr_endpoint",
-            f"OPENROUTER_OCR_MODEL {model!r} has no endpoint with zero data retention "
+            f"{setting} {model!r} has no endpoint with zero data retention "
             "and no Safety Retention; choose another model.",
         )
     tags = tuple(sorted({item["tag"] for item in endpoints}))
@@ -516,12 +553,23 @@ def read_catalogue(
             }
         )
     )
+    logprob_tags = tuple(
+        sorted(
+            {
+                item["tag"]
+                for item in endpoints
+                if isinstance(item.get("supported_parameters"), list)
+                and {"logprobs", "top_logprobs"} <= set(item["supported_parameters"])
+            }
+        )
+    )
     return Catalogue(
         model_version=str(entry.get("canonical_slug") or entry.get("id")),
         endpoints=tags,
         structured_endpoints=structured_tags if structured else (),
         providers=frozenset(_provider_key(item["provider_name"]) for item in endpoints),
         read_at=now,
+        logprob_endpoints=logprob_tags,
     )
 
 
@@ -551,59 +599,60 @@ def _data(document: Any) -> list[Any]:
     raise _catalogue_unavailable("unexpected shape")
 
 
-class OpenRouterBackend(Backend):
-    name = "openrouter"
+class OpenRouterClient:
+    """One hosted model behind the zero-retention rules: catalogue, key, calls, accounting.
+
+    `model_setting` is the setting that names the model (`OPENROUTER_OCR_MODEL`,
+    `OPENROUTER_CATEGORISE_MODEL`); `needs_images` refuses a model that takes no
+    images. A given transport (the tests' fake) is used again after `stop()`;
+    without one, a new HTTP client is made when the first call needs it.
+    """
 
     def __init__(
         self,
-        settings: Settings | None = None,
+        settings: Settings,
+        model_setting: str,
+        *,
+        needs_images: bool,
         transport: Transport | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        super().__init__(settings)
-        # A given transport (the tests' fake) is used again after `stop()`; without
-        # one, a new HTTP client is made when the first call needs it.
+        self.settings = settings
+        self.model_setting = model_setting
+        self.needs_images = needs_images
         self._make_transport: Callable[[], Transport] = (
             (lambda: transport) if transport is not None else HttpxTransport
         )
         self._transport: Transport | None = None
         self._clock = clock
-        self._model = _setting(self.settings.openrouter_ocr_model)
-        self.model_name = self._model or "not-configured"
-        self.categoriser_model_name = self.model_name
+        self.model = _setting(getattr(settings, model_setting.lower()))
+        self.model_name = self.model or "not-configured"
         # The model's dated slug, known once the catalogue is read.
         self.model_version = NOT_STARTED
         self._catalogue: Catalogue | None = None
         self._lock = threading.Lock()
-        # Set when an answer came from a provider outside the list: from then on
-        # nothing is sent until the service is restarted.
-        self._halted = False
-        # One chat call at a time, from sending to checking the provider, so no
-        # request can slip out after another one found a wrong provider. The Rails
-        # OCR queue reads one receipt at a time anyway.
-        self._call_lock = threading.Lock()
-
-    # Start-up -----------------------------------------------------------------
 
     def start(self) -> None:
         """Check the settings and read the catalogue.
 
         Without a model the service refuses to start, with a message naming what
-        to set. Without a key it starts, logs that, and `/ocr` answers 501
-        `openrouter_key_missing`. A model that is unknown, takes no images or has
-        no strict zero-retention endpoint stops it too. A catalogue that cannot
-        be read now (no network) is only logged: it is read again before the
-        first call, and no call is made without it.
+        to set. Without a key it starts, logs that, and every call answers 501
+        `openrouter_key_missing`. A model that is unknown, takes no images (when
+        it must) or has no strict zero-retention endpoint stops it too. A
+        catalogue that cannot be read now (no network) is only logged: it is
+        read again before the first call, and no call is made without it.
         """
-        missing = missing_settings(self.settings)
-        if "OPENROUTER_OCR_MODEL" in missing:
-            raise BackendConfigError("openrouter_model_missing", _missing_message(missing))
+        missing = missing_settings(self.settings, self.model_setting)
+        if self.model_setting in missing:
+            raise BackendConfigError(
+                "openrouter_model_missing", _missing_message(missing, self.model_setting)
+            )
         if missing:
-            logger.error(_missing_message(missing))
+            logger.error(_missing_message(missing, self.model_setting))
         elif not key_is_valid(self.settings):
             logger.error(_INVALID_KEY_MESSAGE)
         try:
-            self._current_catalogue()
+            self.current_catalogue()
         except BackendConfigError:
             raise
         except BackendError as error:
@@ -621,42 +670,214 @@ class OpenRouterBackend(Backend):
         """The last catalogue read (the allowed endpoints), or None before the first."""
         return self._catalogue
 
-    def _transport_or_new(self) -> Transport:
+    def transport_or_new(self) -> Transport:
         if self._transport is None:
             self._transport = self._make_transport()
         return self._transport
 
-    def _current_catalogue(self, timeout: float = CATALOGUE_TIMEOUT_SECONDS) -> Catalogue:
+    def current_catalogue(self, timeout: float = CATALOGUE_TIMEOUT_SECONDS) -> Catalogue:
         """The catalogue, read again when it is older than `CATALOGUE_TTL_SECONDS`."""
-        assert self._model is not None
+        assert self.model is not None
         with self._lock:
             now = self._clock()
             catalogue = self._catalogue
             if catalogue is None or now - catalogue.read_at >= CATALOGUE_TTL_SECONDS:
                 catalogue = read_catalogue(
-                    self._transport_or_new(),
-                    self._model,
+                    self.transport_or_new(),
+                    self.model,
                     structured=self.settings.openrouter_structured_output,
                     now=now,
                     timeout=timeout,
+                    needs_images=self.needs_images,
+                    setting=self.model_setting,
                 )
                 self._catalogue = catalogue
                 self.model_version = catalogue.model_version
             return catalogue
 
-    # One receipt ----------------------------------------------------------------
-
-    def _api_key(self) -> str:
-        missing = missing_settings(self.settings)
-        if "OPENROUTER_OCR_MODEL" in missing:
-            raise BackendConfigError("openrouter_model_missing", _missing_message(missing))
+    def api_key(self) -> str:
+        missing = missing_settings(self.settings, self.model_setting)
+        if self.model_setting in missing:
+            raise BackendConfigError(
+                "openrouter_model_missing", _missing_message(missing, self.model_setting)
+            )
         if missing:
-            raise BackendConfigError("openrouter_key_missing", _missing_message(missing))
+            raise BackendConfigError(
+                "openrouter_key_missing", _missing_message(missing, self.model_setting)
+            )
         if not key_is_valid(self.settings):
             raise BackendConfigError("openrouter_key_invalid", _INVALID_KEY_MESSAGE)
         key = self.settings.openrouter_api_key
         assert key is not None
         return key.get_secret_value().strip()
+
+    def check_not_halted(self) -> None:
+        if _HALT.is_set():
+            raise _provider_unverified()
+
+    def call(
+        self,
+        body: Mapping[str, Any],
+        catalogue: Catalogue,
+        calls: list["Call"],
+        deadline: float,
+        *,
+        structured: bool,
+    ) -> Answer:
+        """One chat call within `deadline`; its accounting goes into `calls`.
+
+        `body` must carry `provider` from `provider_preferences`. Calls of every
+        task go one at a time, and the halt and the deadline are checked after
+        waiting for the previous one.
+        """
+        with _CALL_LOCK:
+            return self._call_alone(body, catalogue, calls, deadline, structured)
+
+    def _call_alone(
+        self,
+        body: Mapping[str, Any],
+        catalogue: Catalogue,
+        calls: list["Call"],
+        deadline: float,
+        structured: bool,
+    ) -> Answer:
+        transport = self.transport_or_new()
+        api_key = self.api_key()
+        self.check_not_halted()
+        started = time.perf_counter()
+        remaining = deadline - started
+        needed = max([MIN_CALL_SECONDS, *(call.seconds for call in calls)])
+        if remaining < needed:
+            raise _out_of_time()
+
+        def lost() -> None:
+            # The request may have reached the model and been paid for; its cost is
+            # unknown, which makes the task's cost unknown rather than too low.
+            calls.append(Call(seconds=time.perf_counter() - started, structured_output=structured))
+
+        try:
+            response = transport.post_json(CHAT_URL, body, api_key=api_key, timeout=remaining)
+        except httpx.ConnectTimeout:
+            raise _out_of_time() from None
+        except httpx.TimeoutException:
+            lost()
+            raise _out_of_time() from None
+        except httpx.ConnectError:
+            raise _unreachable() from None
+        except httpx.HTTPError:
+            lost()
+            raise _unreachable() from None
+        seconds = time.perf_counter() - started
+        if response.status_code != 200:
+            raise upstream_error(response.status_code)
+        return self._read_answer(response.text, seconds, catalogue, calls, structured)
+
+    def _read_answer(
+        self,
+        text: str,
+        seconds: float,
+        catalogue: Catalogue,
+        calls: list["Call"],
+        structured: bool,
+    ) -> Answer:
+        """The answer. The call's accounting goes into `calls` before any check."""
+        bad = BackendError(
+            502, "openrouter_bad_response", "The hosted model's answer had an unexpected shape."
+        )
+        try:
+            document = _decode(text)
+        except ValueError:
+            document = None
+        if not isinstance(document, dict):
+            calls.append(Call(seconds=seconds, structured_output=structured))
+            raise bad
+        usage = document.get("usage") if isinstance(document.get("usage"), dict) else {}
+        provider = document.get("provider")
+        choices = document.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        call = Call(
+            seconds=seconds,
+            prompt_tokens=_count(usage.get("prompt_tokens")),
+            completion_tokens=_count(usage.get("completion_tokens")),
+            cost_usd=_decimal(usage.get("cost")),
+            provider=provider if isinstance(provider, str) else None,
+            model=document.get("model") if isinstance(document.get("model"), str) else None,
+            finish_reason=(
+                choice.get("finish_reason")
+                if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str)
+                else None
+            ),
+            structured_output=structured,
+        )
+        calls.append(call)
+        embedded = _embedded_error(document, choice)
+        usable = (
+            isinstance(choice, dict)
+            and embedded is None
+            and isinstance(choice.get("message"), dict)
+        )
+        if not usable and call.provider is None:
+            # An error reported with HTTP 200 before any provider answered.
+            raise embedded or _upstream_failed()
+        if call.provider is None or _provider_key(call.provider) not in catalogue.providers:
+            # The request named only strict zero-retention endpoints; an answer from
+            # anywhere else (or from an unnamed provider) is not accepted, and nothing
+            # more is sent until a person has looked at it and restarted the service.
+            _HALT.set()
+            logger.error(
+                "OpenRouter answered from a provider outside the zero-retention list; "
+                "nothing more is sent to OpenRouter until the service is restarted"
+            )
+            raise _provider_unverified()
+        if not usable:
+            raise embedded or _upstream_failed()
+        assert isinstance(choice, dict)
+        logprobs = choice.get("logprobs")
+        content = logprobs.get("content") if isinstance(logprobs, dict) else None
+        return Answer(
+            text=_text_of(choice["message"].get("content")),
+            logprobs=content if isinstance(content, list) else None,
+        )
+
+
+class OpenRouterBackend(Backend):
+    name = "openrouter"
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        transport: Transport | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(settings)
+        self._client = OpenRouterClient(
+            self.settings, OCR_MODEL_SETTING, needs_images=True, transport=transport, clock=clock
+        )
+        self._model = self._client.model
+        self.model_name = self._client.model_name
+
+    @property
+    def model_version(self) -> str:  # type: ignore[override]
+        return self._client.model_version
+
+    # Start-up -----------------------------------------------------------------
+
+    def start(self) -> None:
+        """Check the settings and read the catalogue (`OpenRouterClient.start`)."""
+        self._client.start()
+
+    def stop(self) -> None:
+        self._client.stop()
+
+    @property
+    def catalogue(self) -> Catalogue | None:
+        """The last catalogue read (the allowed endpoints), or None before the first."""
+        return self._client.catalogue
+
+    def _transport_or_new(self) -> Transport:
+        return self._client.transport_or_new()
+
+    # One receipt ----------------------------------------------------------------
 
     def request_body(
         self,
@@ -694,150 +915,51 @@ class OpenRouterBackend(Backend):
             }
         return body
 
-    def _call(
-        self, body: Mapping[str, Any], catalogue: Catalogue, calls: list[Call], deadline: float
-    ) -> str:
-        with self._call_lock:
-            return self._call_alone(body, catalogue, calls, deadline)
-
-    def _call_alone(
-        self, body: Mapping[str, Any], catalogue: Catalogue, calls: list[Call], deadline: float
-    ) -> str:
-        """One call, under `_call_lock`: the halt and the deadline are checked after waiting."""
-        transport = self._transport_or_new()
-        api_key = self._api_key()
-        self._check_not_halted()
-        started = time.perf_counter()
-        remaining = deadline - started
-        needed = max([MIN_CALL_SECONDS, *(call.seconds for call in calls)])
-        if remaining < needed:
-            raise _out_of_time()
-        structured = bool(catalogue.structured_endpoints)
-
-        def lost() -> None:
-            # The request may have reached the model and been paid for; its cost is
-            # unknown, which makes the receipt's cost unknown rather than too low.
-            calls.append(Call(seconds=time.perf_counter() - started, structured_output=structured))
-
-        try:
-            response = transport.post_json(CHAT_URL, body, api_key=api_key, timeout=remaining)
-        except httpx.ConnectTimeout:
-            raise _out_of_time() from None
-        except httpx.TimeoutException:
-            lost()
-            raise _out_of_time() from None
-        except httpx.ConnectError:
-            raise _unreachable() from None
-        except httpx.HTTPError:
-            lost()
-            raise _unreachable() from None
-        seconds = time.perf_counter() - started
-        if response.status_code != 200:
-            raise upstream_error(response.status_code)
-        return self._read_answer(response.text, seconds, catalogue, calls)
-
-    def _read_answer(
-        self, text: str, seconds: float, catalogue: Catalogue, calls: list[Call]
-    ) -> str:
-        """The answer text. The call's accounting goes into `calls` before any check."""
-        bad = BackendError(
-            502, "openrouter_bad_response", "The hosted model's answer had an unexpected shape."
-        )
-        try:
-            document = _decode(text)
-        except ValueError:
-            document = None
-        if not isinstance(document, dict):
-            calls.append(
-                Call(seconds=seconds, structured_output=bool(catalogue.structured_endpoints))
-            )
-            raise bad
-        usage = document.get("usage") if isinstance(document.get("usage"), dict) else {}
-        provider = document.get("provider")
-        choices = document.get("choices")
-        choice = choices[0] if isinstance(choices, list) and choices else None
-        call = Call(
-            seconds=seconds,
-            prompt_tokens=_count(usage.get("prompt_tokens")),
-            completion_tokens=_count(usage.get("completion_tokens")),
-            cost_usd=_decimal(usage.get("cost")),
-            provider=provider if isinstance(provider, str) else None,
-            model=document.get("model") if isinstance(document.get("model"), str) else None,
-            finish_reason=(
-                choice.get("finish_reason")
-                if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str)
-                else None
-            ),
-            structured_output=bool(catalogue.structured_endpoints),
-        )
-        calls.append(call)
-        embedded = _embedded_error(document, choice)
-        usable = (
-            isinstance(choice, dict)
-            and embedded is None
-            and isinstance(choice.get("message"), dict)
-        )
-        if not usable and call.provider is None:
-            # An error reported with HTTP 200 before any provider answered.
-            raise embedded or _upstream_failed()
-        if call.provider is None or _provider_key(call.provider) not in catalogue.providers:
-            # The request named only strict zero-retention endpoints; an answer from
-            # anywhere else (or from an unnamed provider) is not accepted, and nothing
-            # more is sent until a person has looked at it and restarted the service.
-            self._halted = True
-            logger.error(
-                "OpenRouter answered from a provider outside the zero-retention list; "
-                "the openrouter backend sends nothing more until the service is restarted"
-            )
-            raise _provider_unverified()
-        if not usable:
-            raise embedded or _upstream_failed()
-        assert isinstance(choice, dict)
-        return _text_of(choice["message"].get("content"))
-
-    def _check_not_halted(self) -> None:
-        if self._halted:
-            raise _provider_unverified()
-
     def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
         """Read one receipt within `OPENROUTER_TIMEOUT` seconds, catalogue and repair included."""
         deadline = time.perf_counter() + self.settings.openrouter_timeout
-        self._api_key()
-        self._check_not_halted()
-        catalogue = self._current_catalogue(
+        self._client.api_key()
+        self._client.check_not_halted()
+        catalogue = self._client.current_catalogue(
             timeout=min(CATALOGUE_TIMEOUT_SECONDS, self.settings.openrouter_timeout)
         )
         pictures = prepare_images(images, self.settings.openrouter_ocr_image_max_side)
         calls: list[Call] = []
+        structured = bool(catalogue.structured_endpoints)
 
         def ask(repair: Repair | None) -> str:
             body = self.request_body(catalogue, build_messages(len(pictures), repair), pictures)
-            return self._call(body, catalogue, calls, deadline)
+            return self._client.call(body, catalogue, calls, deadline, structured=structured).text
 
         try:
             parsed = read_with_repair(ask)
         except OcrParseError as error:
-            error.diagnostics.update(_accounting(calls))
+            error.diagnostics.update(accounting(calls))
             raise
         except BackendError as error:
-            error.diagnostics = _accounting(calls)
+            error.diagnostics = accounting(calls)
             raise
         receipt, report = postprocess(parsed.receipt)
         return Extraction(
             receipt=receipt,
             prompt_version=PROMPT_VERSION,
             repaired=parsed.repaired,
-            diagnostics={**_accounting(calls), "postprocess": report.as_dict()},
+            diagnostics={**accounting(calls), "postprocess": report.as_dict()},
         )
-
-    def categorise(self, texts: Sequence[str]) -> list[CategoriseResult]:
-        raise BackendNotImplementedError("The openrouter backend cannot categorise items yet.")
 
 
 def _provider_preferences(catalogue: Catalogue) -> dict[str, Any]:
-    """The routing preferences: the privacy constants plus the allowed endpoints."""
+    """The OCR routing: the structured-output endpoints when there are any, else all."""
     structured = bool(catalogue.structured_endpoints)
     endpoints = catalogue.structured_endpoints if structured else catalogue.endpoints
+    return provider_preferences(endpoints)
+
+
+def provider_preferences(endpoints: Sequence[str]) -> dict[str, Any]:
+    """The routing preferences: the privacy constants plus the allowed endpoints.
+
+    `endpoints` must come from a `Catalogue` (strict zero-retention endpoints only).
+    """
     # No `require_parameters`: `only` already names endpoints that support what is
     # asked for, and the flag would also exclude any endpoint that does not list
     # `temperature` or `max_tokens`.
@@ -847,7 +969,7 @@ def _provider_preferences(catalogue: Catalogue) -> dict[str, Any]:
     return preferences
 
 
-def _accounting(calls: Sequence[Call]) -> dict[str, Any]:
+def accounting(calls: Sequence[Call]) -> dict[str, Any]:
     """Totals and per-call accounting of the model calls. Never the answer text.
 
     `cost_usd` is the sum of the costs OpenRouter reported, as a decimal

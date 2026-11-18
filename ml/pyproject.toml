@@ -55,9 +55,10 @@ filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true
-# The real mlx-vlm model call needs Apple silicon and model weights; the tests use
-# a fake generator instead. It was checked by hand with both models.
-omit = ["app/backends/mlx_vlm_generator.py"]
+# The real mlx-vlm model calls need Apple silicon and model weights; the tests use
+# a fake generator and a fake token model instead. They were checked by hand
+# (`python -m evaluation.item_sanity --backend mlx --with-ocr-model`).
+omit = ["app/backends/mlx_vlm_generator.py", "app/categorise/mlx_token_model.py"]
 
 [tool.ruff]
 line-length = 100
@@ -79,5 +80,10 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 # Receipts are printed in Ukrainian: the Cyrillic letters in these files are meant.
 "app/ocr/*.py" = ["RUF001", "RUF002", "RUF003"]
+"app/categorise/prompt.py" = ["RUF001", "RUF002", "RUF003"]
+"evaluation/label_memory.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_categorise*.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_label_memory.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_item_categories*.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/test_ocr_*.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/test_mlx_backend.py" = ["RUF001"]

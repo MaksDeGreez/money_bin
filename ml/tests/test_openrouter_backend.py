@@ -31,6 +31,7 @@ from app.backends.openrouter import (
     encode_jpeg,
     key_is_valid,
     read_catalogue,
+    reset_halt,
     upstream_error,
 )
 from app.config import Settings
@@ -581,6 +582,7 @@ def test_the_key_never_reaches_a_repr_a_log_an_error_or_the_diagnostics(
     for _ in answers:
         response = ocr(client)
         texts.append(response.text)
+    reset_halt()  # the halt lasts until the service restarts
     backend2, _ = make_backend()
     texts.append(json.dumps(backend2.extract_receipt([jpeg()]).diagnostics))
 
@@ -596,19 +598,12 @@ def test_health_reports_the_dated_slug_once_started() -> None:
     with TestClient(create_app(backend=backend)) as client:
         body = client.get("/health").json()
 
-    assert body == {
+    assert {key: body[key] for key in ("status", "backend", "model_name", "model_version")} == {
         "status": "ok",
         "backend": "openrouter",
         "model_name": MODEL,
         "model_version": DATED_MODEL,
     }
-
-
-def test_categorise_is_not_implemented() -> None:
-    backend, _ = make_backend()
-
-    with pytest.raises(NotImplementedError):
-        backend.categorise(["milk"])
 
 
 def test_stop_closes_the_transport_and_is_safe_twice() -> None:

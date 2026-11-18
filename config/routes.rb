@@ -21,6 +21,7 @@ Rails.application.routes.draw do
   resources :receipts, only: %i[ index show new create update ] do
     post :read, on: :member
     post :enter_by_hand, on: :member
+    post :suggest_categories, on: :member
     post :read_all, on: :collection
     # A person's check of the receipt's tax-service record against the print (POST records or replaces it,
     # DELETE forgets it).

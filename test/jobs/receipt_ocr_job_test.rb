@@ -8,6 +8,9 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
   include ReceiptImages
   include Turbo::Broadcastable::TestHelper
 
+  # The stub OCR answer's items get suggestions after every successful read.
+  setup { stub_ml_categorise([ "Oat milk 1 l", "Apples" ]) }
+
   def new_receipt(*colours)
     colours = [ 10 ] if colours.empty?
     Receipt.create!(images: colours.map { |red| image_upload(png_bytes(red:)) })
@@ -29,6 +32,51 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     assert_equal "Sample Grocer", receipt.merchant_name
     assert_equal [ "Oat milk 1 l", "Apples" ], receipt.items.map(&:name)
     assert_equal ml_ocr_body.deep_stringify_keys, receipt.ocr_raw
+  end
+
+  test "after the read, the items get category suggestions in the same job" do
+    stub_ml_ocr
+    receipt = new_receipt
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    receipt.reload
+    assert_equal [ "groceries/groceries" ] * 2, receipt.items.map { |item| item.suggested_category.slug }
+    assert_equal [ "model" ] * 2, receipt.items.map(&:suggested_by)
+    assert_equal "stub-categoriser", receipt.categoriser_model_name
+    assert_nil receipt.categoriser_error
+    request = JSON.parse(ml_requests(:categorise).sole.body)
+    assert_equal [ "Oat milk 1 l", "Apples" ], request["texts"]
+    assert_equal "Sample Grocer", request["merchant"]
+  end
+
+  test "a categoriser that cannot answer leaves the receipt extracted, without suggestions" do
+    stub_ml_ocr
+    stub_ml_error(:categorise, status: 501, code: "backend_not_implemented")
+    receipt = new_receipt
+
+    ReceiptOcrJob.perform_now(receipt)
+
+    receipt.reload
+    assert receipt.extracted?
+    assert_equal 2, receipt.items.size
+    assert receipt.items.none?(&:suggested_category_id)
+    assert_equal "backend_not_implemented", receipt.categoriser_error
+    assert_nil receipt.categoriser_model_name
+  end
+
+  test "a bug while suggesting is reported and recorded, and the read stays" do
+    stub_ml_ocr
+    receipt = new_receipt
+    failing = ->(*) { raise ArgumentError, "a bug" }
+
+    with_singleton_method(Receipts::SuggestCategories, :call, failing) do
+      assert_nothing_raised { ReceiptOcrJob.perform_now(receipt) }
+    end
+
+    receipt.reload
+    assert receipt.extracted?
+    assert_equal "internal_error", receipt.categoriser_error
   end
 
   test "sends every photo in upload order with its content type" do
@@ -345,7 +393,7 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
 
   # --- live updates (Receipts::LiveUpdate)
 
-  test "the receipt's page and the list are refreshed when the job starts and when it finishes" do
+  test "the receipt's page and the list are refreshed when the job starts, with the result and with the suggestions" do
     receipt = new_receipt
     during = nil
     stub_request(:post, ml_url("/ocr")).to_return do
@@ -356,8 +404,8 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     ReceiptOcrJob.perform_now(receipt)
 
     assert_equal 1, during, "one refresh when the job starts, before the service answers"
-    assert_turbo_stream_broadcasts receipt, count: 2
-    assert_turbo_stream_broadcasts Receipts::LiveUpdate::STREAM, count: 2
+    assert_turbo_stream_broadcasts receipt, count: 3
+    assert_turbo_stream_broadcasts Receipts::LiveUpdate::STREAM, count: 3
   end
 
   test "the receipt's page is refreshed when the job fails" do
@@ -367,5 +415,18 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
     ReceiptOcrJob.perform_now(receipt)
 
     assert_turbo_stream_broadcasts receipt, count: 2
+  end
+
+  test "with suggestions switched off, the read stores no suggestion and names no categoriser" do
+    stub_ml_ocr
+    receipt = new_receipt
+
+    with_env("CATEGORISE_BACKEND" => "off") { ReceiptOcrJob.perform_now(receipt) }
+
+    receipt.reload
+    assert receipt.extracted?
+    assert receipt.items.none?(&:suggested_category_id)
+    assert_nil receipt.categoriser_model_name
+    assert_empty ml_requests(:categorise)
   end
 end

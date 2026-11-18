@@ -6,7 +6,8 @@ require "securerandom"
 #   client = MlClient.new
 #   client.health                                       # => MlClient::Health
 #   client.ocr([ MlClient::Image.new(io:, filename:, content_type:) ])  # => MlClient::OcrResult
-#   client.categorise([ "milk 2.5% 900g" ])             # => MlClient::CategoriseResult
+#   client.categorise([ "Мол 900г" ], categories: Categories::ItemCandidates.payload, merchant: "Shop")
+#                                                       # => MlClient::CategoriseResult
 #
 # Every result keeps the parsed response body (`body`, a deeply frozen Hash with string keys) next to the
 # parts the app reads. Money and quantities stay decimal strings here; the caller parses them with
@@ -28,12 +29,13 @@ require "securerandom"
 #
 # Timeouts are in seconds. Each has a default and an environment variable (see .env.example):
 # ML_SERVICE_OPEN_TIMEOUT for opening the connection, ML_SERVICE_OCR_TIMEOUT for reading an OCR answer (a
-# real model can take a while) and ML_SERVICE_CATEGORISE_TIMEOUT for a categorisation answer.
+# real model can take a while) and ML_SERVICE_CATEGORISE_TIMEOUT for a categorisation answer (one receipt's
+# items: a local model takes under a second per item, but it may first finish another receipt's OCR).
 class MlClient
   DEFAULT_URL = "http://127.0.0.1:8100".freeze
   DEFAULT_OPEN_TIMEOUT = 2
   DEFAULT_OCR_TIMEOUT = 120
-  DEFAULT_CATEGORISE_TIMEOUT = 30
+  DEFAULT_CATEGORISE_TIMEOUT = 120
   HEALTH_TIMEOUT = 5
   MAX_IMAGES = 3
   # The longest service error message kept in an exception.
@@ -47,8 +49,11 @@ class MlClient
   # currency and items, as the service sent them.
   OcrResult = Data.define(:body, :receipt, :backend, :model_name, :model_version)
   # `results` is the "results" part of the body: one Hash per text, in the order of the texts, each with
-  # "text" and three "candidates" ({ "category_slug", "score" }, best first).
-  CategoriseResult = Data.define(:body, :results, :backend, :model_name, :model_version)
+  # "text" and 1 to 3 "candidates" ({ "category_slug", "score" }, best first; every slug is one of the
+  # categories sent). `calibrated` says whether the best score was calibrated on labelled items;
+  # `score_kind` where the scores come from (ml/README.md, "How confidence is computed").
+  CategoriseResult = Data.define(:body, :results, :backend, :model_name, :model_version, :calibrated, :score_kind,
+    :prompt_version)
 
   class Error < StandardError
     # A short machine-readable name for the failure.
@@ -133,24 +138,27 @@ class MlClient
     OcrResult.new(body:, receipt:, **backend_info(body))
   end
 
-  # Asks for category suggestions for item texts (1 to 200, none blank; the service checks the limits).
-  def categorise(texts)
+  # Asks for category suggestions for the items of ONE receipt: `texts` (1 to 200, none blank), `categories` the
+  # candidate list ({ slug:, name:, description:, group: }, Categories::ItemCandidates.payload) and the shop's
+  # name as context for a local model (a hosted categoriser never sends it on). The answer may only name the
+  # slugs sent: any other slug, a missing item or a score outside 0..1 is an InvalidResponse.
+  def categorise(texts, categories:, merchant: nil)
+    texts = Array(texts)
+    slugs = categories.map { |category| (category[:slug] || category["slug"]).to_s }.to_set
     post = Net::HTTP::Post.new(url("/categorise"))
     post["Content-Type"] = "application/json"
-    post.body = JSON.generate({ texts: Array(texts) })
+    post.body = JSON.generate({ texts:, categories:, merchant: merchant.presence })
 
     body = request(post, read_timeout: categorise_timeout)
-    require_keys(body, %w[results backend model_name model_version], "")
+    require_keys(body, %w[results backend model_name model_version calibrated score_kind prompt_version], "")
     require_list_of_hashes(body["results"], "results")
-    body["results"].each_with_index do |result, index|
-      require_keys(result, %w[text candidates], "results[#{index}].")
-      require_list_of_hashes(result["candidates"], "results[#{index}].candidates")
-      result["candidates"].each_with_index do |candidate, position|
-        require_keys(candidate, %w[category_slug score], "results[#{index}].candidates[#{position}].")
-      end
+    if body["results"].size != texts.size
+      raise InvalidResponse, "the ML service answered #{body['results'].size} results for #{texts.size} texts"
     end
+    body["results"].each_with_index { |result, index| check_result(result, index, slugs) }
 
-    CategoriseResult.new(body:, results: body["results"], **backend_info(body))
+    CategoriseResult.new(body:, results: body["results"], calibrated: body["calibrated"] == true,
+      score_kind: body["score_kind"], prompt_version: body["prompt_version"], **backend_info(body))
   end
 
   private
@@ -216,6 +224,21 @@ class MlClient
 
     def backend_info(body)
       body.slice("backend", "model_name", "model_version").symbolize_keys
+    end
+
+    def check_result(result, index, slugs)
+      require_keys(result, %w[text candidates], "results[#{index}].")
+      require_list_of_hashes(result["candidates"], "results[#{index}].candidates")
+      raise InvalidResponse, "the ML service answer has no candidate at results[#{index}]" if result["candidates"].empty?
+
+      result["candidates"].each_with_index do |candidate, position|
+        name = "results[#{index}].candidates[#{position}]"
+        require_keys(candidate, %w[category_slug score], "#{name}.")
+        raise InvalidResponse, "the ML service answer names a category it was not given at #{name}" unless slugs.include?(candidate["category_slug"])
+
+        score = candidate["score"]
+        raise InvalidResponse, "the ML service answer has a score outside 0..1 at #{name}" unless score.is_a?(Numeric) && score.between?(0, 1)
+      end
     end
 
     def require_hash(value, name)

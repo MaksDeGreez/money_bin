@@ -4,7 +4,7 @@ The service checks each file's signature (its first bytes) against the declared
 type, so every test image starts with the real signature of its type.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -26,10 +26,15 @@ ClientFactory = Callable[..., TestClient]
 OPENROUTER_VARIABLES = (
     "OPENROUTER_API_KEY",
     "OPENROUTER_OCR_MODEL",
+    "OPENROUTER_CATEGORISE_MODEL",
     "OPENROUTER_TIMEOUT",
     "OPENROUTER_MAX_TOKENS",
     "OPENROUTER_OCR_IMAGE_MAX_SIDE",
     "OPENROUTER_STRUCTURED_OUTPUT",
+    "OCR_BACKEND",
+    "CATEGORISE_BACKEND",
+    "MLX_CATEGORISE_MODEL",
+    "CATEGORISE_CALIBRATION_FILE",
 )
 
 
@@ -51,6 +56,16 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def no_hosted_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in OPENROUTER_VARIABLES:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_openrouter_halt() -> Iterator[None]:
+    """A halt after a wrong provider lasts until the service restarts; each test is a restart."""
+    from app.backends.openrouter import reset_halt
+
+    reset_halt()
+    yield
+    reset_halt()
 
 
 def image_part(

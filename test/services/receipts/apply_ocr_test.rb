@@ -317,7 +317,8 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
   test "stores the prompt version and clears what filled the form before: a fill from the tax-service record, the categoriser" do
     receipt = receipts(:corner_receipt)
     receipt.update_columns(filled_from: "dps_xml", categoriser_model_name: "invented-categoriser", ocr_prompt_version: "old",
-      suggested_category_id: categories(:cafes).id, suggested_category_confidence: 0.5)
+      suggested_category_id: categories(:cafes).id, suggested_category_confidence: 0.5,
+      categorised_at: 1.hour.ago, categoriser_error: "ml_timeout")
 
     apply(receipt, ml_ocr_result(prompt_version: " p-1a2b "))
     receipt.reload
@@ -326,6 +327,8 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
     assert_nil receipt.categoriser_model_name
     assert_nil receipt.suggested_category_id, "a slip's own suggestion goes with its categoriser"
     assert_nil receipt.suggested_category_confidence
+    assert_nil receipt.categorised_at, "the new items are not categorised yet"
+    assert_nil receipt.categoriser_error, "an earlier failure is not the new items'"
 
     apply(receipt, ml_ocr_result(prompt_version: nil))
     assert_nil receipt.reload.ocr_prompt_version, "the stub sends none"

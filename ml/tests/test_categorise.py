@@ -1,80 +1,162 @@
+"""The `/categorise` contract, through the stub categoriser."""
+
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.backends.stub import STUB_CATEGORY_SLUGS
+from app.categorise import CATEGORISERS, UnknownCategoriserError, create_categoriser
+from app.categorise.mlx import MlxCategoriser
+from app.categorise.off import OffCategoriser
+from app.categorise.openrouter import OpenRouterCategoriser
+from app.categorise.prompt import categories_version
+from app.categorise.stub import StubCategoriser
+from app.config import Settings
+from app.main import create_app
+from tests.categorise_helpers import CATEGORIES, OPTIONS, SLUGS
 from tests.conftest import ClientFactory
 
-TEXTS = ["milk 2.5% 900g", "bus ticket", "pain relief tablets", "petrol 95"]
+TEXTS = ["Мол2,5%900г", "Квиток автобус", "Парацетамол №10", "А-95"]
 
 
-def test_categorise_returns_three_sorted_candidates_per_text(client: TestClient) -> None:
-    response = client.post("/categorise", json={"texts": TEXTS})
+def body(texts: list[str] | None = None, **extra: Any) -> dict[str, Any]:
+    return {"texts": TEXTS if texts is None else texts, "categories": CATEGORIES, **extra}
+
+
+def test_categorise_returns_up_to_three_sorted_candidates_per_text(client: TestClient) -> None:
+    response = client.post("/categorise", json=body())
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["backend"] == "stub"
-    assert body["model_name"] == "stub-categoriser"
-    assert body["model_version"] == "0.1.0"
-    for result in body["results"]:
+    answer = response.json()
+    assert answer["backend"] == "stub"
+    assert answer["model_name"] == "stub-categoriser"
+    assert answer["model_version"] == "0.2.0"
+    assert answer["score_kind"] == "stub"
+    assert answer["calibrated"] is False
+    assert answer["prompt_version"] is None
+    assert answer["categories_version"] == categories_version(OPTIONS)
+    assert answer["cost_usd"] is None
+    assert isinstance(answer["elapsed_seconds"], str)
+    for result in answer["results"]:
         candidates = result["candidates"]
-        assert len(candidates) == 3
+        assert 1 <= len(candidates) <= 3
         scores = [candidate["score"] for candidate in candidates]
         assert scores == sorted(scores, reverse=True)
         assert all(0.0 <= score <= 1.0 for score in scores)
         assert sum(scores) <= 1.0 + 1e-9
         slugs = [candidate["category_slug"] for candidate in candidates]
-        assert len(set(slugs)) == 3
-        assert set(slugs) <= set(STUB_CATEGORY_SLUGS)
+        assert len(set(slugs)) == len(slugs)
+        assert set(slugs) <= set(SLUGS)
 
 
 def test_categorise_keeps_the_order_of_texts(client: TestClient) -> None:
-    texts = [*TEXTS, "milk 2.5% 900g"]  # duplicates are allowed
+    texts = [*TEXTS, TEXTS[0]]  # duplicates are allowed
 
-    results = client.post("/categorise", json={"texts": texts}).json()["results"]
+    results = client.post("/categorise", json=body(texts)).json()["results"]
 
     assert [result["text"] for result in results] == texts
 
 
 def test_categorise_is_deterministic(client: TestClient, make_client: ClientFactory) -> None:
-    first = client.post("/categorise", json={"texts": TEXTS}).json()
-    second = make_client("stub").post("/categorise", json={"texts": list(reversed(TEXTS))}).json()
+    first = client.post("/categorise", json=body()).json()
+    second = make_client("stub").post("/categorise", json=body(list(reversed(TEXTS)))).json()
 
     by_text = {result["text"]: result for result in second["results"]}
     for result in first["results"]:
         assert by_text[result["text"]] == result
 
 
-def test_categorise_accepts_two_hundred_texts(client: TestClient) -> None:
-    texts = [f"item {n}" for n in range(200)]
+def test_the_merchant_is_optional_and_accepted(client: TestClient) -> None:
+    response = client.post("/categorise", json=body(merchant="Аптека Добробут"))
 
-    response = client.post("/categorise", json={"texts": texts})
+    assert response.status_code == 200
+
+
+def test_categorise_accepts_two_hundred_texts(client: TestClient) -> None:
+    response = client.post("/categorise", json=body([f"item {n}" for n in range(200)]))
 
     assert response.status_code == 200
     assert len(response.json()["results"]) == 200
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "field"),
     [
-        {},
-        {"texts": []},
-        {"texts": [f"item {n}" for n in range(201)]},
-        {"texts": [""]},
-        {"texts": ["milk", "   "]},
-        {"texts": [42]},
-        {"texts": "milk"},
+        ({}, "texts"),
+        ({"texts": []}, "texts"),
+        ({"texts": [f"item {n}" for n in range(201)]}, "texts"),
+        ({"texts": [""]}, "texts"),
+        ({"texts": ["milk", "   "]}, "texts"),
+        ({"texts": [42]}, "texts"),
+        ({"texts": "milk"}, "texts"),
+        ({"texts": ["x" * 301]}, "texts"),
+        ({"merchant": "x" * 301}, "merchant"),
     ],
-    ids=["missing", "empty-list", "too-many", "empty-text", "blank-text", "not-a-string", "str"],
+    ids=[
+        "missing",
+        "empty-list",
+        "too-many",
+        "empty-text",
+        "blank-text",
+        "not-a-string",
+        "str",
+        "too-long",
+        "merchant-too-long",
+    ],
 )
-def test_categorise_rejects_invalid_input(client: TestClient, payload: dict[str, Any]) -> None:
-    response = client.post("/categorise", json=payload)
+def test_categorise_rejects_invalid_texts(
+    client: TestClient, payload: dict[str, Any], field: str
+) -> None:
+    request = {"texts": ["milk"], "categories": CATEGORIES} | payload
+    if payload == {}:
+        del request["texts"]
+
+    response = client.post("/categorise", json=request)
 
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["code"] == "validation_error"
-    assert "texts" in error["message"]
+    assert field in error["message"]
+
+
+@pytest.mark.parametrize(
+    "categories",
+    [
+        None,
+        [],
+        CATEGORIES[:1],
+        [*CATEGORIES, CATEGORIES[0]],
+        [{**CATEGORIES[0], "slug": "groceries"}],
+        [{**CATEGORIES[0], "slug": "Groceries/Groceries"}, CATEGORIES[1]],
+        [{**CATEGORIES[0], "name": "  "}, CATEGORIES[1]],
+        [{**CATEGORIES[0], "group": ""}, CATEGORIES[1]],
+        [{"slug": "a/b"}, CATEGORIES[1]],
+        [CATEGORIES[0]] * 101,
+    ],
+    ids=[
+        "missing",
+        "empty",
+        "one",
+        "duplicate-slug",
+        "a-group-slug",
+        "upper-case",
+        "blank-name",
+        "blank-group",
+        "no-name",
+        "too-many",
+    ],
+)
+def test_categorise_rejects_a_bad_category_list(client: TestClient, categories: Any) -> None:
+    request: dict[str, Any] = {"texts": ["milk"]}
+    if categories is not None:
+        request["categories"] = categories
+
+    response = client.post("/categorise", json=request)
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "validation_error"
+    assert "categories" in error["message"]
 
 
 def test_categorise_rejects_a_body_that_is_not_json(client: TestClient) -> None:
@@ -84,3 +166,100 @@ def test_categorise_rejects_a_body_that_is_not_json(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_an_answer_outside_the_listed_categories_is_never_returned() -> None:
+    app = create_app(Settings())
+
+    class Rogue(StubCategoriser):
+        def categorise(self, request: Any) -> Any:
+            answer = super().categorise(request)
+            first = answer.candidates[0][0]
+            answer.candidates[0][0] = type(first)("made/up", first.score)
+            return answer
+
+    app.state.categoriser = Rogue()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/categorise", json=body())
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+
+
+def test_an_answer_with_too_few_items_is_never_returned() -> None:
+    app = create_app(Settings())
+
+    class Short(StubCategoriser):
+        def categorise(self, request: Any) -> Any:
+            answer = super().categorise(request)
+            return type(answer)(answer.candidates[:-1], answer.score_kind, None)
+
+    app.state.categoriser = Short()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    assert client.post("/categorise", json=body()).status_code == 500
+
+
+def test_texts_and_the_merchant_reach_the_categoriser_on_one_line_each() -> None:
+    seen: list[Any] = []
+
+    class Spy(StubCategoriser):
+        def categorise(self, request: Any) -> Any:
+            seen.append(request)
+            return super().categorise(request)
+
+    app = create_app(Settings(), categoriser=Spy())
+    with TestClient(app) as client:
+        client.post(
+            "/categorise",
+            json=body(["Мол\n2,5%  900г", "Хліб"], merchant="  Магазин\nКуток "),
+        )
+
+    assert seen[0].texts == ("Мол 2,5% 900г", "Хліб")
+    assert seen[0].merchant == "Магазин Куток"
+    assert [option.slug for option in seen[0].categories] == SLUGS
+
+
+def test_registry_lists_every_categoriser() -> None:
+    assert {
+        "stub": StubCategoriser,
+        "mlx": MlxCategoriser,
+        "openrouter": OpenRouterCategoriser,
+        "off": OffCategoriser,
+    } == CATEGORISERS
+
+
+@pytest.mark.parametrize("name", ["stub", "mlx", "openrouter", " MLX "])
+def test_create_categoriser_accepts_valid_names(name: str) -> None:
+    assert create_categoriser(name).name == name.strip().lower()
+
+
+def test_an_unknown_categoriser_stops_the_app() -> None:
+    with pytest.raises(UnknownCategoriserError, match="mlx, off, openrouter, stub"):
+        create_app(Settings(categorise_backend="nope"))
+
+
+def test_the_categoriser_is_chosen_apart_from_the_ocr_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OCR_BACKEND", "openrouter")
+    monkeypatch.setenv("CATEGORISE_BACKEND", "stub")
+
+    health = TestClient(create_app()).get("/health").json()
+
+    assert health["backend"] == "openrouter"
+    assert health["categoriser"]["backend"] == "stub"
+    assert Settings().categorise_backend == "stub"
+
+
+def test_switched_off_categorisation_answers_501(make_client: ClientFactory) -> None:
+    client = TestClient(create_app(Settings(categorise_backend="off")))
+
+    response = client.post("/categorise", json=body())
+    health = client.get("/health").json()
+
+    assert response.status_code == 501
+    assert response.json()["error"]["code"] == "backend_not_implemented"
+    assert "switched off" in response.json()["error"]["message"]
+    assert health["categoriser"]["backend"] == "off"

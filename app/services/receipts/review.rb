@@ -282,7 +282,7 @@ module Receipts
             destroy = ActiveModel::Type::Boolean.new.cast(attributes.delete(:_destroy))
             # The suggestion of a stored item is not a form field: it comes from the item, so "Use" stays.
             if (item = stored[attributes[:id].to_s])
-              attributes = item.slice(:suggested_category_id, :confidence, :accepted_by_user).symbolize_keys.merge(attributes)
+              attributes = item.slice(:suggested_category_id, :confidence, :suggested_by, :accepted_by_user).symbolize_keys.merge(attributes)
             end
             ReceiptItem.new(attributes).tap do |item|
               item.mark_for_destruction if destroy

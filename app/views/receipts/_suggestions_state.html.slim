@@ -1,0 +1,21 @@
+/ Where the items' category suggestions came from, why there are none, and "Suggest categories again"
+/ (ReceiptCategoriseJob; docs/domain.md, "Category suggestions"). Outside the review form: it is a form of its
+/ own, and asking again never touches typed work (suggestions fill no field).
+- if item_suggestions_shown? && receipt.extracted? && receipt.reviewable? && !receipt.card_slip? && receipt.items.any?
+  - again = capture do
+    = ui_button_to suggest_categories_receipt_path(receipt, filter.to_params), variant: :ghost, size: :sm do
+      = ui_icon "sparkles"
+      span Suggest categories again
+  - if receipt.categoriser_error.present?
+    = render "ui/callout", tone: :signal do
+      .flex.flex-wrap.items-center.justify-between.gap-3
+        p.text-sm
+          strong No suggestions from the categoriser.
+          |  It could not answer
+          code.mx-1.text-xs = "(#{receipt.categoriser_error})"
+          | ; items named like ones you labelled before still have theirs. The receipt can be reviewed as it is.
+        = again
+  - else
+    .flex.flex-wrap.items-center.justify-between.gap-3
+      p.text-sm.text-ink-muted = receipt_suggestions_summary(receipt)
+      = again

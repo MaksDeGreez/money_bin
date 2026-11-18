@@ -2,14 +2,11 @@
 
 The model is loaded once, when the service starts, and stays in memory.
 
-MLX keeps its GPU streams per thread, and mlx-vlm creates its generation
-stream when it is imported. FastAPI runs each request in a thread of its own
-pool, so calling the model from request threads would use streams from the
-wrong thread. Instead ONE dedicated worker thread (a single-thread executor)
-imports mlx-vlm, loads the model and runs every generation; a request hands
-its work to that thread through the executor's queue and waits for the
-result. One generation runs at a time; requests that arrive meanwhile wait
-in the queue.
+Every MLX call runs on the one worker thread of `app.backends.mlx_worker`
+(MLX keeps its GPU streams per thread): it loads the model and runs every
+generation; a request hands its work to that thread and waits. One generation
+runs at a time. With CATEGORISE_BACKEND=mlx the item categoriser shares the
+worker, and the model when it is the same one.
 
 The model call sits behind the small `VisionGenerator` protocol, so the tests
 use a fake generator and need neither MLX nor model weights. The real one is
@@ -22,22 +19,21 @@ shared modules in `app.ocr`; this backend only runs the model.
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from PIL.Image import Image
 
-from app.backends.base import Backend, BackendNotImplementedError, Extraction, ImageInput
+from app.backends.base import Backend, Extraction, ImageInput
+from app.backends.mlx_worker import WORKER_THREAD_NAME, MlxWorker
 from app.config import Settings
 from app.ocr.images import prepare_images
 from app.ocr.parsing import OcrParseError, read_with_repair
 from app.ocr.postprocess import postprocess
 from app.ocr.prompt import ANSWER_SCHEMA, PROMPT_VERSION, Repair, build_messages
-from app.schemas import CategoriseResult
 
-WORKER_THREAD_NAME = "mlx-ocr"
+__all__ = ["WORKER_THREAD_NAME", "Generation", "MlxBackend", "VisionGenerator", "weights_revision"]
 
 logger = logging.getLogger(__name__)
 
@@ -102,15 +98,19 @@ def load_mlx_vlm(settings: Settings) -> VisionGenerator:  # pragma: no cover - n
 class MlxBackend(Backend):
     name = "mlx"
 
-    def __init__(self, settings: Settings | None = None, loader: GeneratorLoader | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        loader: GeneratorLoader | None = None,
+        worker: MlxWorker | None = None,
+    ):
         super().__init__(settings)
         self._loader = loader or load_mlx_vlm
+        self._worker = worker or MlxWorker()
         self.model_name = self.settings.mlx_ocr_model
-        self.categoriser_model_name = self.model_name
         # The weights revision is known once the model is loaded.
         self.model_version = "not-loaded"
         self._lock = threading.Lock()
-        self._executor: ThreadPoolExecutor | None = None
         self._generator: VisionGenerator | None = None
 
     def start(self) -> None:
@@ -122,16 +122,14 @@ class MlxBackend(Backend):
         with self._lock:
             if self._generator is not None:
                 return
-            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=WORKER_THREAD_NAME)
+            self._worker.acquire()
             try:
-                generator = executor.submit(self._loader, self.settings).result()
+                generator = self._worker.run(self._loader, self.settings)
             except BaseException:
-                executor.shutdown(wait=True)
+                self._worker.release()
                 raise
-            self._executor = executor
             self._generator = generator
             self.model_name = generator.model_name
-            self.categoriser_model_name = generator.model_name
             self.model_version = generator.model_version
 
     def stop(self) -> None:
@@ -141,31 +139,28 @@ class MlxBackend(Backend):
         release its own; mlx-vlm's exit hook runs on the main thread.
         """
         with self._lock:
-            executor, self._executor = self._executor, None
             generator, self._generator = self._generator, None
-        if executor is None:
+        if generator is None:
             return
         try:
-            if generator is not None:
-                executor.submit(generator.close).result()
+            self._worker.run(generator.close)
         except Exception:
             logger.exception("Releasing the MLX model failed")
         finally:
-            executor.shutdown(wait=True)
+            self._worker.release()
 
     def _generate(self, messages: list[dict[str, str]], images: Sequence[Image]) -> Generation:
-        executor, generator = self._executor, self._generator
-        if executor is None or generator is None:
+        generator = self._generator
+        if generator is None:
             raise RuntimeError("The mlx backend was stopped.")
         schema = ANSWER_SCHEMA if self.settings.mlx_ocr_constrained_decoding else None
-        future = executor.submit(
+        return self._worker.run(
             generator.generate,
             messages,
             images,
             schema=schema,
             max_tokens=self.settings.mlx_ocr_max_tokens,
         )
-        return future.result()
 
     def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
         self.start()
@@ -189,9 +184,6 @@ class MlxBackend(Backend):
             repaired=parsed.repaired,
             diagnostics={**_generation_stats(generations), "postprocess": report.as_dict()},
         )
-
-    def categorise(self, texts: Sequence[str]) -> list[CategoriseResult]:
-        raise BackendNotImplementedError("The mlx backend cannot categorise items yet.")
 
 
 def _generation_stats(generations: Sequence[Generation]) -> dict[str, Any]:

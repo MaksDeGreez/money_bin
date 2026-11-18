@@ -13,11 +13,20 @@ from fastapi import Depends, FastAPI, File, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from app.backends import Backend, ImageInput, create_backend
+from app.backends.mlx_worker import MlxWorker
+from app.categorise import CategoriseInput, Categoriser, create_categoriser
+from app.categorise.calibration import Calibration, CalibrationError, calibrate, load_calibration
+from app.categorise.prompt import categories_version
+from app.categorise.taxonomy import parse_categories
 from app.config import Settings
+from app.decimals import exact_sum
 from app.errors import ApiError, register_error_handlers
 from app.schemas import (
     CategoriseRequest,
     CategoriseResponse,
+    CategoriseResult,
+    CategoriserInfo,
+    CategoryCandidate,
     ErrorResponse,
     HealthResponse,
     OcrResponse,
@@ -53,6 +62,31 @@ def get_backend(request: Request) -> Backend:
 
 
 BackendDep = Annotated[Backend, Depends(get_backend)]
+
+
+def get_categoriser(request: Request) -> Categoriser:
+    categoriser: Categoriser = request.app.state.categoriser
+    return categoriser
+
+
+CategoriserDep = Annotated[Categoriser, Depends(get_categoriser)]
+
+
+def check_calibration(calibration: Calibration, categoriser: Categoriser) -> None:
+    """A calibration fitted for another backend or model stops the service at start-up.
+
+    The prompt version and the score kind are compared per answer (an answer
+    of another kind is reported as not calibrated).
+    """
+    if (calibration.backend, calibration.model_name) != (
+        categoriser.name,
+        categoriser.model_name,
+    ):
+        raise CalibrationError(
+            "CATEGORISE_CALIBRATION_FILE was fitted for "
+            f"{calibration.backend} {calibration.model_name!r}, not for "
+            f"{categoriser.name} {categoriser.model_name!r}: fit one for this model or unset it."
+        )
 
 
 def _content_type(upload: UploadFile) -> str:
@@ -131,23 +165,43 @@ def elapsed_since(started: float) -> Decimal:
     return Decimal(f"{time.perf_counter() - started:.3f}")
 
 
-def create_app(settings: Settings | None = None, backend: Backend | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    backend: Backend | None = None,
+    categoriser: Categoriser | None = None,
+) -> FastAPI:
     """Build the app. An unknown backend name fails here, before the server starts.
 
-    `backend` replaces the one named by `settings.ocr_backend` (the tests pass
-    a backend with a fake model). The backend's `start()` runs when the server
-    starts (a model is loaded then, so the first request is not slow and a
-    broken setup stops the service at once) and `stop()` when it shuts down.
+    `backend` replaces the OCR backend named by `settings.ocr_backend`, and
+    `categoriser` the one named by `settings.categorise_backend` (the tests
+    pass ones with fake models). With both on MLX they share one worker thread
+    (and one model, when they name the same). Their `start()` runs when the
+    server starts (a model is loaded then, so the first request is not slow and
+    a broken setup stops the service at once) and `stop()` when it shuts down.
+    A calibration file is read and checked at start-up too.
     """
     settings = settings or Settings()
-    backend = backend or create_backend(settings.ocr_backend, settings)
+    worker = MlxWorker()
+    backend = backend or create_backend(settings.ocr_backend, settings, worker=worker)
+    categoriser = categoriser or create_categoriser(
+        settings.categorise_backend, settings, worker=worker
+    )
     max_image_bytes = settings.ml_max_image_bytes
+    calibration_file = settings.categorise_calibration_file
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await run_in_threadpool(backend.start)
         try:
-            yield
+            await run_in_threadpool(categoriser.start)
+            try:
+                if calibration_file is not None:
+                    calibration = load_calibration(calibration_file)
+                    check_calibration(calibration, categoriser)
+                    app.state.calibration = calibration
+                yield
+            finally:
+                await run_in_threadpool(categoriser.stop)
         finally:
             await run_in_threadpool(backend.stop)
 
@@ -158,14 +212,24 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         lifespan=lifespan,
     )
     app.state.backend = backend
+    app.state.categoriser = categoriser
+    app.state.calibration = None
     register_error_handlers(app)
 
     @app.get("/health")
-    def health(backend: BackendDep) -> HealthResponse:
+    def health(
+        request: Request, backend: BackendDep, categoriser: CategoriserDep
+    ) -> HealthResponse:
         return HealthResponse(
             backend=backend.name,
             model_name=backend.model_name,
             model_version=backend.model_version,
+            categoriser=CategoriserInfo(
+                backend=categoriser.name,
+                model_name=categoriser.model_name,
+                model_version=categoriser.model_version,
+                calibration=request.app.state.calibration is not None,
+            ),
         )
 
     @app.post("/ocr", responses=_ERRORS)
@@ -189,13 +253,48 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         )
 
     @app.post("/categorise", responses=_ERRORS)
-    async def categorise(backend: BackendDep, request: CategoriseRequest) -> CategoriseResponse:
-        results = await run_in_threadpool(backend.categorise, request.texts)
+    async def categorise(
+        request: Request, categoriser: CategoriserDep, body: CategoriseRequest
+    ) -> CategoriseResponse:
+        # The same hand-over parser offline scripts use; the schema has already checked the shape.
+        options = parse_categories(category.model_dump() for category in body.categories)
+        texts = tuple(" ".join(text.split()) for text in body.texts)
+        merchant = " ".join(body.merchant.split()) if body.merchant else None
+        started = time.perf_counter()
+        categorisation = await run_in_threadpool(
+            categoriser.categorise, CategoriseInput(options, texts, merchant or None)
+        )
+        allowed = {option.slug for option in options}
+        if len(categorisation.candidates) != len(texts) or any(
+            not candidates or any(candidate.slug not in allowed for candidate in candidates)
+            for candidates in categorisation.candidates
+        ):
+            # A categoriser must answer every item with listed slugs only.
+            raise RuntimeError("the categoriser answered outside the request's categories")
+        candidates, calibrated = calibrate(
+            categorisation, request.app.state.calibration, categoriser.name, categoriser.model_name
+        )
+        cost = categorisation.diagnostics.get("cost_usd")
         return CategoriseResponse(
-            results=results,
-            backend=backend.name,
-            model_name=backend.categoriser_model_name,
-            model_version=backend.model_version,
+            results=[
+                CategoriseResult(
+                    text=text,
+                    candidates=[
+                        CategoryCandidate(category_slug=c.slug, score=round(c.score, 6))
+                        for c in item_candidates
+                    ],
+                )
+                for text, item_candidates in zip(body.texts, candidates, strict=True)
+            ],
+            score_kind=categorisation.score_kind,
+            calibrated=calibrated,
+            prompt_version=categorisation.prompt_version,
+            categories_version=categories_version(options),
+            elapsed_seconds=elapsed_since(started),
+            cost_usd=None if cost is None else exact_sum([Decimal(cost)]),
+            backend=categoriser.name,
+            model_name=categoriser.model_name,
+            model_version=categoriser.model_version,
         )
 
     return app

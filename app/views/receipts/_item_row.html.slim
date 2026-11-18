@@ -1,9 +1,11 @@
 / One editable item of the review form, in reading order: name, quantity, unit price, discount, amount,
 / category, remove. `index` is the row's key in items_attributes ("NEW_ROW" in the template, which
 / line_items_controller.js replaces with a fresh key). A stored item carries its id; removing it sets
-/ _destroy and hides the row, so the save removes it. The suggestion (if any) sits under the category.
+/ _destroy and hides the row, so the save removes it. The suggestion (if any) sits under the category, unless
+/ suggestions are switched off (item_suggestions_shown?).
+- suggestion = (item.suggested_category if item_suggestions_shown?)
 = f.fields_for :items, item, child_index: index, include_id: false do |row|
-  .line-row.line-row-receipt id=(item.id ? dom_id(item) : nil) hidden=item.marked_for_destruction? data-line-items-target="row" data-suggestion-id=item.suggested_category_id data-suggestion-confidence=item.confidence
+  .line-row.line-row-receipt id=(item.id ? dom_id(item) : nil) hidden=item.marked_for_destruction? data-line-items-target="row" data-suggestion-id=suggestion&.id data-suggestion-confidence=(item.confidence if suggestion)
     - if item.id
       = row.hidden_field :id
     = row.hidden_field :_destroy, value: (item.marked_for_destruction? ? "1" : "0"), data: { line_items_destroy: true }
@@ -18,10 +20,10 @@
     .line-cell.line-cell-num.line-cell-amount
       = row.money_field :amount, "aria-label": "Amount, #{label}", placeholder: "Amount", class: "form-control-compact", data: { money_totals_amount: true }
     .line-cell.line-cell-category
-      = row.category_select :category_id, category_choices, "aria-label": "Category, #{label}", suggestion: item.suggested_category, class: "combobox-compact"
-      - if item.suggested_category
+      = row.category_select :category_id, category_choices, "aria-label": "Category, #{label}", suggestion:, class: "combobox-compact"
+      - if suggestion
         p.line-suggestion
-          span = "Suggested: #{item.suggested_category.name}#{" · #{receipt_confidence(item.confidence)}" if item.confidence}"
+          span = [ "Suggested: #{item.suggested_category.name}", receipt_confidence(item.confidence), receipt_suggestion_source(item) ].compact.join(" · ")
           = ui_button "Use", variant: :link, size: :sm, tabindex: -1, data: { action: "receipt-review#useSuggestion" }
     .line-cell.line-cell-remove
       = ui_button variant: :ghost, size: :icon, class: "h-9 w-9", "aria-label": "Remove #{label}", data: { action: "line-items#remove" } do

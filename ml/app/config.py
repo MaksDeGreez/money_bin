@@ -1,5 +1,7 @@
 """Service settings, read from environment variables."""
 
+from pathlib import Path
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
@@ -15,6 +17,10 @@ class Settings(BaseSettings):
     """
 
     ocr_backend: str = "stub"
+    # The backend that suggests categories for receipt items (`/categorise`), chosen
+    # apart from the OCR backend: OCR can run locally while categorisation is hosted,
+    # or the other way round.
+    categorise_backend: str = "stub"
     # The largest accepted image file, in bytes (`ML_MAX_IMAGE_BYTES`). A phone
     # photo is a few megabytes; 15 MB leaves room for a large HEIC or PNG scan.
     ml_max_image_bytes: int = Field(default=DEFAULT_MAX_IMAGE_BYTES, gt=0)
@@ -34,6 +40,14 @@ class Settings(BaseSettings):
     # Constrain the model's tokens to the answer's JSON schema (mlx-vlm with
     # llguidance). Turn off only to compare against free generation.
     mlx_ocr_constrained_decoding: bool = True
+    # The model that categorises receipt items with CATEGORISE_BACKEND=mlx. Empty means
+    # MLX_OCR_MODEL: with OCR_BACKEND=mlx the one loaded model then does both jobs.
+    mlx_categorise_model: str | None = None
+
+    # A calibration file made by `python -m evaluation.item_categories_calibrate`
+    # (outside the repository). It maps the categoriser's raw scores to measured
+    # precision; it must have been fitted for the configured backend, model and prompt.
+    categorise_calibration_file: Path | None = None
 
     # The hosted backend (OCR_BACKEND=openrouter): a vision model on OpenRouter,
     # reached only through zero-data-retention endpoints (app/backends/openrouter.py).
@@ -42,6 +56,9 @@ class Settings(BaseSettings):
     # The model id on OpenRouter (for example "vendor/model-name"). No default:
     # the backend refuses to start without one, so no model is picked silently.
     openrouter_ocr_model: str | None = None
+    # The model that categorises receipt items with CATEGORISE_BACKEND=openrouter. No
+    # default either. Only item names are sent to it.
+    openrouter_categorise_model: str | None = None
     # Seconds for one receipt: the endpoint list (when it is due to be read
     # again), the call and the repair call together, as a hard deadline. A call
     # is not started with less than 10 seconds left (a repair call: less than

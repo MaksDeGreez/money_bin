@@ -7,6 +7,10 @@ imported, and the model must run on the thread that owns it.
 mlx-vlm is installed only on macOS on Apple silicon (the `mlx` dependency
 group). The tests never import this module; it is left out of the coverage
 measurement in `pyproject.toml`.
+
+The loaded models are kept in one place (`acquire_model`, `release_model`), so
+the OCR backend and the item categoriser (`app.categorise.mlx_token_model`)
+share a model when they name the same one: one copy in memory.
 """
 
 from collections.abc import Mapping, Sequence
@@ -30,6 +34,41 @@ except ImportError as error:
     ) from error
 
 
+# Loaded models by id: [model, processor, revision, users]. Touched only on the worker thread.
+_LOADED: dict[str, list[Any]] = {}
+
+
+def acquire_model(model_id: str) -> tuple[Any, Any, str]:
+    """The model, its processor and its weights revision, loaded once per id.
+
+    The cache is tried first, so a service whose model is already downloaded
+    starts without contacting the Hugging Face Hub.
+    """
+    entry = _LOADED.get(model_id)
+    if entry is None:
+        try:
+            path = get_model_path(model_id, local_files_only=True)
+        except Exception:
+            path = get_model_path(model_id)
+        model, processor = load(str(path))
+        entry = [model, processor, weights_revision(Path(path)), 0]
+        _LOADED[model_id] = entry
+    entry[3] += 1
+    return entry[0], entry[1], entry[2]
+
+
+def release_model(model_id: str) -> None:
+    """One user less; the last one drops the model and this thread's MLX streams and cache."""
+    entry = _LOADED.get(model_id)
+    if entry is not None:
+        entry[3] -= 1
+        if entry[3] <= 0:
+            del _LOADED[model_id]
+    if not _LOADED:
+        clear_mlx_streams()
+    mx.clear_cache()
+
+
 class MlxVlmGenerator:
     def __init__(self, model: Any, processor: Any, model_name: str, model_version: str) -> None:
         self._model = model
@@ -40,17 +79,9 @@ class MlxVlmGenerator:
 
     @classmethod
     def load(cls, model_id: str) -> "MlxVlmGenerator":
-        """Load the model, downloading it into the Hugging Face cache only if it is not there.
-
-        The cache is tried first, so a service whose model is already downloaded
-        starts without contacting the Hugging Face Hub.
-        """
-        try:
-            path = get_model_path(model_id, local_files_only=True)
-        except Exception:
-            path = get_model_path(model_id)
-        model, processor = load(str(path))
-        return cls(model, processor, model_id, weights_revision(Path(path)))
+        """Load the model (or share the one already loaded under this id)."""
+        model, processor, revision = acquire_model(model_id)
+        return cls(model, processor, model_id, revision)
 
     def generate(
         self,
@@ -96,7 +127,6 @@ class MlxVlmGenerator:
         )
 
     def close(self) -> None:
-        """Drop the model, then release this (the worker) thread's MLX streams and cache."""
+        """Drop the model; the last user releases this (the worker) thread's MLX streams."""
         self._model = self._processor = self._tokenizer = None
-        clear_mlx_streams()
-        mx.clear_cache()
+        release_model(self.model_name)

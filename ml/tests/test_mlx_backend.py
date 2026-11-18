@@ -122,7 +122,6 @@ def test_start_loads_the_model_on_the_worker_thread_once() -> None:
     assert loader.threads[0].name.startswith(WORKER_THREAD_NAME)
     assert loader.threads[0] is not threading.current_thread()
     assert backend.model_name == "example/fake-vl-model"
-    assert backend.categoriser_model_name == "example/fake-vl-model"
     assert backend.model_version == "0123abcd"
     backend.stop()
 
@@ -227,7 +226,7 @@ def test_the_api_runs_every_request_on_the_one_worker_thread() -> None:
         with ThreadPoolExecutor(max_workers=4) as requests:
             responses = list(requests.map(lambda _: client.post("/ocr", files=files), range(6)))
 
-    assert health == {
+    assert {key: health[key] for key in ("status", "backend", "model_name", "model_version")} == {
         "status": "ok",
         "backend": "mlx",
         "model_name": "example/fake-vl-model",
@@ -272,17 +271,6 @@ def test_the_api_answers_422_for_an_image_that_cannot_be_decoded() -> None:
         "code": "image_unreadable",
         "message": "File 'bad.jpg' cannot be read as an image.",
     }
-
-
-def test_categorise_is_not_implemented_on_this_backend() -> None:
-    backend, _ = make_backend()
-    app = create_app(Settings(ocr_backend="mlx"), backend=backend)
-
-    with TestClient(app) as client:
-        response = client.post("/categorise", json={"texts": ["milk"]})
-
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "backend_not_implemented"
 
 
 def test_a_failed_load_stops_the_service_from_starting() -> None:

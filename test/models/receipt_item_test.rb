@@ -115,4 +115,22 @@ class ReceiptItemTest < ActiveSupport::TestCase
       item.update_column(:position, 2)
     end
   end
+
+  test "the name key follows the name on every save" do
+    item = receipts(:corner_receipt).items.create!(position: 9, name: "МОЛ  900Г", amount: 1)
+    assert_equal "мол900г", item.name_key
+
+    item.update!(name: "Хліб Батон")
+    assert_equal "хліббатон", item.reload.name_key
+  end
+
+  test "a suggestion comes from the memory or a model" do
+    item = receipt_items(:corner_sandwich)
+
+    item.suggested_by = "memory"
+    assert item.valid?
+    item.suggested_by = "guess"
+    assert_not item.valid?
+    assert_raises(ActiveRecord::StatementInvalid) { item.update_columns(suggested_by: "guess") }
+  end
 end

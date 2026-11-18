@@ -28,11 +28,12 @@ section aria-labelledby=dom_id(receipt, :items_heading)
               td
                 - if item.category
                   = item.category.name
-                - elsif item.suggested_category
+                - elsif item.suggested_category && item_suggestions_shown?
                   span.text-ink-muted
                     | Suggested: #{item.suggested_category.name}
-                    - if item.confidence
-                      =< "(#{receipt_confidence(item.confidence)})"
+                    - details = [ receipt_confidence(item.confidence), receipt_suggestion_source(item) ].compact
+                    - if details.any?
+                      =< "(#{details.join(', ')})"
                 - else
                   span.text-ink-muted —
   - difference = receipt.total_difference

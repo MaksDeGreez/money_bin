@@ -6,6 +6,12 @@ class MlClientTest < ActiveSupport::TestCase
   include MlServiceStubs
   include ReceiptImages
 
+  CATEGORIES = [
+    { slug: "groceries/groceries", name: "Groceries", description: "Food.", group: "Groceries" },
+    { slug: "household-shopping/household-supplies", name: "Household supplies", description: "Goods.", group: "Household & shopping" },
+    { slug: "eating-out/takeaway-fast-food", name: "Takeaway & fast food", description: "Takeaway.", group: "Eating out" }
+  ].freeze
+
   def client(**options)
     MlClient.new(**options)
   end
@@ -32,7 +38,7 @@ class MlClientTest < ActiveSupport::TestCase
       assert_equal URI("http://127.0.0.1:8100"), ml.base_url
       assert_equal 2.0, ml.open_timeout
       assert_equal 120.0, ml.ocr_timeout
-      assert_equal 30.0, ml.categorise_timeout
+      assert_equal 120.0, ml.categorise_timeout
     end
   end
 
@@ -76,7 +82,7 @@ class MlClientTest < ActiveSupport::TestCase
       ml = client(open_timeout: 1, ocr_timeout: 90, categorise_timeout: 15)
       ml.health
       ml.ocr([ image ])
-      ml.categorise([ "bread" ])
+      ml.categorise([ "bread" ], categories: CATEGORIES)
     end
 
     assert_equal [ 1.0 ] * 3, opened.map { |options| options[:open_timeout] }
@@ -200,32 +206,58 @@ class MlClientTest < ActiveSupport::TestCase
 
   # --- categorise
 
-  test "categorise posts the texts as JSON and returns the results" do
+  test "categorise posts the texts, the categories and the merchant as JSON and returns the results" do
     stub_ml_categorise([ "milk 2.5% 900g", "dish soap" ])
 
-    result = client.categorise([ "milk 2.5% 900g", "dish soap" ])
+    result = client.categorise([ "milk 2.5% 900g", "dish soap" ], categories: CATEGORIES, merchant: "Example Market")
 
     request = ml_requests(:categorise).sole
     assert_equal "application/json", request.headers["Content-Type"]
-    assert_equal({ "texts" => [ "milk 2.5% 900g", "dish soap" ] }, JSON.parse(request.body))
+    assert_equal({ "texts" => [ "milk 2.5% 900g", "dish soap" ], "categories" => CATEGORIES.map(&:stringify_keys),
+      "merchant" => "Example Market" }, JSON.parse(request.body))
     assert_equal [ "milk 2.5% 900g", "dish soap" ], result.results.pluck("text")
     assert_equal "groceries/groceries", result.results.first["candidates"].first["category_slug"]
     assert_equal 0.71, result.results.first["candidates"].first["score"]
-    assert_equal %w[stub stub-categoriser 0.1.0], [ result.backend, result.model_name, result.model_version ]
+    assert_equal %w[stub stub-categoriser 0.2.0], [ result.backend, result.model_name, result.model_version ]
+    assert_equal [ false, "stub", nil ], [ result.calibrated, result.score_kind, result.prompt_version ]
     assert_equal result.body["results"], result.results
+  end
+
+  test "categorise sends no merchant when there is none" do
+    stub_ml_categorise([ "tea" ])
+
+    client.categorise([ "tea" ], categories: CATEGORIES, merchant: " ")
+
+    assert_nil JSON.parse(ml_requests(:categorise).sole.body)["merchant"]
   end
 
   test "categorise answers that miss required parts are invalid responses" do
     good = ml_categorise_body([ "tea" ])
     {
       good.except(:results) => "misses results",
+      good.except(:calibrated) => "misses calibrated",
+      good.except(:score_kind) => "misses score_kind",
       good.merge(results: [ "tea" ]) => "has no list of objects at results",
+      good.merge(results: []) => "answered 0 results for 1 texts",
       good.merge(results: [ { text: "tea" } ]) => "misses results[0].candidates",
+      good.merge(results: [ { text: "tea", candidates: [] } ]) => "has no candidate at results[0]",
       good.merge(results: [ { text: "tea", candidates: [ 1 ] } ]) => "has no list of objects at results[0].candidates",
       good.merge(results: [ { text: "tea", candidates: [ { score: 0.5 } ] } ]) => "misses results[0].candidates[0].category_slug"
     }.each do |body, message|
       stub_ml(:categorise, status: 200, body:)
-      error = assert_raises(MlClient::InvalidResponse) { client.categorise([ "tea" ]) }
+      error = assert_raises(MlClient::InvalidResponse) { client.categorise([ "tea" ], categories: CATEGORIES) }
+      assert_includes error.message, message
+    end
+  end
+
+  test "an answer that names a category it was not sent, or an odd score, is an invalid response" do
+    {
+      ml_categorise_body([ "tea" ], answers: { "tea" => [ [ "made/up", 0.9 ] ] }) => "names a category it was not given",
+      ml_categorise_body([ "tea" ], answers: { "tea" => [ [ "groceries/groceries", 1.5 ] ] }) => "score outside 0..1",
+      ml_categorise_body([ "tea" ], answers: { "tea" => [ [ "groceries/groceries", "0.5" ] ] }) => "score outside 0..1"
+    }.each do |body, message|
+      stub_ml(:categorise, status: 200, body:)
+      error = assert_raises(MlClient::InvalidResponse) { client.categorise([ "tea" ], categories: CATEGORIES) }
       assert_includes error.message, message
     end
   end
@@ -260,7 +292,7 @@ class MlClientTest < ActiveSupport::TestCase
   test "a 422 from categorise is a response error" do
     stub_ml_error(:categorise, status: 422, code: "validation_error", message: "texts.0: text must not be empty")
 
-    error = assert_raises(MlClient::ResponseError) { client.categorise([ " " ]) }
+    error = assert_raises(MlClient::ResponseError) { client.categorise([ " " ], categories: CATEGORIES) }
     assert_equal "validation_error", error.code
   end
 
@@ -325,7 +357,7 @@ class MlClientTest < ActiveSupport::TestCase
   test "a read timeout raises TimeoutError" do
     stub_request(:post, ml_url("/categorise")).to_raise(Net::ReadTimeout)
 
-    assert_raises(MlClient::TimeoutError) { client.categorise([ "tea" ]) }
+    assert_raises(MlClient::TimeoutError) { client.categorise([ "tea" ], categories: CATEGORIES) }
   end
 
   test "a refused or broken connection raises ConnectionError" do

@@ -140,3 +140,18 @@ def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
         "per_receipt_usd": per_receipt,
         "per_1000_receipts_usd": per_1000,
     }
+
+
+def read_categories(path: Path) -> list[Any]:
+    """The candidate categories exported by the Rails app (`bin/rails categories:export_items`).
+
+    The hand-over shape is `app.categorise.taxonomy`; this only turns its errors into usage errors.
+    """
+    from app.categorise.taxonomy import TaxonomyError, read_categories_file
+
+    if not path.is_file():
+        raise UsageError(f"categories file not found: {path}")
+    try:
+        return list(read_categories_file(path))
+    except TaxonomyError as error:
+        raise UsageError(str(error)) from None

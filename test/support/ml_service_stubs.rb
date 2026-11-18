@@ -44,11 +44,18 @@ module MlServiceStubs
   end
 
   # Three candidates per text, best first, like the service.
-  def ml_categorise_body(texts, slugs: %w[groceries/groceries household-shopping/household-supplies eating-out/takeaway-fast-food])
+  # A /categorise answer: every text gets `slugs` with `scores` (or, per text, `answers[text]`: a slug or
+  # [[slug, score], ...]).
+  def ml_categorise_body(texts, slugs: %w[groceries/groceries household-shopping/household-supplies eating-out/takeaway-fast-food],
+    scores: [ 0.71, 0.18, 0.11 ], answers: {}, **overrides)
     results = texts.map do |text|
-      { text:, candidates: slugs.zip([ 0.71, 0.18, 0.11 ]).map { |slug, score| { category_slug: slug, score: } } }
+      pairs = answers.key?(text) ? Array(answers[text]) : slugs.zip(scores)
+      pairs = [ [ pairs.first, 0.93 ] ] if pairs.first.is_a?(String)
+      { text:, candidates: pairs.map { |slug, score| { category_slug: slug, score: } } }
     end
-    { results:, backend: "stub", model_name: "stub-categoriser", model_version: "0.1.0" }
+    { results:, score_kind: "stub", calibrated: false, prompt_version: nil, categories_version: "0123456789ab",
+      elapsed_seconds: "0.001", cost_usd: nil, backend: "stub", model_name: "stub-categoriser", model_version: "0.2.0" }
+      .merge(overrides)
   end
 
   def stub_ml_health(body = ml_health_body)

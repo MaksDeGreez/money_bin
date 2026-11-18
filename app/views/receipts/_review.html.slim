@@ -24,8 +24,11 @@ ruby:
   manual_record = receipt.ground_truths.find(&:manual?)
   confirmation = review.ground_truth if review&.confirmation_needed?
   fill = (ground_truth_fill_data(dps_record) if dps_record && editable && !receipt.reviewed?)
+  suggestions = item_suggestions_shown?
+  slip_suggestion = (form_receipt.suggested_category if suggestions)
 section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
   = render "receipts/ocr_state", receipt: receipt
+  = render("receipts/suggestions_state", receipt:, filter:)
   = form_with model: form_receipt, scope: :receipt, url: receipt_path(receipt, filter.to_params), method: :patch,
     id: dom_id(receipt, :review_form), class: "review-form", novalidate: true,
     data: { controller: "form-guard receipt-review money-totals",
@@ -148,8 +151,8 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
       p.text-sm.text-ink-muted Booked as one line: the whole total in one category.
       .field.mt-3.max-w-sm
         = f.label :category_id, "Category"
-        = f.category_select :category_id, category_choices, "aria-label": "Category of the slip", suggestion: form_receipt.suggested_category
-        - if form_receipt.suggested_category
+        = f.category_select :category_id, category_choices, "aria-label": "Category of the slip", suggestion: slip_suggestion
+        - if slip_suggestion
           p.field-hint = "Suggested: #{form_receipt.suggested_category.name}#{" (#{receipt_confidence(form_receipt.suggested_category_confidence)})" if form_receipt.suggested_category_confidence}"
         = f.error_for :category_id
       / Every kept row counts, typed ones too: a slip saves with none.
@@ -164,7 +167,7 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
     section.review-section id=dom_id(receipt, :items) hidden=slip data-receipt-review-target="itemsOnly" data-controller="line-items" data-action="keydown->line-items#keydown" aria-labelledby=dom_id(receipt, :items_heading)
       .flex.flex-wrap.items-end.justify-between.gap-3
         h2.text-base id=dom_id(receipt, :items_heading) Items
-        - if items.any?(&:suggested_category_id)
+        - if suggestions && items.any?(&:suggested_category_id)
           .flex.items-end.gap-2
             .field
               = label_tag "suggestion_threshold", "Accept suggestions from (%)", class: "text-xs"
