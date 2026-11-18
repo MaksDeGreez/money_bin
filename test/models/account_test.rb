@@ -127,4 +127,17 @@ class AccountTest < ActiveSupport::TestCase
       accounts(:savings_usd).update_column(:external_id, "example-bank-card-0001")
     end
   end
+
+  test "the default account of a booking form is the last one used, when it is active and in the currency" do
+    assert_equal accounts(:card_uah), Account.default_for(nil), "the receipt-booked market transaction is the newest"
+    assert_equal accounts(:card_uah), Account.default_for("UAH")
+    assert_equal accounts(:savings_usd), Account.default_for("USD"), "the last one used is in another currency"
+    assert_nil Account.default_for("EUR"), "the only EUR account is archived"
+
+    Transaction.create!(account: accounts(:cash_uah), amount: "-1", occurred_on: Date.current, source: :manual, lines_attributes: [ { amount: "-1" } ])
+    assert_equal accounts(:cash_uah), Account.default_for("UAH")
+
+    accounts(:cash_uah).update!(archived: true)
+    assert_equal accounts(:card_uah), Account.default_for("UAH"), "else the first active one by name"
+  end
 end

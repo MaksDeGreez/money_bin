@@ -28,6 +28,19 @@ class Account < ApplicationRecord
   validates :external_id, uniqueness: true, allow_nil: true
   validate :currency_fixed_once_used, on: :update
 
+  # The account a person booked on last, by hand or from a receipt: the default of the forms that book an
+  # expense. Read from the ledger, so it needs no setting and survives a new session.
+  def self.last_used_id
+    Transaction.where(source: %w[receipt manual]).order(created_at: :desc, id: :desc).pick(:account_id)
+  end
+
+  # The account a booking form starts with: the last one used, when it is active and in `currency` (any
+  # currency when nil); else the first active account in that currency by name; else nil.
+  def self.default_for(currency)
+    candidates = currency ? active.where(currency:) : active
+    candidates.find_by(id: last_used_id) || candidates.order(:name).first
+  end
+
   # The sum of the booked transaction amounts (drafts left out), as a BigDecimal in the account currency.
   def balance
     transactions.booked.sum(:amount)
