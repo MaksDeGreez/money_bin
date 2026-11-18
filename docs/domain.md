@@ -1010,9 +1010,11 @@ review save keeps it (it is not a form field). Rows filled from the tax-service 
 model, whatever its version or prompt (the same weights answer much the same); one whose
 `categories_prefilled_by` names a categoriser is not test ground truth for that categoriser's categories.
 Records pre-filled by `source:hand` or `source:dps_xml`, and imported records, count for every model;
-`source:unknown-model` (an OCR answer that named no model) counts for none. The names are compared exactly,
+`source:unknown-model` (an OCR answer that named no model) counts for none. The names are stored exactly,
 as the ML service reports them: one model served by two backends has two names (a local quantised repository
-id, a hosted provider's id), so the evaluation maps names to model families before it applies the rule.
+id, a hosted provider's id), so the evaluation maps each name to a model identity before it applies the rule
+(`ml/evaluation/models.py`): the same base model whatever its quantisation, host or dated slug; another size
+or version of a family is another model; a name it cannot place leaves the record out.
 
 ### Checking an imported record
 
@@ -1089,7 +1091,7 @@ from the tax service (`docs/decisions/0010-receipt-ground-truth.md` says why).
 `stored_schema_version` and `document` (as version 2, categories as `category_slug`). With `prefilled_by`
 and `categories_prefilled_by` the evaluation applies the pre-fill rule. `qr_check` is the cross-check made again at export time
 (`agrees`, `disagrees`, `unverifiable`, `no_qr`), so a record that QR values loaded or changed later
-contradict is marked and the evaluation can leave it out. It refuses a folder inside a git repository, creates it readable by the
+contradict is marked and the evaluation can leave it out. The evaluation harness (`make eval`, `docs/decisions/0014-evaluation-harness.md`) reads this file: it leaves out a `dps_xml` record that `disagrees` and any record checked as `differs`, prefers `dps_xml` to `manual`, and leaves a record out of a run whose model pre-filled it (`prefilled_by`, `prefilled_model_version`; names are mapped to a model identity in `ml/evaluation/models.py`, so a local quantised build and the hosted id of the same model are one model, and an unknown name leaves the record out). It refuses a folder inside a git repository, creates it readable by the
 owner only and writes the file with mode 0600 through a new temporary file (exclusive, never through a
 link); it prints the count only.
 

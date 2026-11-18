@@ -87,3 +87,7 @@ select = [
 "tests/test_item_categories*.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/test_ocr_*.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/test_mlx_backend.py" = ["RUF001"]
+# Item names, units and look-alike letters of Ukrainian receipts.
+"evaluation/text.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_evaluation_*.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/evaluation_fixtures.py" = ["RUF001"]

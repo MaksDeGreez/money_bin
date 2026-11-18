@@ -77,9 +77,10 @@ def _decimal(value: Any) -> Decimal | None:
     if not isinstance(value, str):
         return None
     try:
-        return Decimal(value)
+        number = Decimal(value)
     except InvalidOperation:
         return None
+    return number if number.is_finite() else None
 
 
 def truth_of(qr_fields: dict[str, Any]) -> dict[str, Any]:
@@ -111,7 +112,10 @@ def predicted_of(receipt: dict[str, Any] | None) -> dict[str, Any]:
 def items_sum_to(receipt: dict[str, Any] | None, total: Decimal | None) -> bool:
     if receipt is None or total is None or not receipt.get("items"):
         return False
-    amounts = [_decimal(item.get("amount")) for item in receipt["items"]]
+    items = receipt["items"]
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        return False
+    amounts = [_decimal(item.get("amount")) for item in items]
     if any(amount is None for amount in amounts):
         return False
     return sum(amounts, Decimal("0")) == total  # type: ignore[arg-type]

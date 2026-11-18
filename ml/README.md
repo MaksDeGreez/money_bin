@@ -759,6 +759,251 @@ percentile); and for a hosted run the cost per receipt and per 1,000 receipts
 (`cost_usd`, as in `run.json`; null for a local backend). A failed receipt counts as wrong for every field. The scores are
 also written to `scores.json` in the run folder.
 
+## The evaluation harness
+
+`evaluation/harness.py` turns every run into the numbers of the results chapter, offline, from
+files. From the repository root:
+
+```sh
+make eval-check   # validate the inputs, print what would be scored; writes nothing
+make eval         # write eval/results/
+make eval RUNS_DIR=~/elsewhere EVAL_ARGS="--compare RUN_A RUN_B --diagnostics ~/private/diag"
+```
+
+`make` runs `uv run python -m evaluation.harness` in `ml/` with `--receipts`, `--runs`,
+`--ground-truth` and `--out` from the variables `RECEIPTS_DIR` (default
+`~/Documents/money_bin_data/receipts`), `RUNS_DIR` (`.../runs`), `GROUND_TRUTH_DIR`
+(`.../ground_truth`, where `receipts:export_ground_truth` is told to write) and `RESULTS_DIR`
+(`eval/results`); `EVAL_ARGS` adds options: `--compare A B` (repeatable), `--comparisons FILE`
+(lines `RUN_A RUN_B`; default `comparisons.txt` in the runs folder when it exists),
+`--no-auto-compare`, `--seed` (42), `--resamples` (1000), `--check`, `--diagnostics DIR`. A
+relative folder in one of the `*_DIR` variables is taken from the repository root (a relative path
+inside `EVAL_ARGS` is taken from `ml/`); `~` is expanded. The results folder must be new, empty or
+one the harness wrote (only `README.md`, `index.json`, `runs/`, `comparisons/`, `tables/`): stale
+files there are removed, so any other folder is refused.
+`--check` scores everything and runs every check of the writer, then writes nothing; without it,
+nothing is written either until every file has passed (a refused value leaves the folder as it was).
+
+### Inputs
+
+- **The receipt set**: `receipts.jsonl` of `tools/receipt_ingest` (ids, the number of photos, the
+  QR fields).
+- **Runs**: every folder under the runs folder, at any depth, with a `run.json` and a
+  `predictions.jsonl`. `run.json`'s `task` is `ocr` (also when it is missing: runs written before
+  it existed) or `item_categories`. Run ids must be unique.
+- **Ground truth** (optional): `ground_truth.jsonl` from `bin/rails "receipts:export_ground_truth[DIR]"`
+  (`app/services/ground_truth_export.rb`, `docs/domain.md` "Receipt ground truth"): every line as
+  schema version 2, with `prefilled_by`, `prefilled_model_version`, `categories_prefilled_by`,
+  `items_known`, `categories_known`, `qr_check`, `check_outcome` and a `document` whose items and
+  receipt carry `category_slug`. Unknown keys are ignored. A line without `categories_known` (an
+  older export) has categories when its document carries any slug. A line without an `ingest_id` is
+  counted and skipped.
+
+**Adding a run** is writing a run folder (`evaluation.ocr_run`, or the item categoriser) and
+running `make eval` again. Nothing else changes.
+
+### The item-category run format
+
+`run.json`: `"task": "item_categories"`, `run_id`, `backend`, `model_name`, `model_version`,
+`prompt_version` (or null), `git` (`sha`, `dirty`), `started_at`, `finished_at`, `counts` (whole
+numbers by name), `seconds_per_item`, `cost_usd`, `scores_calibrated` (true when the scores were
+calibrated, for example on a validation set; false when they are raw; absent or null when not
+known), `sources` (any `source` values its lines use besides `memory`, `model`, `decision` and
+`combined`) and, for a run made by combining other runs, `combined_from`: a list of
+`{"run_id", "backend", "model_name", "model_version"}`, one per run it combines. `predictions.jsonl`, one line per
+item:
+
+```json
+{"receipt_id": "rcpt_000123", "ground_truth_source": "manual", "position": 2,
+ "candidates": [{"category_slug": "groceries/groceries", "score": 0.82},
+                {"category_slug": "household-shopping/household-supplies", "score": 0.11}],
+ "source": "model", "seconds": 0.004, "cost_usd": null}
+```
+
+- `receipt_id`: the ingest id; `position`: the item's 1-based place in the `items` of the
+  ground-truth record named by `ground_truth_source` (`dps_xml` or `manual`; optional: without it,
+  the record the harness chooses; categories are only ever on `manual` records). A card slip has
+  one line with `position: null`, for the receipt's own category.
+- `candidates`: at most 3, best first; `score` a number from 0 to 1 (the first one's is the
+  confidence) or null; a score outside that range stops the harness (percentages or logits would
+  make calibration meaningless).
+- `source`: an open set of short lower-case words: `memory` (an earlier booking of the same text),
+  `model`, `decision` (a hosted decision model), `combined`, and any word `run.json` declares in
+  `sources`. The metrics are split by the values that occur; an undeclared word is counted as
+  `other` (so a word written by mistake never reaches the results), and an item without a
+  prediction or without a source as `unstated`.
+- `seconds`: a number or a decimal string; `cost_usd`: a decimal string, or null for a local
+  model. Other keys (such as `error`) are ignored.
+
+`evaluation/item_categories_run.py` writes this format; the harness reads it as written: without
+`ground_truth_source` (positions then refer to the record the harness chooses, the person's record
+with categories, as the runner's), with `calibrated` instead of `scores_calibrated`, and with
+`memory` in `run.json`: when `memory.enabled` is true, the run also counts as the categoriser named
+in `memory.categoriser_name` (`label-memory`) for the pre-fill rule, so a receipt whose categories
+the label memory suggested is left out of it.
+
+### Which ground truth counts
+
+`evaluation/truth.py`:
+
+- **Left out for every run**: a `dps_xml` record whose `qr_check` is `disagrees` (another receipt's
+  file); any record checked against the print as `differs`. A `manual` record whose `qr_check`
+  disagrees is kept (a person read this receipt).
+- **Unchecked records count.** The item metrics are also given over records checked as `matches`
+  only (`items_checked_only`).
+- **Precedence**: `dps_xml` first, then `manual`; each purpose (items, merchant, kind, total,
+  categories) takes the first record that has it (`items_known`, a non-null value, categories known).
+- **The pre-fill rule**: when the record chosen for a purpose has a `prefilled_by` (for categories:
+  `categories_prefilled_by`) that names the model the run evaluates, the receipt has no ground
+  truth for that purpose in that run (the QR stand-in for the kind is not used either). The counts
+  are in the run's `counts` and on the console: `excluded_prefilled_items`, `_merchant`, `_kind`,
+  each with an `..._unknown` part (left out because the model could not be known);
+  `receipts_excluded_prefilled` and `receipts_excluded_prefilled_unknown` for categories.
+  `source:hand` and `source:dps_xml` count for every model; `source:unknown-model` (and any other
+  `source:` value) leaves the record out of every OCR run, `source:unknown` out of every
+  item-category run. The QR fields are never left out.
+- **Same model** (`evaluation/models.py`, the one place; its docstring has the details): a name
+  is read as a family, sizes, versions and words, ignoring the publisher or host, case, a backend
+  prefix, a routing suffix (`:free`), dates and releases (`-2025-04-14`, `-20260217`, `-2507`),
+  quantisation and packaging (`4bit`, `bf16`, `fp8`, `Q4_K_M`, `mlx`, `gguf`, `unsloth`, `qat`),
+  `instruct`, a reasoning effort (`high`) and vendor or region words in front (`meta`, `us`,
+  `anthropic`). Two names are **different models only with proof**: another family (unless one
+  family is a word of the other name), other sizes (`8b` against `235b a22b`), versions that
+  differ at a place both have (`qwen2.5` against `qwen3`; `8` against `8 0 1` is not proof), or a
+  tier word on one side only (`mini`, `pro`, `flash`, `sonnet`, `opus`, `vl`, ...; mode or host
+  labels such as `thinking`, `reasoning`, `turbo` are not tiers). The same words are the same model (`mlx-community/Qwen3-VL-8B-Instruct-4bit` =
+  `qwen/qwen3-vl-8b-instruct`; `anthropic/claude-4.6-sonnet-20260217` =
+  `anthropic/claude-sonnet-4.6`; `openai/gpt-4.1-mini-2025-04-14` = `openai/gpt-4.1-mini`).
+  Anything else is **unknown**, and so is a name that is a path on disk, a run or pre-fill whose
+  version is `local` (a model loaded from a folder) or a name that leaves no word: an unknown
+  comparison leaves the record out (counted in `..._unknown`). Both the run's `model_name` and
+  `model_version` (when it is a name, not a commit hash) and the record's `prefilled_by` and
+  `prefilled_model_version` are compared; one `same` pair is enough to leave the record out, and
+  it counts only when every pair is proved different.
+
+### OCR metrics
+
+Per receipt, then summed per segment. A prediction line `skipped` is not scored; `parse_failed` and
+`error` count as wrong (no fields, no items).
+
+| Key | Definition |
+| --- | --- |
+| `fields.date`, `.time`, `.total`, `.fiscal_number`, `.receipt_number` | exact match with the QR field (time to the minute, Kyiv time), over receipts whose QR has it |
+| `merchant` | `text.normalise_merchant` equal on both sides (below), over receipts whose ground-truth merchant does not normalise to nothing |
+| `kind.accuracy`, `kind.confusion` | predicted `kind` (`none` for a missing or failed answer) against the ground truth's, else (no ground-truth kind, none left out by the pre-fill rule) `fiscal` for a receipt with a tax QR code; confusion counts truth by prediction |
+| `items.<variant>.precision`, `.recall`, `.f1_micro` | matched / predicted, matched / reference, 2 matched / (predicted + reference), each summed over receipts with item ground truth |
+| `items.<variant>.f1_macro` | the mean of per-receipt F1 over the same receipts (with no item on either side: 1 when the backend answered, such as a card slip read right, 0 when it failed) |
+| `items.cer_normalised`, `items.cer_plain` | over `main`-matched pairs: the sum of edit distances over the sum of reference name lengths, on normalised names, and on names with only NFC and collapsed spaces |
+| `items_sum_to_total` | the predicted amounts add up exactly (decimals) to the QR total, else the ground truth's total; card slips are not counted |
+| `parse_failed` | the share of `parse_failed` lines; `errors`, `repaired` are counts |
+| `seconds_per_receipt` | mean, median, 90th percentile (nearest rank) over `ok` and `parse_failed` lines |
+| `cost_usd` | hosted runs: `evaluation.common.cost_summary` (dollars per receipt and per 1,000) |
+
+Each metric carries `value`, `ci95`, `numerator` and `denominator`.
+
+Segments: `all`; `fiscal`, `card_slip`, `kind_unknown` (the ground truth's kind, pre-fill ignored,
+else `fiscal` for a receipt with a tax QR code: the same for every run); `one_photo`, `multi_photo`;
+`crop_failed` (a run with crops: a receipt for which a full photo was sent; null without crops).
+
+**Names** (`evaluation/text.py`, the one place): NFKC and case folding; apostrophes removed;
+anything but letters and digits becomes a space (so `2,5` and `2.5` agree); a space between digits
+and letters (`900г` → `900 г`); units spelled one way (`кг`→`kg`, `г`/`гр`→`g`, `л`→`l`,
+`мл`→`ml`, `шт`→`pcs`, `уп`→`pack`); Cyrillic letters that print like Latin ones written as Latin
+(`а е о р с у х і к м н т в`); spaces collapsed. A merchant also loses legal-form words (`ТОВ`,
+`ФОП`, `ПП`, `ПрАТ`, `ПАТ`, `АТ`, `ДП`, `КП`, `LLC`, `Ltd`). Similarity: `1 - levenshtein / longer
+length` (1 for two empty names).
+
+**Matching** (`evaluation/matching.py`): for each predicted and reference item, `name` = the
+similarity of the normalised names, `amount` = 1 for equal amounts, else
+`max(0, 1 - |p - r| / max(|p|, |r|))` (0 when one is missing), `score = 0.5 name + 0.5 amount`.
+A pair qualifies for `lenient` with `name >= 0.6`, for `main` with `score >= 0.8` (which implies
+`name >= 0.6`; an exactly right name allows an amount up to 40% off the larger one), for `strict`
+with `name >= 0.6` and equal amounts. For each variant the Hungarian method (SciPy's
+`linear_sum_assignment`) picks the largest number of qualifying pairs, each item used once, and
+among those the highest total score: an extra prediction can never take a match away. Every
+`strict` pair qualifies for `main` and every `main` pair for `lenient`, so the counts nest.
+
+### Item-category metrics
+
+Rows are the items of the reference record (`GroundTruth.categories`) of every receipt the run has
+a line for; an item with a null `category_slug` is not scored (`unlabelled_items`); an item with no
+line counts as wrong (label `_none`, confidence 0); a line for another record or position is not
+scored (`unmatched_lines`); a predicted slug not in the `group/category` form, or that no
+ground-truth record uses, becomes `_other` (a model's free text never becomes a label). Card slips are scored
+apart (`card_slips`: receipts, accuracy, top-3 accuracy of the receipt's category). The metrics are
+`categoriser.metrics`': `headline` (macro-F1, the main one, over categories that are a true label
+or a top-1 prediction; weighted F1; accuracy; top-3 accuracy), `coverage` (precision of the most
+confident rows at 10, 25, 50, 75, 90 and 100% coverage, whole tie groups kept, and at confidence
+0.5, 0.7, 0.9), `auto_accept` (the largest coverage whose kept rows are at least 95% precise, and
+the confidence that reaches it), `per_class` (support, predictions, F1), `confusion`, `by_source`
+(the headline metrics and the calibration for each `source` value that occurs, `unstated` and
+`other` included), `seconds_per_item`, `cost_usd` (from the lines' `cost_usd`).
+
+**Calibration** (`calibration`): whether the top candidate's score means what it says, over the
+items whose top candidate has a score (`rows_without_score` counts the others). Reliability table:
+ten equal-width bins of the score over [0, 1] (`[0, 0.1)`, ..., `[0.9, 1]`, the last one closed),
+fixed rather than fitted to the data so two runs are binned alike, each with its number of items,
+mean score and share correct. Expected calibration error (`ece`): the sum over bins of
+`items in bin / items * |share correct - mean score|`. Brier score of the top candidate (`brier`):
+the mean of `(score - correct)^2`, correct being 1 or 0. Both with 95% intervals from resampling
+receipts. `scores_calibrated` copies what the run says about its scores (null when it says
+nothing), so a reader can tell a raw score from a calibrated one. A bin with few items is noisy:
+read the counts. With few items per bin the ECE is biased upwards and its percentile interval is
+centred on that biased value, so it rarely covers 0 even for a well-calibrated categoriser; compare
+runs of a similar size, and read the reliability table next to it.
+
+**A combined run** is left out on a receipt (the pre-fill rule) when any categoriser it combines
+pre-filled that receipt's categories: the identities come from its own `model_name` and every
+`model_name` (and `model_version`) in `combined_from`. An entry without a name, an empty or missing
+`combined_from` in a run that says it combines (lines with `source: combined`), or a part with the
+version `local` counts as unknown, which leaves the record out. `combined_from` is read only for
+item-category runs.
+
+The `memory` source answers from earlier bookings of the same text, which may include the booking
+whose category became the ground truth; its share correct is an upper bound, so read it apart
+(`by_source`) and say so next to it.
+
+### Intervals and comparisons
+
+Every headline metric has a 95% percentile bootstrap interval from resampling receipts (whole
+receipts, with their items), 1,000 resamples by default, the seed derived from `--seed` and the run
+id (adding a run changes no other run's intervals). They cover the sampling of receipts from this
+set only: not how the receipts with ground truth were chosen, not run-to-run variation (greedy
+decoding), not other shops.
+
+A comparison is on the receipts both runs scored; every difference is A - B with a paired
+bootstrap interval (the same resampled receipts for both). OCR: every headline metric, and
+McNemar's test (exact and corrected chi-square, `categoriser.metrics.mcnemar`) on per-receipt
+correctness of the QR fields, the merchant, the kind and the items-sum check. Item categories: the
+headline metrics on the items both runs scored with the same label, and McNemar's test on per-item
+top-1 correctness. Comparisons are declared (`--compare`, a comparisons file) or automatic: same
+task, prompt version, image size and token limit, differing in exactly one of the model
+(`model`), the crops (`crops`, A = the cropped run) or the backend (`backend`, crops equal, A = the
+backend whose name sorts first).
+
+### Outputs
+
+`eval/results/` (`index.json`, `runs/<run id>.json`, `comparisons/<A>__vs__<B>.json`,
+`tables/*.md` and `*.csv`: OCR fields by run, by segment, OCR items by run, local against hosted,
+full against cropped photos, other OCR comparisons, item categories by run, item categories by
+source, calibration (the reliability table), the auto-accept table, item-category comparisons). Files there that a run did not write are removed. Keys are sorted,
+floats rounded to 6 places in JSON; tables have fixed rounding (one decimal for percentages and
+percentage points, two for seconds, three for p-values) and a fixed row order, so the same inputs
+give byte-identical files; the only times in them are `started_at` and `finished_at` copied from
+`run.json`.
+
+**What may enter `eval/results/`**: numbers, category slugs, model names and run parameters. Never
+an item name, a merchant, a receipt id, a single receipt's amount or date, or a local path. The
+writer (`evaluation/results.py`) checks every file against a declared structure before writing it
+(exact keys; numbers only where numbers are declared and no per-receipt lists; text only from fixed
+labels, narrow patterns or values read from a `run.json`) and every table cell likewise, and
+refuses anything else with an error that names the place, never the value. Per-receipt detail is
+written only with `--diagnostics DIR`, which must be outside any git repository (files mode 600).
+The console prints aggregates only.
+
+`evaluation.ocr_fields` still scores one run quickly against the QR codes; the harness is what the
+results chapter uses.
+
 ## Code layout
 
 ```
@@ -798,6 +1043,18 @@ evaluation/
   item_sanity.py   a smoke test on the invented sanity set
   label_memory.py  the label memory's rule, as the app applies it
   common.py        shared helpers (timings, cost summary)
+  harness.py       the evaluation harness (make eval): every run, comparisons, eval/results/
+  inputs.py        reading the receipt set, the run folders and the ground-truth export
+  truth.py         which ground truth counts: exclusions, precedence, the pre-fill rule
+  models.py        model identity: which names are the same model (the pre-fill rule)
+  text.py          name normalisation and similarity (the one place)
+  matching.py      one-to-one item matching (Hungarian method)
+  ocr_scoring.py   OCR metrics per receipt and per segment
+  category_scoring.py  item-category metrics
+  bootstrap.py     bootstrap intervals over receipts
+  comparisons.py   paired comparisons between runs
+  results.py       the whitelisted writer of eval/results/
+  tables.py        the tables, generated from the results JSON
 categoriser/       transaction categoriser training (see below)
 tests/
 ```

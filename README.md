@@ -345,6 +345,32 @@ it and the check) and refuses a folder inside a git repository. Rules: [`docs/do
 "Receipt ground truth"; reasons:
 [`docs/decisions/0010-receipt-ground-truth.md`](docs/decisions/0010-receipt-ground-truth.md).
 
+### Scoring the runs: `make eval`
+
+Every number of the results chapter comes from one command, offline, from files:
+
+```sh
+make eval-check   # validate the inputs and print what would be scored; writes nothing
+make eval         # score every run and write eval/results/ (JSON and tables)
+make eval RUNS_DIR=$HOME/Documents/money_bin_data/runs/pilot EVAL_ARGS="--compare RUN_A RUN_B"
+```
+
+It reads the receipt set (`RECEIPTS_DIR`, default `~/Documents/money_bin_data/receipts`), every run
+folder under `RUNS_DIR` (default `~/Documents/money_bin_data/runs`, at any depth: OCR runs written by
+`ml/evaluation/ocr_run.py`, and item-category runs) and the ground-truth export (`GROUND_TRUTH_DIR`,
+default `~/Documents/money_bin_data/ground_truth`, optional). It never reads the app's database. It writes
+aggregate JSON per run and per comparison, an index and Markdown and CSV tables to `eval/results/`; the
+same inputs give byte-identical files. Comparing two models, local with hosted, or full photos with
+cropped ones is a matter of more runs: runs that differ in exactly one of model, backend or crops are
+compared automatically, other pairs with `--compare` or a `comparisons.txt` in the runs folder.
+
+`eval/results/` is committed, so it holds numbers, category slugs, model names and run parameters only:
+never an item name, a merchant, a receipt id, an amount or a date of a single receipt, or a local path.
+The harness's writer enforces this (a whitelisted structure); per-receipt detail goes only to
+`EVAL_ARGS="--diagnostics DIR"` outside git. Metric definitions: [`ml/README.md`](ml/README.md), "The
+evaluation harness"; reasons:
+[`docs/decisions/0014-evaluation-harness.md`](docs/decisions/0014-evaluation-harness.md).
+
 ## Training the transaction categoriser
 
 `ml/categoriser/` trains a model that suggests a category for a transaction from a history export, and
@@ -563,6 +589,7 @@ bin/              setup, dev, ci, services, worktree and pull request scripts, l
 config/           Rails config; ci.rb (the bin/ci steps), redis_url.rb, worktree_isolation.rb
 db/               migrations, schema, seeds
 design/           favicon/source.png, the artwork behind the logo and the favicons
+eval/results/     the evaluation's aggregate results and tables, written by `make eval` (Makefile)
 docs/             domain.md (the data model), import-contract.md (the history export), openapi.yaml
                   (the REST API) and decisions/ (architecture decision records)
 ml/               the Python ML service (FastAPI, uv) and the categoriser training (ml/categoriser/);
