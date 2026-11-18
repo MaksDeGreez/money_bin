@@ -55,6 +55,9 @@ data/
 rcpt_*.jpg
 receipts.jsonl
 groups_override.yaml
+# The OCR runs' answers and the ground-truth export (ml/evaluation/), also kept outside the repository.
+predictions.jsonl
+ground_truth.jsonl
 groups_review.html
 
 # Python caches and virtual environments.
