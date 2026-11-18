@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -144,6 +144,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_100000) do
     t.string "qr_fiscal_number"
     t.string "qr_receipt_number"
     t.string "ingest_id"
+    t.index "COALESCE(issued_at, (created_at AT TIME ZONE 'UTC'::text)) DESC, id DESC", name: "index_receipts_on_sort_time_and_id"
     t.index ["batch"], name: "index_receipts_on_batch"
     t.index ["ingest_id"], name: "index_receipts_on_ingest_id", unique: true, where: "(ingest_id IS NOT NULL)"
     t.index ["kind"], name: "index_receipts_on_kind"
@@ -175,7 +176,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_100000) do
     t.text "comment"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.index ["category_id"], name: "index_transaction_lines_on_category_id"
+    t.index ["category_id", "transaction_id"], name: "index_transaction_lines_on_category_id_and_transaction_id"
     t.index ["transaction_id"], name: "index_transaction_lines_on_transaction_id"
     t.check_constraint "amount <> 0::numeric", name: "transaction_lines_amount_non_zero"
   end
@@ -202,10 +203,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_100000) do
     t.string "source_system"
     t.string "import_digest"
     t.index "transfer_id, ((amount > (0)::numeric))", name: "index_transactions_one_leg_per_side", unique: true, where: "(transfer_id IS NOT NULL)"
-    t.index ["account_id", "occurred_on"], name: "index_transactions_on_account_id_and_occurred_on"
-    t.index ["occurred_on"], name: "index_transactions_on_occurred_on"
+    t.index ["account_id", "occurred_on", "id"], name: "index_transactions_on_account_id_and_occurred_on_and_id"
+    t.index ["occurred_on", "id"], name: "index_transactions_on_occurred_on_and_id"
     t.index ["payee_id"], name: "index_transactions_on_payee_id"
     t.index ["source", "external_id"], name: "index_transactions_on_source_and_external_id", unique: true, where: "(external_id IS NOT NULL)"
+    t.index ["source"], name: "index_transactions_on_source"
     t.index ["status"], name: "index_transactions_on_status"
     t.check_constraint "amount <> 0::numeric", name: "transactions_amount_non_zero"
     t.check_constraint "mcc::text ~ '^[0-9]{4}$'::text", name: "transactions_mcc_format"
