@@ -4,7 +4,9 @@
 /   = render "receipts/ground_truth_check", receipt: @receipt, record: dps_record, filter: @filter
 ruby:
   document = record.current_document
-  current = ReceiptGroundTruth::Snapshot.document(receipt, categories: false)
+  # The receipt as stored: after a refused save the page's receipt holds the typed values.
+  stored = Receipt.includes(items: :category).find(receipt.id)
+  current = ReceiptGroundTruth::Snapshot.document(stored, categories: false)
   diff = ReceiptGroundTruth::Diff.new(document, current, ignore: %w[category_slug is_return])
   header_keys = ReceiptGroundTruth::Diff::HEADER_KEYS - %w[category_slug is_return]
   item_keys = %w[name quantity unit_price discount amount]

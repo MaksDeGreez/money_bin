@@ -7,7 +7,8 @@ module Receipts
   #   `ocr_model_version` and `ocr_prompt_version` the model and prompt that produced it (they say what
   #   pre-filled the review form: ReceiptGroundTruth::Prefill).
   # - The answer replaces whatever filled the form before: `filled_from` (a fill from the tax-service record)
-  #   and `categoriser_model_name` (the new items carry no suggestion) are cleared.
+  #   and `categoriser_model_name` with a slip's own suggestion (the new items carry no suggestion) are
+  #   cleared.
   # - `merchant_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total` and `currency` come from the
   #   receipt part. A null in the answer stores nil.
   # - `kind` (`fiscal` or `card_slip`) and `card_last4` (four digits) are stored when the answer carries a
@@ -74,6 +75,7 @@ module Receipts
         @receipt.assign_attributes(
           ocr_raw: @result.body, ocr_model_name: @result.model_name, ocr_model_version: @result.model_version,
           ocr_prompt_version: prompt_version, filled_from: nil, categoriser_model_name: nil,
+          suggested_category_id: nil, suggested_category_confidence: nil,
           status: :extracted,
           merchant_name: text(data["merchant"]), fiscal_number: text(data["fiscal_number"]),
           receipt_number: text(data["receipt_number"]), issued_at: time(data["issued_at"]),

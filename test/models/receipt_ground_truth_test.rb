@@ -124,6 +124,16 @@ class ReceiptGroundTruthTest < ActiveSupport::TestCase
     assert_includes ReceiptGroundTruth.unchecked, record
   end
 
+  test "a check writes its own columns only: the time the content was saved stays" do
+    record = receipt_ground_truths(:market_dps)
+    saved = record.updated_at
+    record.record_check!(matches: false, note: "x")
+    assert_equal saved, record.reload.updated_at
+    record.clear_check!
+    assert_equal saved, record.reload.updated_at
+    assert_raises(ActiveRecord::RecordInvalid) { record.record_check!(matches: true, note: "x", at: nil) }
+  end
+
   test "a check needs both its time and its outcome" do
     assert_not build(checked_at: Time.current).valid?
     assert_not build(check_outcome: :matches).valid?
@@ -249,6 +259,9 @@ class ReceiptGroundTruthTest < ActiveSupport::TestCase
     assert manual(categories_prefilled_by: "tfidf-v1").categories_independent_of?("another")
     unknown = manual(categories_prefilled_by: ReceiptGroundTruth::CATEGORISER_UNKNOWN)
     assert_not unknown.categories_independent_of?("tfidf-v1"), "not knowing whose suggestions they were excludes every categoriser"
+    unknown_model = manual(prefilled_by: ReceiptGroundTruth::PREFILLED_BY_UNKNOWN_MODEL)
+    assert unknown_model.valid?
+    assert_not unknown_model.independent_of?("stub-ocr"), "an answer that named no model counts for none"
     assert_equal :model, manual.prefill_kind
     assert_equal :hand, manual(prefilled_by: ReceiptGroundTruth::PREFILLED_BY_HAND).prefill_kind
     assert_nil receipt_ground_truths(:market_dps).prefill_kind

@@ -12,7 +12,8 @@ class ReceiptsController < ApplicationController
   PREFETCH_HEADERS = %w[HTTP_SEC_PURPOSE HTTP_X_SEC_PURPOSE HTTP_PURPOSE].freeze
   GROUND_TRUTH_NOTICES = {
     created: "Saved as ground truth.", replaced: "Saved as ground truth: the earlier record is replaced.",
-    unchanged: "Saved. The ground truth already said exactly this, so it is unchanged."
+    unchanged: "Saved. The ground truth already said exactly this, so it is unchanged.",
+    unchanged_booked: "Nothing changed: the ground truth already says exactly this."
   }.freeze
   QUEUE_UNAVAILABLE = "OCR could not be queued: the job queue (Redis) cannot be reached. Try again later."
 
@@ -51,8 +52,10 @@ class ReceiptsController < ApplicationController
     if @review.call
       if @review.ground_truth
         # The account chosen on the form stays chosen, as after a Save.
+        status = @review.ground_truth.status
+        status = :unchanged_booked if status == :unchanged && @receipt.reviewed?
         redirect_to receipt_path(@receipt, @filter.to_params.merge(labelled: 1, account: @review.account&.id).compact), status: :see_other,
-          notice: GROUND_TRUTH_NOTICES.fetch(@review.ground_truth.status)
+          notice: GROUND_TRUTH_NOTICES.fetch(status)
       elsif @review.transaction
         redirect_to transaction_path(@review.transaction, @filter.to_params.merge(accepted: 1)), status: :see_other,
           notice: "Accepted into the ledger."

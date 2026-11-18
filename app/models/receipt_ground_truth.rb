@@ -40,7 +40,9 @@ class ReceiptGroundTruth < ApplicationRecord
   # names models by their repository id or backend), so the two cannot be mistaken for one.
   PREFILLED_BY_HAND = "source:hand".freeze
   PREFILLED_BY_DPS_XML = "source:dps_xml".freeze
-  PREFILLED_BY_SOURCES = [ PREFILLED_BY_HAND, PREFILLED_BY_DPS_XML ].freeze
+  # A model's answer filled the form, but the answer named no model: excluded for every model.
+  PREFILLED_BY_UNKNOWN_MODEL = "source:unknown-model".freeze
+  PREFILLED_BY_SOURCES = [ PREFILLED_BY_HAND, PREFILLED_BY_DPS_XML, PREFILLED_BY_UNKNOWN_MODEL ].freeze
   # `categories_prefilled_by` when suggestions were on the form but the receipt does not say which
   # categoriser made them: the evaluation then leaves the record out for every categoriser.
   CATEGORISER_UNKNOWN = "source:unknown".freeze
@@ -117,21 +119,25 @@ class ReceiptGroundTruth < ApplicationRecord
     end
   end
 
-  # A person compared the record with the printed receipt: `matches` true when every value agrees.
+  # A person compared the record with the printed receipt: `matches` true when every value agrees. Only the
+  # check columns are written: `updated_at` keeps saying when the content was saved (imported, or labelled).
   def record_check!(matches:, note: nil, at: Time.current)
-    update!(checked_at: at, check_outcome: matches ? :matches : :differs, check_note: note)
+    write_check(checked_at: at, check_outcome: matches ? :matches : :differs, check_note: note)
   end
 
   # Forgets a check (a person clicked the wrong button).
   def clear_check!
-    update!(checked_at: nil, check_outcome: nil, check_note: nil)
+    write_check(checked_at: nil, check_outcome: nil, check_note: nil)
   end
 
   # False when `model_name` filled the form this record was corrected from: scoring that model against it
   # would reward the model for its own answer. Any version or prompt of the model counts: the same weights
   # answer much the same.
   def independent_of?(model_name)
-    prefilled_by.nil? || prefilled_by != model_name.to_s.strip
+    return true if prefilled_by.nil?
+    return false if prefilled_by == PREFILLED_BY_UNKNOWN_MODEL
+
+    prefilled_by != model_name.to_s.strip
   end
 
   # False when the categoriser `model_name` suggested categories on the form this record's categories were
@@ -141,6 +147,12 @@ class ReceiptGroundTruth < ApplicationRecord
   end
 
   private
+    def write_check(**attributes)
+      assign_attributes(attributes)
+      validate!
+      update_columns(checked_at:, check_outcome:, check_note:)
+    end
+
     def document_has_the_shape
       Document.problems(document, items_known:, categories_known:, version: schema_version)
         .each { |problem| errors.add(:document, problem) }

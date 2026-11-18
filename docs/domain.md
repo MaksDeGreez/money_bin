@@ -789,7 +789,8 @@ Why it is built this way:
   model, so it has no `prefilled_by` (a database constraint). The same holds for categories and the
   categoriser whose suggestions were on the form (`categories_independent_of?`).
 - **Checked.** An imported record is what the file says. A person can compare it with the printed receipt and
-  record `matches` or `differs` (`record_check!`, `clear_check!`; see "Checking an imported record"). Once
+  record `matches` or `differs` (`record_check!`, `clear_check!`; see "Checking an imported record"); a check
+writes its own columns only, so `updated_at` keeps saying when the content was saved. Once
   checked, the import no longer replaces it when the file changes: the person's judgement is about this
   version, and the change is reported as a conflict instead.
 
@@ -861,6 +862,7 @@ and any save then stores it on the receipt (only that value, and only when the r
 |---|---|---|
 | `filled_from` is `dps_xml` | `source:dps_xml` | none |
 | else `ocr_model_name` is set | that model's name | `ocr_model_version`, `ocr_prompt_version` |
+| else an OCR answer is stored without a model name | `source:unknown-model` | as stored |
 | else (entered by hand from nothing) | `source:hand` | none |
 
 `Receipts::ApplyOcr` writes the model's name, version and prompt version together and replaces every field
@@ -880,13 +882,17 @@ answer is not tracked: an accepted limit.
 **Categories.** `categories_prefilled_by` is `receipts.categoriser_model_name` when a kept item (or a card
 slip) carries a suggestion at the time of saving, `source:unknown` when one does and the receipt does not say
 whose (the evaluation then leaves the record out for every categoriser), and nil when none does or the
-record has no categories. A new OCR result replaces the items and so clears `categoriser_model_name`; a
+record has no categories. A new OCR result replaces the items and so clears `categoriser_model_name` and a
+slip's own suggestion; a
 review save keeps it (it is not a form field). Rows filled from the tax-service record carry no suggestion.
 
 **In the evaluation.** A record whose `prefilled_by` is a model's name is not test ground truth for that
 model, whatever its version or prompt (the same weights answer much the same); one whose
 `categories_prefilled_by` names a categoriser is not test ground truth for that categoriser's categories.
-Records pre-filled by `source:hand` or `source:dps_xml`, and imported records, count for every model.
+Records pre-filled by `source:hand` or `source:dps_xml`, and imported records, count for every model;
+`source:unknown-model` (an OCR answer that named no model) counts for none. The names are compared exactly,
+as the ML service reports them: one model served by two backends has two names (a local quantised repository
+id, a hosted provider's id), so the evaluation maps names to model families before it applies the rule.
 
 ### Checking an imported record
 

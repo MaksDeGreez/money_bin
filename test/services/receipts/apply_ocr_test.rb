@@ -316,13 +316,16 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
   end
   test "stores the prompt version and clears what filled the form before: a fill from the tax-service record, the categoriser" do
     receipt = receipts(:corner_receipt)
-    receipt.update_columns(filled_from: "dps_xml", categoriser_model_name: "invented-categoriser", ocr_prompt_version: "old")
+    receipt.update_columns(filled_from: "dps_xml", categoriser_model_name: "invented-categoriser", ocr_prompt_version: "old",
+      suggested_category_id: categories(:cafes).id, suggested_category_confidence: 0.5)
 
     apply(receipt, ml_ocr_result(prompt_version: " p-1a2b "))
     receipt.reload
     assert_equal "p-1a2b", receipt.ocr_prompt_version
     assert_nil receipt.filled_from
     assert_nil receipt.categoriser_model_name
+    assert_nil receipt.suggested_category_id, "a slip's own suggestion goes with its categoriser"
+    assert_nil receipt.suggested_category_confidence
 
     apply(receipt, ml_ocr_result(prompt_version: nil))
     assert_nil receipt.reload.ocr_prompt_version, "the stub sends none"

@@ -255,6 +255,42 @@ class Receipts::SaveGroundTruthTest < ActiveSupport::TestCase
     assert_equal "61.00", record.document["items"].first["amount"]
   end
 
+  test "a record that changed between the question and the confirmation asks again" do
+    assert label.first
+    params = categorised_form(merchant_name: "Other")
+    saved, review = label(params)
+    assert_not saved
+    record.update!(document: record.document.merge("total" => "1.00"))
+
+    saved, review = label(params.merge(replace_ground_truth: review.ground_truth.token))
+    assert_not saved
+    assert review.confirmation_needed?
+    assert_equal "Corner Shop", record.reload.document["merchant"]
+  end
+
+  test "rows marked for removal stay marked across the question, and the confirmed save removes them" do
+    assert label.first
+    params = categorised_form
+    params[:items_attributes]["2"] = params[:items_attributes]["2"].merge(_destroy: "1")
+    saved, review = label(params)
+    assert_not saved
+    assert review.form_receipt.items.find { |item| item.id == @deposit.id }.marked_for_destruction?
+    assert ReceiptItem.exists?(@deposit.id), "nothing was saved"
+
+    assert label(params.merge(replace_ground_truth: review.ground_truth.token)).first
+    assert_not ReceiptItem.exists?(@deposit.id)
+    assert_equal 2, record.reload.items.size
+  end
+
+  test "a record the store refuses rolls the form save back too, with the reason on the form" do
+    long = "x" * (ReceiptGroundTruth::Document::TEXT_LIMIT + 1)
+    saved, review = label(categorised_form(merchant_name: long))
+    assert_not saved
+    assert_match(/\ANot saved as ground truth: Document merchant must be text or null/, review.form_receipt.errors[:base].first)
+    assert_equal "Corner Shop", @receipt.reload.merchant_name
+    assert_nil record
+  end
+
   test "a confirmation is for the differences shown: a form changed again asks again" do
     assert label.first
     saved, review = label(categorised_form(merchant_name: "First"))
@@ -362,6 +398,12 @@ class Receipts::SaveGroundTruthTest < ActiveSupport::TestCase
     assert_not saved
     assert label(params.merge(replace_ground_truth: review.ground_truth.token)).first
     assert_equal [ "model-b", "2.0", "p-b" ], [ record.prefilled_by, record.prefilled_model_version, record.prefilled_prompt_version ]
+  end
+
+  test "an OCR answer that named no model is not taken for entering by hand" do
+    @receipt.update_columns(ocr_model_name: "", ocr_raw: { "receipt" => { "items" => [] } })
+    assert label.first
+    assert_equal ReceiptGroundTruth::PREFILLED_BY_UNKNOWN_MODEL, record.prefilled_by
   end
 
   # --- categories_prefilled_by ------------------------------------------------------------------------------

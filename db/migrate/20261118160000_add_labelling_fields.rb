@@ -67,7 +67,13 @@ class AddLabellingFields < ActiveRecord::Migration[8.1]
       name: "receipt_ground_truths_unknown_categories_null"
   end
 
+  # The code before this change reads schema version 1 only: going back with version 2 records stored would
+  # make them invalid (and checked imported ones conflicts), so it stops instead.
   def down
+    if select_value("SELECT COUNT(*) FROM receipt_ground_truths WHERE schema_version >= 2").to_i.positive?
+      raise ActiveRecord::IrreversibleMigration, "ground-truth records of schema version 2 exist"
+    end
+
     remove_check_constraint :receipt_ground_truths, name: "receipt_ground_truths_unknown_categories_null"
     remove_check_constraint :receipt_ground_truths, name: "receipt_ground_truths_categories_need_version_2"
     remove_check_constraint :receipt_ground_truths, name: "receipt_ground_truths_manual_fields"

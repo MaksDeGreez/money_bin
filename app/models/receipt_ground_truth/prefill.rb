@@ -13,6 +13,8 @@ class ReceiptGroundTruth
   #   again by another model after a person corrected it, the new answer replaces the corrections, so the
   #   form now holds that model's answer and the record names it. A record saved before keeps its own
   #   `prefilled_by`: it is a snapshot.
+  # - else an OCR answer is stored but named no model (the contract does not promise a non-empty name):
+  #   PREFILLED_BY_UNKNOWN_MODEL, which the evaluation leaves out for every model.
   # - else nothing filled it: the receipt was entered by hand from nothing (PREFILLED_BY_HAND).
   #
   # A person who cleared everything a model filled in and typed it again still gets the model: the rule leans
@@ -35,6 +37,9 @@ class ReceiptGroundTruth
         new(by: PREFILLED_BY_DPS_XML, model_version: nil, prompt_version: nil)
       elsif receipt.ocr_model_name.present?
         new(by: receipt.ocr_model_name.strip, model_version: receipt.ocr_model_version.presence,
+          prompt_version: receipt.ocr_prompt_version.presence)
+      elsif receipt.ocr_raw.is_a?(Hash) && receipt.ocr_raw.key?("receipt")
+        new(by: PREFILLED_BY_UNKNOWN_MODEL, model_version: receipt.ocr_model_version.presence,
           prompt_version: receipt.ocr_prompt_version.presence)
       else
         new(by: PREFILLED_BY_HAND, model_version: nil, prompt_version: nil)
