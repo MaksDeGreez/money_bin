@@ -27,6 +27,13 @@ class UiFormBuilderTest < ActionView::TestCase
     assert_match(/class="form-control" type="password"/, builder.password_field(:name))
   end
 
+  test "a file field gets form-control and its file modifier" do
+    html = builder.file_field(:name, multiple: true)
+
+    assert_match(/class="form-control form-control-file"/, html)
+    assert_match(/multiple="multiple"/, html)
+  end
+
   test "text area and select get their modifiers" do
     assert_match(/class="form-control form-control-textarea"/, builder.text_area(:name))
     select = builder.select(:kind, %w[cash card])

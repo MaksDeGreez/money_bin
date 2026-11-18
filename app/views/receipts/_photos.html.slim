@@ -1,0 +1,8 @@
+/ The receipt's photos in upload order, each opening the full photo in a new tab.
+- photos = receipt.ordered_images
+section.space-y-4 aria-label="Photos"
+  - photos.each.with_index(1) do |photo, number|
+    figure
+      = link_to receipt_photo_path(receipt, photo, :full), class: "photo-frame", target: "_blank", rel: "noopener" do
+        img src=receipt_photo_path(receipt, photo, :page) alt="Photo #{number} of #{photos.size} of #{receipt_label(receipt)}" loading=(number == 1 ? "eager" : "lazy")
+      figcaption.mt-1.text-xs.text-ink-muted = "Photo #{number} of #{photos.size} · opens the full photo"

@@ -1,0 +1,49 @@
+/ Where the receipt is in OCR, and "Read again" where it is allowed (docs/domain.md, "Who enqueues OCR").
+- queued_since = receipt.ocr_requested_at
+- if receipt.processing?
+  = render "ui/callout", tone: :signal do
+    p.flex.items-center.gap-2.text-sm
+      = ui_icon "loader", class: "animate-spin motion-reduce:animate-none"
+      | Reading the photos now. This page updates when OCR is done.
+- elsif receipt.uploaded?
+  = render "ui/callout" do
+    p.text-sm
+      - if queued_since
+        | Queued for OCR at
+        =< receipt_time(queued_since)
+        | . The OCR queue reads one receipt at a time; this page updates when it starts.
+      - else
+        | Not read yet. OCR is queued when this page is opened.
+- elsif receipt.failed?
+  = render "ui/callout", tone: :danger do
+    .space-y-3
+      p.text-sm
+        strong OCR failed.
+        - if (error = receipt.ocr_error)
+          =< error["message"]
+          code.ml-1.text-xs = "(#{error['code']})"
+      - if queued_since
+        p.text-sm
+          | Queued to read again at
+          =< receipt_time(queued_since)
+          | .
+      - else
+        = ui_button_to read_receipt_path(receipt), variant: :secondary, size: :sm do
+          = ui_icon "refresh-cw"
+          span Read again
+- elsif receipt.extracted?
+  - if queued_since
+    = render "ui/callout" do
+      p.text-sm
+        | Queued to read again at
+        =< receipt_time(queued_since)
+        | . The items will be replaced by the new result.
+  - else
+    .flex.flex-wrap.items-center.justify-between.gap-3
+      p.text-sm.text-ink-muted Read by OCR; waiting for review.
+      = ui_button_to read_receipt_path(receipt), variant: :ghost, size: :sm,
+        form: { data: { turbo_confirm: "Read this receipt again? Its items are replaced by the new OCR result." } } do
+        = ui_icon "refresh-cw"
+        span Read again
+- elsif receipt.reviewed?
+  p.text-sm.text-ink-muted Accepted into the ledger. It is not read again.

@@ -1,0 +1,53 @@
+- content_for :title, "Receipts · Money Bin"
+/ Live: Receipts::LiveUpdate asks this page to refresh (morph, scroll kept) when a receipt's OCR state
+/ changes, so the rows and the counts follow the OCR queue without a reload.
+= turbo_stream_from Receipts::LiveUpdate::STREAM
+
+= render "ui/page_header", title: "Receipts", description: "Every receipt photo set, its OCR state and what was read from it." do
+  = ui_link_button new_receipt_path, variant: :primary do
+    = ui_icon "upload"
+    span Upload
+
+= render "receipts/filter", filter: @filter, batches: @batches
+
+.mt-6.flex.flex-col.gap-4 class="lg:flex-row lg:items-center lg:justify-between"
+  = render "ui/count_tabs", label: "Status",
+    tabs: [ { label: "All", count: @status_counts.values.sum, url: receipts_path(@filter.merge(status: nil).to_params), current: @filter.status.nil? } ] + \
+      @status_counts.map { |status, count| { label: receipt_status_label(status), count:, url: receipts_path(@filter.merge(status:).to_params), current: @filter.status == status } }
+  - if @readable_count.positive?
+    = ui_button_to read_all_receipts_path(@filter.to_params), variant: :secondary, size: :sm,
+      form: { data: { turbo_confirm: "Queue #{pluralize(@readable_count, 'receipt')} for OCR (the ones in this filter that were never read or failed)? The OCR model reads one receipt at a time, so this can take hours." } } do
+      = ui_icon "scan-text"
+      span = "Read all in this filter (#{@readable_count})"
+
+- if @receipts.empty?
+  .mt-6
+    = render "ui/callout" do
+      p.text-sm
+        - if @filter.any?
+          | No receipt matches this filter.
+          =< link_to "Show all receipts", receipts_path
+        - else
+          | No receipts yet.
+          =< link_to "Upload the first one", new_receipt_path
+- else
+  / No link prefetch: opening a receipt page queues OCR for an unread receipt.
+  .data-grid-wrapper.mt-4 data-turbo-prefetch="false"
+    table.data-grid
+      thead
+        tr
+          th
+            span.sr-only Photo
+          th Receipt
+          th Status
+          th Kind
+          th QR
+          th Merchant
+          th Date
+          th.data-grid-num Total
+          th.data-grid-num Items
+          th Transaction
+      tbody
+        = render partial: "receipts/receipt", collection: @receipts, locals: { filter_params: @filter.to_params }
+  .mt-4
+    = render "ui/pagination", pagination: @pagination, url: ->(page) { receipts_path(@filter.to_params.merge(page:)) }

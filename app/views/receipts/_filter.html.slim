@@ -1,0 +1,22 @@
+/ The list filter, a GET form: its state is the URL (Receipt::Filter).
+= form_with url: receipts_path, method: :get, class: "filter-bar mt-8", role: "search", aria: { label: "Filter receipts" } do |f|
+  .field
+    = f.label :batch, "Batch"
+    = f.select :batch, options_for_select(batches, filter.batch), include_blank: "All batches"
+  .field
+    = f.label :status, "Status"
+    = f.select :status, options_for_select(Receipt.statuses.keys.map { |status| [ receipt_status_label(status), status ] }, filter.status), include_blank: "Any status"
+  .field
+    = f.label :kind, "Kind"
+    = f.select :kind, options_for_select(Receipt::Filter::KINDS.invert, filter.kind), include_blank: "Any kind"
+  .field
+    = f.label :qr, "Tax QR"
+    = f.select :qr, options_for_select(Receipt::Filter::QR_CHOICES.invert, filter.qr), include_blank: "With or without"
+  .field
+    label.form-check-label
+      = f.check_box :incomplete, { checked: filter.incomplete.present? }, "1", nil
+      span Incomplete only
+  .filter-bar-actions
+    = f.submit "Filter", name: nil, variant: :secondary
+    - if filter.any?
+      = ui_link_button "Clear", receipts_path, variant: :ghost

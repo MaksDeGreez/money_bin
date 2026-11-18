@@ -36,6 +36,11 @@ class UiFormBuilder < ActionView::Helpers::FormBuilder
     wrap_select(super)
   end
 
+  # A file picker. `multiple: true` for a has_many_attached attribute.
+  def file_field(method, options = {})
+    super(method, control_options(method, options, "form-control form-control-file"))
+  end
+
   def check_box(method, options = {}, checked_value = "1", unchecked_value = "0")
     super(method, control_options(method, options, "form-check"), checked_value, unchecked_value)
   end

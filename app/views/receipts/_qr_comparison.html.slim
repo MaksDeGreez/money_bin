@@ -1,0 +1,23 @@
+/ The tax-service QR values (ground truth, written only by the receipt load) next to what OCR read.
+/ What "match" means: Receipt::QrComparison.
+section aria-labelledby=dom_id(receipt, :qr_heading)
+  h2.text-base id=dom_id(receipt, :qr_heading) Tax QR code
+  - if receipt.tax_qr?
+    .data-grid-wrapper.mt-3
+      table.data-grid
+        thead
+          tr
+            th Field
+            th QR code
+            th OCR
+            th
+              span.sr-only Comparison
+        tbody
+          - Receipt::QrComparison.new(receipt).rows.each do |row|
+            tr
+              td.whitespace-nowrap = ReceiptsHelper::QR_FIELD_LABELS.fetch(row.field)
+              td.whitespace-nowrap.tabular-nums = receipt_qr_value(row.field, row.qr)
+              td.whitespace-nowrap.tabular-nums = receipt_qr_value(row.field, row.ocr)
+              td.whitespace-nowrap = receipt_qr_mark(row.state)
+  - else
+    p.mt-2.text-sm.text-ink-muted No tax-service QR data for this receipt.

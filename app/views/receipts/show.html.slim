@@ -1,0 +1,31 @@
+- content_for :title, "#{receipt_label(@receipt)} · Receipts · Money Bin"
+/ Live: Receipts::LiveUpdate asks this page to refresh (morph, scroll kept) when OCR is queued, starts,
+/ finishes or fails, so the status badge and the data column follow it without a reload.
+= turbo_stream_from @receipt
+
+= render "ui/page_header", title: receipt_label(@receipt) do
+  / No link prefetch: opening a receipt page queues OCR for an unread receipt.
+  nav.flex.flex-wrap.items-center.gap-2 aria-label="Receipts" data-turbo-prefetch="false"
+    = ui_link_button receipts_path(@filter.to_params), variant: :ghost, size: :sm do
+      = ui_icon "list"
+      span Back to the list
+    - if @previous_id
+      = ui_link_button receipt_path(@previous_id, @filter.to_params), variant: :secondary, size: :sm, rel: "prev" do
+        = ui_icon "chevron-left"
+        span Previous
+    - if @next_id
+      = ui_link_button receipt_path(@next_id, @filter.to_params), variant: :secondary, size: :sm, rel: "next" do
+        span Next
+        = ui_icon "chevron-right"
+
+.mt-3.flex.flex-wrap.items-center.gap-2.text-sm.text-ink-muted
+  = render "receipts/status_badge", receipt: @receipt
+  span = receipt_kind_label(@receipt)
+  - if @receipt.batch
+    span = "· batch #{@receipt.batch}"
+
+/ Two columns: the photos, and what is stored about the receipt. The review form (a later change) takes
+/ the place of the data column.
+.mt-8.grid.gap-8 class="lg:grid-cols-2"
+  = render "receipts/photos", receipt: @receipt
+  = render "receipts/data", receipt: @receipt

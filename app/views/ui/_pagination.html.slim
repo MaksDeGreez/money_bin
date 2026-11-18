@@ -1,0 +1,26 @@
+/ Previous / next links and "21-40 of 299" under a list (Pagination, app/models/pagination.rb).
+/   = render "ui/pagination", pagination: @pagination, url: ->(page) { receipts_path(@filter.to_params.merge(page:)) }
+/ Nothing is drawn when everything fits on one page.
+- if pagination.pages > 1
+  nav.pagination aria-label="Pages"
+    p.text-sm.text-ink-muted
+      = "#{pagination.first_item}–#{pagination.last_item} of #{pagination.total_count}"
+      span.sr-only = ", page #{pagination.page} of #{pagination.pages}"
+    .pagination-links
+      - if pagination.previous_page
+        = ui_link_button url.call(pagination.previous_page), variant: :secondary, size: :sm, rel: "prev" do
+          = ui_icon "chevron-left"
+          span Previous
+      - else
+        = ui_button variant: :secondary, size: :sm, disabled: true do
+          = ui_icon "chevron-left"
+          span Previous
+      span.tabular-nums = "Page #{pagination.page} of #{pagination.pages}"
+      - if pagination.next_page
+        = ui_link_button url.call(pagination.next_page), variant: :secondary, size: :sm, rel: "next" do
+          span Next
+          = ui_icon "chevron-right"
+      - else
+        = ui_button variant: :secondary, size: :sm, disabled: true do
+          span Next
+          = ui_icon "chevron-right"

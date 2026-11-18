@@ -1,0 +1,27 @@
+- content_for :title, "Upload a receipt · Money Bin"
+
+= render "ui/page_header", title: "Upload a receipt", description: "One to three photos of one receipt (a long receipt in parts, in order). OCR reads them once they are uploaded."
+
+/ Not a direct upload: Rails' Active Storage routes are not drawn, so the photos come with the form.
+= form_with model: @receipt, class: "mt-8 max-w-xl space-y-5" do |f|
+  - if @duplicate
+    = render "ui/callout", tone: :signal do
+      p.text-sm
+        | These photos were already uploaded as
+        =< link_to receipt_label(@duplicate), receipt_path(@duplicate), data: { turbo_prefetch: false }
+        | .
+  .field
+    = f.label :images, "Photos"
+    = f.file_field :images, multiple: true, required: true, accept: Receipt::IMAGE_CONTENT_TYPES.join(","), "aria-describedby": "images_hint"
+    p.field-hint#images_hint
+      | JPEG, PNG, WebP or HEIC, at most #{Receipt::MAX_IMAGE_BYTES / 1.megabyte} MB each, up to #{Receipt::MAX_IMAGES} photos.
+    = f.error_for :images
+    = f.error_for :sha256
+  .field
+    = f.label :batch, "Batch (optional)"
+    = f.text_field :batch, placeholder: "november-shopping", maxlength: 100
+    = f.hint "A label to find a group of uploads again in the list."
+    = f.error_for :batch
+  .flex.items-center.gap-3
+    = f.submit "Upload", data: { turbo_submits_with: "Uploading…" }
+    = ui_link_button "Cancel", receipts_path, variant: :ghost

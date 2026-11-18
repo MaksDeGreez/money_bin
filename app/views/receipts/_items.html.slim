@@ -1,0 +1,60 @@
+/ The items OCR read (or a person will correct), with their sum against the printed total.
+- items = receipt.items.includes(:category, :suggested_category).to_a
+section aria-labelledby=dom_id(receipt, :items_heading)
+  h2.text-base id=dom_id(receipt, :items_heading) Items
+  - if items.empty?
+    p.mt-2.text-sm.text-ink-muted No items yet.
+  - else
+    .data-grid-wrapper.mt-3
+      table.data-grid
+        thead
+          tr
+            th.data-grid-num #
+            th Name
+            th.data-grid-num Qty
+            th.data-grid-num Unit price
+            th.data-grid-num Discount
+            th.data-grid-num Amount
+            th Category
+        tbody
+          - items.each do |item|
+            tr
+              td.data-grid-num = item.position
+              td = item.name
+              td.data-grid-num = receipt_quantity(item.quantity)
+              td.data-grid-num = receipt_money(item.unit_price)
+              td.data-grid-num = (receipt_money(item.discount) unless item.discount.zero?)
+              td.data-grid-num = receipt_money(item.amount)
+              td
+                - if item.category
+                  = item.category.name
+                - elsif item.suggested_category
+                  span.text-ink-muted
+                    | Suggested: #{item.suggested_category.name}
+                    - if item.confidence
+                      =< "(#{receipt_confidence(item.confidence)})"
+                - else
+                  span.text-ink-muted —
+  - difference = receipt.total_difference
+  dl.data-table.mt-4
+    .data-row
+      dt.data-row-title Items sum
+      dd.data-row-value.tabular-nums = receipt_money(receipt.items_total, receipt.currency)
+    .data-row
+      dt.data-row-title Printed total
+      dd.data-row-value.tabular-nums
+        - if receipt.total
+          = receipt_money(receipt.total, receipt.currency)
+        - else
+          span.text-ink-muted Not known
+    - if difference
+      .data-row
+        dt.data-row-title Difference
+        dd.data-row-value.flex.items-center.gap-2.tabular-nums
+          - if difference.zero?
+            = ui_badge(tone: :accent) do
+              = ui_icon "check", size: :xs
+              | Items match the total
+          - else
+            span = receipt_money(difference, receipt.currency)
+            = ui_badge (difference.positive? ? "Items missing" : "Items over the total"), tone: :danger
