@@ -11,8 +11,10 @@ import { Controller } from "@hotwired/stimulus"
 // - While dirty, a live refresh of the page (Receipts::LiveUpdate, a Turbo "refresh" stream) is skipped
 //   rather than morphing the form back to the stored values; the notice says the page has news. The live
 //   refresh controller asks for no refresh either (it reads the data-unsaved-changes flag on <html>). The
-//   server still refuses a save from a stale page (the form's lock_version). The form's own submission is
-//   never held back: a refused save's response (422, 409) must render, with its errors and the typed values.
+//   server still refuses a save from a stale page (the form's lock_version). A refresh already on its way when
+//   the person starts typing is stopped when it renders: the form is not morphed while dirty. The form's own
+//   submission is never held back: a refused save's response (422, 409) renders, with its errors and the
+//   typed values, and focus goes to the first field marked invalid.
 // - While a submission is on its way the form is inert, so nothing typed then can be lost to the response.
 // - Leaving the page while dirty asks first (a Turbo visit, and closing or reloading the tab).
 // - Enter never submits the form by accident; Ctrl+S (Cmd+S) clicks Save and Ctrl+Enter (Cmd+Enter) clicks
@@ -30,6 +32,8 @@ export default class extends Controller {
       [document, "turbo:before-visit", (event) => this.beforeVisit(event)],
       [window, "beforeunload", (event) => this.beforeUnload(event)],
       [document, "turbo:before-stream-render", (event) => this.beforeStreamRender(event)],
+      [document, "turbo:before-morph-element", (event) => this.beforeMorph(event)],
+      [document, "turbo:render", () => this.rendered()],
       [document, "turbo:submit-start", (event) => this.submitStart(event)],
       [document, "turbo:submit-end", (event) => this.submitEnd(event)],
       [document, "keydown", (event) => this.shortcut(event)],
@@ -44,7 +48,7 @@ export default class extends Controller {
 
   // On connect and when a refused save's response is morphed in (the controller stays connected then).
   errorsValueChanged() {
-    if (this.errorsValue) this.element.querySelector("[aria-invalid='true']")?.focus()
+    if (this.errorsValue) this.focusFirstInvalid()
   }
 
   disconnect() {
@@ -91,6 +95,24 @@ export default class extends Controller {
     this.submitting = false
     this.element.inert = false
     if (event.detail.success) this.dirtyValue = false
+    // A refused save that came back renders next; a request that never got an answer renders nothing.
+    else if (event.detail.fetchResponse) this.ownResponse = true
+  }
+
+  // Any morph of the form while it is dirty is a refresh (a live one, or one already on its way when the
+  // typing started), except the response to the form's own refused save, which carries the typed values.
+  beforeMorph(event) {
+    if (event.target === this.element && this.dirtyValue && !this.ownResponse) event.preventDefault()
+  }
+
+  rendered() {
+    if (!this.ownResponse) return
+    this.ownResponse = false
+    if (this.errorsValue) this.focusFirstInvalid()
+  }
+
+  focusFirstInvalid() {
+    this.element.querySelector("[aria-invalid='true']")?.focus()
   }
 
   shortcut(event) {
