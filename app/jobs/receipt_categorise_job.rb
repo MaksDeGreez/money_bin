@@ -1,5 +1,6 @@
-# Asks for fresh category suggestions for a receipt's items, without reading it again
-# ("Suggest categories again" on the receipt page; Receipts::SuggestCategories does the work).
+# Asks for fresh category suggestions for a receipt's items, or for a card slip's own category, without reading it
+# again ("Suggest categories again" on the receipt page, and a review save that turns a receipt into a card slip;
+# Receipts::SuggestCategories or Receipts::SuggestSlipCategory does the work).
 #
 #   ReceiptCategoriseJob.perform_later(receipt)
 #
@@ -14,6 +15,6 @@ class ReceiptCategoriseJob < ApplicationJob
   discard_on ActiveJob::DeserializationError
 
   def perform(receipt)
-    Receipts::SuggestCategories.call(receipt)
+    receipt.card_slip? ? Receipts::SuggestSlipCategory.call(receipt) : Receipts::SuggestCategories.call(receipt)
   end
 end

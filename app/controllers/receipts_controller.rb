@@ -1,7 +1,7 @@
 # The receipts: the list with its filter, one receipt with its photos and its review form, the upload, OCR
 # requests (docs/domain.md, "Who enqueues OCR"), saving and accepting a review and saving it as ground truth
 # (Receipts::Review), "Enter by hand" (Receipts::EnterByHand) and "Suggest categories again"
-# (ReceiptCategoriseJob).
+# (ReceiptCategoriseJob; for a card slip, its own category, also queued when a save turns a receipt into a slip).
 #
 # The list filter lives in the URL (Receipt::Filter). A receipt page carries the same parameters, so its
 # previous / next links walk the filtered list and "Back" returns to it.
@@ -53,6 +53,8 @@ class ReceiptsController < ApplicationController
   def update
     @review = Receipts::Review.new(@receipt, review_params, intent: params[:intent])
     if @review.call
+      # A receipt just turned into a card slip gets a slip suggestion (Receipts::SuggestSlipCategory).
+      enqueue_suggestions if @review.became_slip? && ItemSuggestions.enabled?
       if @review.ground_truth
         # The account chosen on the form stays chosen, as after a Save.
         status = @review.ground_truth.status
@@ -122,8 +124,9 @@ class ReceiptsController < ApplicationController
   def suggest_categories
     if !ItemSuggestions.enabled?
       flash[:alert] = "Category suggestions are switched off (CATEGORISE_BACKEND=off)."
-    elsif !@receipt.reviewable? || !@receipt.extracted? || !@receipt.items.exists?
-      flash[:alert] = "Not suggested: only the items of a receipt waiting for review get suggestions."
+    elsif !@receipt.reviewable? || !@receipt.extracted? || !(@receipt.items.exists? || slip_with_merchant?)
+      flash[:alert] = "Not suggested: only the items of a receipt waiting for review, or a card slip with a merchant, " \
+        "get suggestions."
     elsif enqueue_suggestions
       flash[:notice] = "Asked for category suggestions. This page updates when they are in."
     else
@@ -182,6 +185,10 @@ class ReceiptsController < ApplicationController
     end
 
     # False when the job queue (Redis) cannot be reached, as Receipts::RequestOcr treats it.
+    def slip_with_merchant?
+      @receipt.card_slip? && @receipt.merchant_name.present?
+    end
+
     def enqueue_suggestions
       ReceiptCategoriseJob.new(@receipt).enqueue
     rescue StandardError => error

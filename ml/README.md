@@ -1,11 +1,15 @@
 # money_bin ML service
 
-A small HTTP service for the money_bin app. It does two jobs:
+A small HTTP service for the money_bin app. It does three jobs:
 
 - **Receipt OCR.** It reads a receipt from 1 to 3 photos and returns the
   merchant, date, total and items.
 - **Item categorisation.** It suggests a category, with a confidence, for each
   item of one receipt, from the categories the request lists.
+- **Transaction categorisation.** It suggests the three most probable
+  categories of each ledger transaction with the transaction categoriser
+  trained in `categoriser/` (see "The transaction categoriser"). Always local:
+  it has no backend setting and no hosted variant.
 
 The Rails app calls this service and stores the results.
 
@@ -95,6 +99,7 @@ model (`python -m evaluation.item_sanity`, below).
 | `DECISIONS_STRATEGY`           | `flat`                                      | `flat`, `two-stage`         | One question per item over every category, or the group first and then the category within it (see "The decision-model categoriser"). |
 | `DECISIONS_RECEIPT_CONTEXT`    | `true`                                      | `true`, `false`             | Give each item the other item names of its receipt; `false` sends each item alone (for comparison only). |
 | `DECISIONS_MAX_QUESTIONS`      | `16`                                        | 1 to 64                     | The most items (questions) in one request; a request is also cut below 24,000 bytes. |
+| `TRANSACTION_CATEGORISER_MODEL` | empty: the newest `transaction-categoriser-*.serving.joblib` in `~/Documents/money_bin_data/models/` | a path outside the repository | The transaction categoriser's artefact (`python -m categoriser.serving`). Read on the first request that needs it, once; missing or unreadable, `/categorise/transaction` answers 501 and nothing else is affected. |
 | `ML_MAX_IMAGE_BYTES`           | `15728640`                                  | a whole number above 0      | The largest image file, in bytes (15 MB). |
 | `MLX_OCR_MODEL`                | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | a Hugging Face id or a folder | The `mlx` backend's model. `mlx-community/Qwen3-VL-8B-Instruct-4bit` works too. |
 | `MLX_OCR_MAX_TOKENS`           | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer. A receipt with 40 items needs about 2,000. |
@@ -297,6 +302,67 @@ The texts and the shop's name are put on one line each (a line break inside a
 name would make a fake item). The stub picks slugs from a hash of the text, so
 the same text and list always get the same answer.
 
+### `GET` and `POST /categorise/transaction`
+
+The transaction categoriser (see "The transaction categoriser"). `GET` says
+which artefact answers (it loads the artefact, not the sentence encoder):
+
+```json
+{"model_name": "transaction-categoriser", "model_version": "2026-11-18-0123456789ab",
+ "fitted_at": "2026-11-18T15:18:39+00:00", "configuration": "tfidf+emb:e5-base+recency+classweight+mix",
+ "encoder": "e5-base", "encoder_loaded": false, "load_seconds": "0.081"}
+```
+
+`POST` takes the app's category list (the same hand-over shape as
+`/categorise`) and 1 to 500 transactions:
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' -d '{
+  "categories": [{"slug": "groceries/groceries", "name": "Groceries", "description": "", "group": "Groceries"}, ...],
+  "transactions": [{"payee": "Example Market", "comment": null, "bank_description": "EXAMPLE MARKET STORE",
+                    "merchant": "Example Market", "mcc": "5411", "amount": "-120.50", "currency": "UAH",
+                    "account_kind": "debit"}]
+}' http://127.0.0.1:8100/categorise/transaction
+```
+
+```json
+{"results": [{"candidates": [{"category_slug": "groceries/groceries", "probability": 0.962},
+                             {"category_slug": "groceries/snacks", "probability": 0.021}, ...],
+              "source": "mix", "history": "payee", "history_weight": 0.952}],
+ "model_name": "transaction-categoriser", "model_version": "2026-11-18-0123456789ab",
+ "fitted_at": "2026-11-18T15:18:39+00:00", "elapsed_seconds": "0.014"}
+```
+
+- Every field of a transaction is optional, but a payee, comment, bank
+  description, merchant or MCC must be there. `amount` is the signed amount
+  in the account's currency as a decimal string with at most two places
+  (an expense is negative); a JSON number, an exponent or a third place is a
+  422, never rounded. `mcc` is four digits, `currency` three capital letters,
+  `account_kind` the app's account kind. Unknown fields are refused. Without
+  an amount, the transaction is scored as an expense of no size (the sign
+  field says "out", the size bucket adds nothing).
+- Each result has the three best categories, best first, with their
+  probability in the served distribution (the model's probabilities mixed
+  with the payee's or the MCC's category history, as the selected hybrid
+  does), and where the answer came from: `source` `model` (no history weighed
+  in), `mix` (the history of the payee, or of the MCC for an unknown payee,
+  with weight `history_weight`) or `history` (the history decided; only a
+  `switch` hybrid does that). The probabilities are the model's own, not
+  calibrated: the precision at each confidence threshold measured on the
+  validation slice is in the selection JSON.
+- **Categories.** The model's classes are its training labels, the export's
+  English group and category names (`"Group / Category"`). Each class is
+  matched to the listed category with the same group and name (whitespace
+  squished), and the answer names that category's slug; Python never builds a
+  slug. A class the list does not name is a 422 `categories_mismatch` naming
+  it: the model would otherwise suggest a category the app cannot store, or
+  drop part of its probability silently. The app sends every category except
+  Uncategorised (`Categories::TransactionCandidates`); a renamed category means
+  refitting the model.
+- `model_version` names the artefact: its fit date and the first 12 hex digits
+  of the file's SHA-256. The app stores it with each suggestion and refreshes
+  the suggestions when it changes.
+
 ### Errors
 
 Every error has the same shape:
@@ -316,6 +382,8 @@ Every error has the same shape:
 | 422    | `empty_image`             | An image file is empty.                        |
 | 422    | `image_unreadable`        | An image has the right signature but cannot be decoded (a cut-off file). |
 | 422    | `ocr_parse_failed`        | The model's answer was not valid receipt JSON, even after one repair pass. |
+| 422    | `categories_mismatch`     | `/categorise/transaction`: the model can answer a category the request does not list. |
+| 501    | `transaction_categoriser_not_configured`, `transaction_categoriser_unavailable` | `/categorise/transaction`: no artefact is set up, or it cannot be served (unreadable, another format, fitted with another scikit-learn, the sentence encoder's weights are not in the local cache). Only this endpoint answers so; `/ocr` and `/categorise` are unaffected. |
 | 422    | `categorise_parse_failed` | `openrouter` categoriser only: the answer did not name one listed slug for every item. Permanent (temperature 0). |
 | 424    | `openrouter_auth_failed`, `openrouter_payment_required`, `openrouter_refused`, `openrouter_no_matching_endpoint`, `openrouter_bad_request`, `openrouter_provider_unverified` | `openrouter` only: OpenRouter refused the request (HTTP 401, 402, 403, 404, another 4xx, also when reported inside an answer with HTTP 200), or an answer came from a provider outside the zero-retention list (then nothing more is sent until the service restarts). Permanent. |
 | 501    | `backend_not_implemented` | The selected backend cannot do this. |
@@ -1207,6 +1275,7 @@ app/
   errors.py        the shared error shape and handlers
   config.py        settings from environment variables
   decisions.py     the Decisions API client: typed questions, checked answers
+  transactions.py  /categorise/transaction: the served transaction categoriser, loaded lazily
   backends/        OCR
     __init__.py    registry: backend name -> class
     base.py        the Backend interface and the shared errors
@@ -1253,7 +1322,7 @@ evaluation/
   comparisons.py   paired comparisons between runs
   results.py       the whitelisted writer of eval/results/
   tables.py        the tables, generated from the results JSON
-categoriser/       transaction categoriser training (see below)
+categoriser/       transaction categoriser training and the fit for serving (serving.py; see below)
 tests/
 ```
 
@@ -1287,8 +1356,9 @@ model does not block the server.
 ## Transaction categoriser (training)
 
 `categoriser/` trains and evaluates a model that suggests a ledger category for a
-transaction from its text and bank fields. It is not part of the HTTP service
-yet. It runs only on this machine: transaction data is never sent anywhere.
+transaction from its text and bank fields; `categoriser.serving` fits the chosen
+configuration for the HTTP service (see "The transaction categoriser"). It runs
+only on this machine: transaction data is never sent anywhere.
 The reasons behind the design, and the evaluation protocol, are in
 `docs/decisions/0006-transaction-categoriser.md`.
 
@@ -1419,3 +1489,72 @@ the commands refuse an output or cache folder inside a git repository and
 write files with mode 600. The JSON files and the console hold category names
 and numbers only, never a payee, comment, description or amount. The tests
 build a small synthetic export with invented data and use a fake encoder.
+
+## The transaction categoriser
+
+The model chosen and scored above, served by `/categorise/transaction`.
+
+**The fit for serving.** After the selection and the one test score:
+
+```sh
+uv run python -m categoriser.serving ~/path/to/export \
+  --selection ~/Documents/money_bin_data/models/<run>.selection.json
+# → <stamp>.serving.joblib and <stamp>.serving.json in ~/Documents/money_bin_data/models/
+```
+
+It fits the selection's chosen configuration, every tuned value kept as a
+number, on **every labelled row of the export, the test period's included**:
+the newest rows are the most like tomorrow's, so the served model keeps them.
+That fit has no test score of its own: the evaluated numbers belong to the
+same configuration fitted on the training period (`categoriser.score`), and the
+metadata says so. Nothing in this step computes a metric, chooses anything from
+the test labels or writes to the record of test scores. It reuses the
+training code (`fit_system` and its feature builders), and it refuses what it
+cannot vouch for: a selection file whose rule does not pick its chosen
+configuration; another export (manifest hash), another taxonomy, or rows that
+no longer split as the selection's did; a selection the record of test scores
+has no score of; a file of `categoriser/` that existed at the selection's commit
+and differs now, an unknown commit, or other library versions
+(`--code-change-reason` overrides only this, recorded); another encoder; an
+output folder inside a git repository. Options: `--out DIR`,
+`--embedding-cache DIR`, `--taxonomy FILE`, `--code-change-reason TEXT`.
+
+The artefact (mode 600) holds the fitted pipeline, the hybrid's payee and MCC
+tables (payee names: personal data, never in git), the configuration, the
+classes with their group and category names, and the metadata, also written as
+`<stamp>.serving.json` (category names and numbers only): the configuration,
+the export's manifest hash, the selection file and its SHA-256, the split it
+was selected on, when the test set was scored, what this fit is fitted on,
+the git state, the library versions, the fit time and the class list. The
+service names it by its fit date and file hash (`model_version`).
+
+**Loading.** Lazily, once: the first `GET` or `POST` reads the artefact
+(scikit-learn is imported then, not at startup), and the first `POST` builds
+the sentence encoder and loads its weights. Measured on the owner's machine
+(M-series, 32 GB) with the real artefact and the stub OCR backend: the service
+starts at about 70 MB; reading the artefact takes 0.1 s and brings it to about
+230 MB; the first `POST` takes about 14 s (importing PyTorch, loading the e5-base
+weights, starting the Apple GPU) and brings it to about 1.1 GB; after that, 1
+transaction takes about 15 ms, 200 about 0.14 s and 500 about 0.26 s. Next to
+the 8B vision model (about 7 GB with `OCR_BACKEND=mlx`) that is about 1 GB more
+once a transaction is categorised; the vision model is not touched. A request
+waits for the one before it (one lock around the model).
+
+**Offline.** The encoder's weights come from the local Hugging Face cache only
+(`local_files_only`, `HF_HUB_OFFLINE` set when it loads), at the revision
+pinned in `categoriser/embeddings.py`; download them once as described above
+(no transaction data is involved). Nothing is downloaded at request time:
+without the weights the endpoint answers 501 `transaction_categoriser_unavailable`
+with the command to fetch them. Setting `HF_HUB_OFFLINE` is process-wide; a
+local OCR model is loaded at startup, before it. A served request computes the
+sentence vectors afresh (no on-disk cache) and scales each to unit length in
+float32, exactly as the training's cache stores them (`UnitEncoder`; a test
+compares the two); they may still differ from the cached ones in the last
+digits (another batch, another device).
+
+**What never leaves the machine.** Payees, comments, bank descriptions,
+merchants, amounts: the endpoint runs the model in this process. There is no
+hosted transaction categoriser and no setting that would add one; the serving
+code imports no HTTP client (a test checks it), every test runs with the
+network refused, and the Rails client sends transaction data only to a service
+on a loopback host (`MlClient::NotLocal` otherwise).

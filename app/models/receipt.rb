@@ -23,8 +23,9 @@
 # whose total or date cannot be read. `card_last4` is the card's last four digits on a slip.
 #
 # A card slip has no items: it is booked as one line, its `total` in its own `category`, which a person
-# chooses at review (Receipts::Accept). `suggested_category` and `suggested_category_confidence` are room for
-# the categoriser's guess for a slip; nothing fills them yet. Both must be categories, not groups.
+# chooses at review (Receipts::Accept). `suggested_category` and `suggested_category_confidence` are the guess for
+# a slip, from its payee's history or the transaction categoriser (Receipts::SuggestSlipCategory). Both must be
+# categories, not groups.
 #
 # Review (docs/domain.md, "Review"): a person corrects the receipt and its items in the review form
 # (Receipts::Review), which writes the items as nested attributes. `lock_version` turns on Active Record's

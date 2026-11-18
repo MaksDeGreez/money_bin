@@ -1,0 +1,12 @@
+/ One uncategorised line under its transaction: its suggestion and runner-up, "Take" (the suggestion) and a
+/ category picker with "Save" (TransactionsController#categorise). The form carries the transaction's
+/ lock_version: an edit made since the page was loaded wins. A line booked from a receipt links to the receipt instead.
+tr.data-grid-sub id=dom_id(line, :review) tabindex="0" data-review-queue-target="row" aria-label="Uncategorised line of #{receipt_money(line.amount, transaction.account.currency)}"
+  td colspan="6"
+    - if transaction.receipt
+      p.text-sm.text-ink-muted
+        | Booked from a receipt: categorise its items on
+        =< link_to "the receipt", receipt_path(transaction.receipt), data: { turbo_prefetch: false }
+        | .
+    - else
+      = render "transactions/review_form", transaction:, line:, filter:

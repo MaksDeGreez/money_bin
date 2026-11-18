@@ -92,6 +92,21 @@ class Transaction < ApplicationRecord
     BOOKED_STATUSES.include?(status)
   end
 
+  # The status this transaction should have once its lines are as they are in memory, for a change that only
+  # categorises lines (Transactions::Categorise). A `needs_review` transaction becomes `confirmed` when no kept line
+  # is uncategorised any more (no category, or Uncategorised) and nothing else still needs a look (a receipt whose
+  # items do not sum to its printed total: Receipts::Accept.review_reasons). A draft stays a draft (categorising
+  # books nothing) and a confirmed one stays confirmed.
+  def status_after_categorising
+    return status unless needs_review?
+    return status if kept_lines.any?(&:uncategorised?)
+
+    lines = kept_lines.map { |line| { category_id: line.category_id } }
+    return status if receipt && Receipts::Accept.review_reasons(receipt, lines).any?
+
+    "confirmed"
+  end
+
   def expense?
     !transfer_leg? && amount.present? && amount.negative?
   end

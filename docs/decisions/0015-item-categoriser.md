@@ -157,7 +157,8 @@ worth knowing before switching categorisation to a hosted model.
   over the repeats.
 - The evaluation can compare the memory, the local and the hosted model on the same labelled items, with
   cost and seconds per item (`ml/evaluation/item_categories_run.py`); scoring is the harness's.
-- A card slip has no items; its own suggestion is left to a transaction-level categoriser.
+- A card slip has no items; its own suggestion comes from its payee's history or the transaction categoriser
+  (`docs/domain.md`, "Card slip suggestions").
 - A model trained on the collected labels (nearest neighbours or logistic regression on embeddings) fits as
   one more categoriser behind the same request, or between the memory and the zero-shot model; nothing here
   stands in its way.

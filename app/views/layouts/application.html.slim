@@ -11,6 +11,7 @@ html lang="en"
         .flex.items-center.gap-3
           - if authenticated?
             nav.flex.items-center.gap-1 aria-label="Main"
+              = ui_link_button "Transactions", transactions_path, variant: :ghost, size: :sm, "aria-current": (controller_path.start_with?("transactions") && !action_name.in?(%w[new create]) ? "page" : nil)
               = ui_link_button "Receipts", receipts_path, variant: :ghost, size: :sm, "aria-current": (controller_path.start_with?("receipts") ? "page" : nil)
               = ui_link_button "Add expense", new_transaction_path, variant: :ghost, size: :sm, "aria-current": (controller_path == "transactions" && action_name.in?(%w[new create]) ? "page" : nil)
               = ui_link_button "API tokens", settings_api_tokens_path, variant: :ghost, size: :sm

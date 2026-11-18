@@ -8,6 +8,9 @@ require "securerandom"
 #   client.ocr([ MlClient::Image.new(io:, filename:, content_type:) ])  # => MlClient::OcrResult
 #   client.categorise([ "Мол 900г" ], categories: Categories::ItemCandidates.payload, merchant: "Shop")
 #                                                       # => MlClient::CategoriseResult
+#   client.categorise_transactions([ { merchant: "Shop", amount: "-12.50", currency: "UAH" } ],
+#     categories: Categories::TransactionCandidates.payload)  # => MlClient::TransactionCategorisation
+#   client.transaction_categoriser                     # => MlClient::TransactionModel (which artefact answers)
 #
 # Every result keeps the parsed response body (`body`, a deeply frozen Hash with string keys) next to the
 # parts the app reads. Money and quantities stay decimal strings here; the caller parses them with
@@ -54,6 +57,12 @@ class MlClient
   # `score_kind` where the scores come from (ml/README.md, "How confidence is computed").
   CategoriseResult = Data.define(:body, :results, :backend, :model_name, :model_version, :calibrated, :score_kind,
     :prompt_version)
+  # The transaction categoriser's answer: `results` in the order of the transactions sent, each a Hash with 1 to
+  # 3 "candidates" ({ "category_slug", "probability" }, best first, every slug one of the categories sent),
+  # "source" (model, history or mix), "history" (payee, mcc or nil) and "history_weight".
+  TransactionCategorisation = Data.define(:body, :results, :model_name, :model_version, :fitted_at)
+  TransactionModel = Data.define(:body, :model_name, :model_version, :fitted_at)
+  TRANSACTION_SOURCES = %w[model history mix].freeze
 
   class Error < StandardError
     # A short machine-readable name for the failure.
@@ -96,11 +105,23 @@ class MlClient
     def code = "invalid_response"
   end
 
+  # Transaction data may go to an ML service on this machine only (ML_SERVICE_URL on a loopback host); nothing is
+  # sent otherwise. Permanent.
+  class NotLocal < Error
+    def code = "ml_not_local"
+  end
+
   NETWORK_ERRORS = [
     SocketError, IOError, EOFError, Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
     Errno::ENETUNREACH, Errno::EPIPE, Errno::EADDRNOTAVAIL, OpenSSL::SSL::SSLError
   ].freeze
   TIMEOUT_ERRORS = [ Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Timeout::Error, Errno::ETIMEDOUT ].freeze
+
+  # The hosts a request with transaction data may go to: this machine.
+  LOCAL_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
+  # The ML service's limit on one /categorise/transaction request (ml/README.md).
+  MAX_TRANSACTIONS = 500
+  MONEY_STRING = /\A-?\d{1,13}(?:\.\d{1,2})?\z/
 
   attr_reader :base_url, :open_timeout, :ocr_timeout, :categorise_timeout
 
@@ -161,7 +182,72 @@ class MlClient
       score_kind: body["score_kind"], prompt_version: body["prompt_version"], **backend_info(body))
   end
 
+  # Asks the local transaction categoriser for the three best categories of each transaction (1 to
+  # MAX_TRANSACTIONS). Each transaction is a Hash of payee, comment, bank_description, merchant, mcc, amount (a
+  # decimal String, signed; never a Float), currency and account_kind, any of them nil; `categories` the
+  # candidate list (Categories::TransactionCandidates.payload). The answer may only name the slugs sent: any
+  # other slug, a missing result or a probability outside 0..1 is an InvalidResponse. The service runs the model
+  # on this machine; nothing of the transactions goes further. A service URL that is not on this machine raises
+  # NotLocal before anything is sent.
+  def categorise_transactions(transactions, categories:)
+    raise NotLocal, "transaction data is sent only to an ML service on this machine, not to #{base_url.host}" unless local?
+
+    transactions = Array(transactions)
+    raise ArgumentError, "send 1 to #{MAX_TRANSACTIONS} transactions, got #{transactions.size}" unless transactions.size.between?(1, MAX_TRANSACTIONS)
+
+    transactions.each do |transaction|
+      amount = transaction[:amount]
+      raise ArgumentError, "an amount must be a decimal String, got #{amount.class}" unless amount.nil? || (amount.is_a?(String) && amount.match?(MONEY_STRING))
+    end
+    slugs = categories.map { |category| (category[:slug] || category["slug"]).to_s }.to_set
+    post = Net::HTTP::Post.new(url("/categorise/transaction"))
+    post["Content-Type"] = "application/json"
+    post.body = JSON.generate({ categories:, transactions: })
+
+    body = request(post, read_timeout: categorise_timeout)
+    require_keys(body, %w[results model_name model_version fitted_at], "")
+    require_list_of_hashes(body["results"], "results")
+    if body["results"].size != transactions.size
+      raise InvalidResponse, "the ML service answered #{body['results'].size} results for #{transactions.size} transactions"
+    end
+    body["results"].each_with_index { |result, index| check_transaction_result(result, index, slugs) }
+
+    TransactionCategorisation.new(body:, results: body["results"], model_name: body["model_name"],
+      model_version: body["model_version"], fitted_at: body["fitted_at"])
+  end
+
+  # Which artefact the transaction categoriser serves (it loads the artefact, not the sentence encoder). Asked of a
+  # service on this machine only, like the categorising (NotLocal otherwise).
+  def transaction_categoriser
+    raise NotLocal, "the transaction categoriser is asked only on this machine, not at #{base_url.host}" unless local?
+
+    body = request(Net::HTTP::Get.new(url("/categorise/transaction")), read_timeout: categorise_timeout)
+    require_keys(body, %w[model_name model_version fitted_at], "")
+    TransactionModel.new(body:, model_name: body["model_name"], model_version: body["model_version"], fitted_at: body["fitted_at"])
+  end
+
+  # True when the service URL points at this machine (a loopback host).
+  def local?
+    LOCAL_HOSTS.include?(base_url.hostname.to_s.downcase)
+  end
+
   private
+    def check_transaction_result(result, index, slugs)
+      require_keys(result, %w[candidates source history], "results[#{index}].")
+      require_list_of_hashes(result["candidates"], "results[#{index}].candidates")
+      raise InvalidResponse, "the ML service answer has no candidate at results[#{index}]" if result["candidates"].empty?
+      raise InvalidResponse, "the ML service answer has an unknown source at results[#{index}]" unless TRANSACTION_SOURCES.include?(result["source"])
+
+      result["candidates"].each_with_index do |candidate, position|
+        name = "results[#{index}].candidates[#{position}]"
+        require_keys(candidate, %w[category_slug probability], "#{name}.")
+        raise InvalidResponse, "the ML service answer names a category it was not given at #{name}" unless slugs.include?(candidate["category_slug"])
+
+        probability = candidate["probability"]
+        raise InvalidResponse, "the ML service answer has a probability outside 0..1 at #{name}" unless probability.is_a?(Numeric) && probability.between?(0, 1)
+      end
+    end
+
     def seconds(given, variable, default)
       value = given || ENV[variable].presence || default
       number = Float(value, exception: false)

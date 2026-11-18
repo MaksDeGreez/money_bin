@@ -29,8 +29,15 @@ Rails.application.routes.draw do
     get "photos/:id/:size", to: "receipts/photos#show", as: :photo, constraints: { id: /\d+/, size: /thumb|page|full/ }, format: false
   end
 
-  # One transaction (read-only), and an expense entered by hand. There is no transactions list yet.
-  resources :transactions, only: %i[ show new create ]
+  # The transactions list (with categorising an uncategorised line from it), one transaction (read-only), and an
+  # expense entered by hand. Bulk acceptances of suggestions and suggestion refreshes hang off the list.
+  namespace :transactions do
+    resources :bulk_acceptances, only: %i[ create show update destroy ]
+    resources :suggestion_runs, only: :create
+  end
+  resources :transactions, only: %i[ index show new create ] do
+    post :categorise, on: :member
+  end
 
   # The REST API for AI agents and scripts: personal API tokens only (Api::BaseController).
   # JSON only: `format: false` drops the `.:format` suffix, so `/api/v1/transactions.xml` is not routed.

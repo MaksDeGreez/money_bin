@@ -141,14 +141,24 @@ class CategoryTest < ActiveSupport::TestCase
 
   test "a category in use cannot become a group" do
     {
-      categories(:cafes) => "transaction lines",
-      categories(:household_supplies) => "transaction lines, receipt items, and suggested receipt items",
+      categories(:cafes) => "transaction lines and runner-up transaction lines",
+      categories(:household_supplies) => "transaction lines, receipt items, suggested receipt items, suggested transaction lines, and bulk acceptance items",
       categories(:takeaway) => "transaction lines and suggested receipt items"
     }.each do |category, uses|
       assert_not category.update(parent: nil, slug: nil), category.slug
       assert_includes category.errors[:parent], "cannot change: a category cannot become a group while it has #{uses}"
       assert category.reload.leaf?
     end
+  end
+
+  test "a category only a transaction suggestion points at cannot become a group; the suggestion goes with it" do
+    category = Category.create!(parent: categories(:eating_out), name: "Picnics")
+    transaction_lines(:subscription_line).update_columns(suggested_category_id: category.id)
+
+    assert_not category.update(parent: nil, slug: nil)
+    assert_includes category.errors[:parent], "cannot change: a category cannot become a group while it has suggested transaction lines"
+    assert category.reload.destroy
+    assert_nil transaction_lines(:subscription_line).reload.suggested_category_id
   end
 
   test "a category nothing points at can become a group, and back" do

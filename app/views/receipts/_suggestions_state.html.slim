@@ -19,3 +19,22 @@
     .flex.flex-wrap.items-center.justify-between.gap-3
       p.text-sm.text-ink-muted = receipt_suggestions_summary(receipt)
       = again
+- elsif item_suggestions_shown? && receipt.extracted? && receipt.reviewable? && receipt.card_slip? && receipt.merchant_name.present?
+  / A card slip's own suggestion (Receipts::SuggestSlipCategory): the payee's history, else the transaction categoriser.
+  - again = capture do
+    = ui_button_to suggest_categories_receipt_path(receipt, filter.to_params), variant: :ghost, size: :sm do
+      = ui_icon "sparkles"
+      span Suggest a category again
+  - if receipt.categoriser_error.present?
+    = render "ui/callout", tone: :signal do
+      .flex.flex-wrap.items-center.justify-between.gap-3
+        p.text-sm
+          strong No suggestion from the categoriser.
+          |  It could not answer
+          code.mx-1.text-xs = "(#{receipt.categoriser_error})"
+          | ; the slip can be reviewed as it is.
+        = again
+  - else
+    .flex.flex-wrap.items-center.justify-between.gap-3
+      p.text-sm.text-ink-muted = receipt_slip_suggestion_summary(receipt)
+      = again

@@ -10,7 +10,13 @@
 #   its lines is in it, so a split transaction is found under each of its categories. Transfer legs have
 #   no lines and never match;
 # - `q`: text that appears, case-insensitively, in the payee name, the merchant, the comment or the bank
-#   description. LIKE wildcards in it are taken literally.
+#   description. LIKE wildcards in it are taken literally;
+# - `payee`: text that appears, case-insensitively, in the payee's name (the list's payee field);
+# - `uncategorised`: true for the transactions with a line nobody has categorised yet (no category, or the
+#   taxonomy's Uncategorised; TransactionLine.uncategorised). Transfer legs have no lines and never match;
+# - `currency`: the account's currency;
+# - `expense`: true for booked expenses only (Transaction.expenses: no drafts, no incomes, no transfer legs), what
+#   the dashboard's spending figures count.
 #
 # Order: `occurred_on` descending, then `id` descending, so rows of one day keep a fixed order and a
 # cursor always points at one place.
@@ -22,7 +28,8 @@ class TransactionsQuery
     Transaction.includes(PRELOADS).find(id)
   end
 
-  def initialize(from: nil, to: nil, account_id: nil, category_id: nil, status: nil, payee_id: nil, q: nil, source: nil)
+  def initialize(from: nil, to: nil, account_id: nil, category_id: nil, status: nil, payee_id: nil, q: nil, source: nil,
+    payee: nil, uncategorised: nil, currency: nil, expense: nil)
     @from = from
     @to = to
     @account_id = account_id
@@ -31,6 +38,10 @@ class TransactionsQuery
     @payee_id = payee_id
     @q = q
     @source = source
+    @payee = payee
+    @uncategorised = uncategorised
+    @currency = currency
+    @expense = expense
   end
 
   # The filtered, ordered relation (no pagination, no preloads).
@@ -44,6 +55,11 @@ class TransactionsQuery
     scope = scope.where(source: @source) if @source
     scope = scope.where(in_category) if @category_id
     scope = scope.where(matching_text) if @q.present?
+    scope = scope.where(payee_id: Payee.where(Payee.arel_table[:name].matches(like(@payee))).select(:id)) if @payee.present?
+    scope = scope.where(TransactionLine.uncategorised.where("transaction_lines.transaction_id = transactions.id").arel.exists) if @uncategorised
+    scope = scope.where(account_id: Account.where(currency: @currency).select(:id)) if @currency
+    # Not `merge`: it would replace the status filter with the booked statuses instead of narrowing it.
+    scope = scope.where(transfer_id: nil, amount: ...0).where(status: Transaction::BOOKED_STATUSES) if @expense
     scope.order(occurred_on: :desc, id: :desc)
   end
 
@@ -66,8 +82,12 @@ class TransactionsQuery
       TransactionLine.where("transaction_lines.transaction_id = transactions.id").where(category_id: categories).arel.exists
     end
 
+    def like(text)
+      "%#{Transaction.sanitize_sql_like(text)}%"
+    end
+
     def matching_text
-      pattern = "%#{Transaction.sanitize_sql_like(@q)}%"
+      pattern = like(@q)
       table = Transaction.arel_table
       payees = Payee.where(Payee.arel_table[:name].matches(pattern)).select(:id)
       table[:comment].matches(pattern)

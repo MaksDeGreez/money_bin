@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # MLX_OCR_MODEL: with OCR_BACKEND=mlx the one loaded model then does both jobs.
     mlx_categorise_model: str | None = None
 
+    # The transaction categoriser's artefact (`python -m categoriser.serving`, outside the
+    # repository). Empty: the newest one in ~/Documents/money_bin_data/models/. It always runs
+    # here; there is no hosted backend for it.
+    transaction_categoriser_model: Path | None = None
+
     # A calibration file made by `python -m evaluation.item_categories_calibrate`
     # (outside the repository). It maps the categoriser's raw scores to measured
     # precision; it must have been fitted for the configured backend, model and prompt.

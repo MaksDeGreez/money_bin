@@ -27,8 +27,8 @@ module Receipts
   #   they had, the receipt records the error code and stays `extracted`, and its page says so;
   # - move the receipt's `lock_version`: suggestions are not form fields, so a review form open meanwhile
   #   stays valid;
-  # - touch a receipt that is not `extracted`, or a card slip (it has no items; the slip's own suggestion is
-  #   left to the transaction-level categoriser).
+  # - touch a receipt that is not `extracted`, or a card slip (it has no items; Receipts::SuggestSlipCategory
+  #   fills the slip's own suggestion).
   #
   # The writes happen in one database transaction with the receipt row locked, after the service answered
   # (outside the lock: a local model takes seconds). An item renamed or removed in the meantime is skipped,
