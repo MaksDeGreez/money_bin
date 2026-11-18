@@ -5,9 +5,20 @@ require "json"
 #
 #   GroundTruthExport.call("/path/outside/git", output: $stdout)  # => the number of records written
 #
-# Each line: `receipt_id`, `ingest_id`, `source`, `source_format`, `prefilled_by`, `checked_at`,
-# `check_outcome`, `qr_check`, `items_known`, `schema_version` and `document` (money and quantities stay
-# decimal strings). `qr_check` is the cross-check with the receipt's QR values made at export time
+# Each line: `receipt_id`, `ingest_id`, `source`, `source_format`, `saved_at`, `prefilled_by`, `prefill_kind`
+# (`model`, `hand`, `dps_xml`, or null for an imported record), `prefilled_model_version`,
+# `prefilled_prompt_version`, `categories_prefilled_by`, `checked_at`, `check_outcome`, `qr_check`,
+# `items_known`, `categories_known`, `schema_version`, `stored_schema_version` and `document` (money and
+# quantities stay decimal strings, categories are `category_slug`s).
+#
+# One shape: every document is written as the current schema version (2, with categories), whatever version
+# the record is stored in (`stored_schema_version`); a version 1 record has no categories, so its
+# `category_slug`s are null and `categories_known` false.
+#
+# The pre-fill rule, for the evaluation: a record whose `prefilled_by` is a model's name is not test ground
+# truth for that model (any version or prompt of it), and one whose `categories_prefilled_by` names a
+# categoriser is not test ground truth for that categoriser's categories (`source:unknown`: for any
+# categoriser). Imported records have neither. `qr_check` is the cross-check with the receipt's QR values made at export time
 # (GroundTruthImport::CrossCheck: `agrees`, `disagrees`, `unverifiable` or `no_qr`), so a record that a later
 # QR value contradicts is marked, and the evaluation can leave it out. The documents hold shop names and items, so the folder must be outside every git repository
 # (the check the Python tools make: no `.git` in the folder or above it); it is created readable by the
@@ -68,14 +79,21 @@ class GroundTruthExport
         "ingest_id" => record.receipt.ingest_id,
         "source" => record.source,
         "source_format" => record.source_format,
+        "saved_at" => record.updated_at.in_time_zone.iso8601,
         "prefilled_by" => record.prefilled_by,
+        "prefill_kind" => record.prefill_kind&.to_s,
+        "prefilled_model_version" => record.prefilled_model_version,
+        "prefilled_prompt_version" => record.prefilled_prompt_version,
+        "categories_prefilled_by" => record.categories_prefilled_by,
         "checked_at" => record.checked_at&.iso8601,
         "check_outcome" => record.check_outcome,
         # Checked again now: QR values loaded or changed after the import show up here.
         "qr_check" => GroundTruthImport::CrossCheck.call(record.receipt, record.document).status.to_s,
         "items_known" => record.items_known,
-        "schema_version" => record.schema_version,
-        "document" => record.document
+        "categories_known" => record.categories_known,
+        "schema_version" => ReceiptGroundTruth::SCHEMA_VERSION,
+        "stored_schema_version" => record.schema_version,
+        "document" => record.current_document
       }
     end
 end

@@ -336,7 +336,8 @@ changed; a record a person has checked is never replaced. The import never touch
 or the ledger. It prints counts and receipt ids only and skips, with a counted warning, any file that is
 not well-formed, not a receipt or carries a document type declaration. The file format is implemented from
 public documentation and not yet confirmed against a real file. The export writes `ground_truth.jsonl`
-(mode 0600) and refuses a folder inside a git repository. Rules: [`docs/domain.md`](docs/domain.md),
+(mode 0600, every record in document schema version 2 with categories as `category_slug`, what pre-filled
+it and the check) and refuses a folder inside a git repository. Rules: [`docs/domain.md`](docs/domain.md),
 "Receipt ground truth"; reasons:
 [`docs/decisions/0010-receipt-ground-truth.md`](docs/decisions/0010-receipt-ground-truth.md).
 
@@ -389,8 +390,10 @@ tokens in both light and dark: [`docs/decisions/0013-dashboard-charts.md`](docs/
 ## Receipts in the app
 
 `/receipts` lists every receipt, 50 to a page, newest first, with a thumbnail, its status, kind, tax QR
-data, merchant, date, total and items. The filter (batch, status, kind, tax QR, incomplete) is a GET form,
-so a filtered list is a URL; the counts per status above the list follow the other filters. A receipt page
+data, ground truth ("By hand", "Tax" with its check), merchant, date, total and items. The filter (batch,
+status, kind, tax QR, incomplete, ground truth, the check of a tax-service record) is a GET form, so a
+filtered list is a URL; the counts per status above the list and per ground-truth choice follow the other
+filters, and a line says how many receipts and items are labelled by hand. A receipt page
 shows its photos (each opens the full photo; the photo column stays in view while the form scrolls) next to
 the review form, or to the stored data, read-only, while OCR is queued or running or has not read it.
 `/receipts/new` uploads one to three photos of one receipt.
@@ -414,7 +417,26 @@ The review form (rules: [`docs/domain.md`](docs/domain.md), "Review"):
 - a form that was opened before OCR read the receipt again, or before another tab saved it, is refused
   and keeps your values on screen; live refreshes wait while the form has unsaved changes, and leaving the
   page asks first;
-- "Enter by hand" opens an unread or failed receipt in the form, empty.
+- "Enter by hand" opens an unread or failed receipt in the form, empty;
+- **Save as ground truth** (Ctrl+Shift+S or Cmd+Shift+S) saves the form and snapshots it as the receipt's
+  ground truth, categories included, without booking anything (see below).
+
+### Labelling receipts
+
+Ground truth for the evaluation (rules: [`docs/domain.md`](docs/domain.md), "Manual ground truth"):
+
+- filter the list to "Not labelled by hand", open a receipt, correct it, choose every item's category (or
+  tick "Save without categories"), and **Save as ground truth**; the page then focuses "Next receipt to
+  label". The form refuses a record with a gap (no kind, no total or date on a whole receipt, an item
+  without a category) and marks the field; saving again shows a short count of what changes and asks first;
+- the record remembers what pre-filled the form (the OCR model and prompt version, the tax-service record,
+  or nothing) and the categoriser whose suggestions were on screen, so the evaluation leaves the receipt out
+  for that model;
+- where a receipt has a tax-service record, "Fill the form from the tax-service record" copies its fields and
+  items into the form, for you to categorise, check and save;
+- the receipt page shows its ground truth and puts a tax-service record next to the photo with every
+  difference from the receipt marked; "Matches the print" / "Differs from the print" (with a note) records
+  the check, which a later import respects.
 
 `/transactions/new` is the same form without a receipt: an account, a payee, a date, an optional time
 and rows of name, amount and category. Saving books one expense whose lines are the rows summed per

@@ -16,8 +16,8 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
-| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
-| `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
+| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
+| `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `categories_known`, `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
@@ -77,7 +77,13 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
 - **Receipt.** `status` moves `uploaded` -> `processing` -> `extracted` -> `reviewed`, or ends in `failed`
   (see "OCR" below). `extracted` means the items are filled in and wait for a person; `reviewed` means the
   receipt was accepted into the ledger. `ocr_raw` keeps the OCR service's full answer, or the reason of a
-  failure, and `ocr_model_name` and `ocr_model_version` say which model produced it. `currency` is what OCR
+  failure, and `ocr_model_name`, `ocr_model_version` and `ocr_prompt_version` say which model and prompt
+  produced the fields and items (they stay when "Enter by hand" keeps the items of an earlier read).
+  `filled_from` is `dps_xml` once a person filled the fields and items from the receipt's tax-service record
+  in the review form, and `categoriser_model_name` names the categoriser whose suggestions the items (and a
+  slip) carry; whatever fills the suggestions sets it, and nothing does yet. A new OCR result clears both.
+  The three say what pre-filled the review form when the receipt is saved as ground truth (see "The pre-fill
+  rule"). `currency` is what OCR
   read (nil when unknown).
   `kind` says what the paper is: `fiscal` (a cash register receipt, the kind with a tax QR code) or
   `card_slip` (a card terminal slip: a total and a card number, usually no items); nil means "not known
@@ -364,13 +370,20 @@ this takes hours. The confirmation and the notice say so.
 - `/receipts` (`ReceiptsController#index`): 50 receipts to a page (`Pagination`, a COUNT and an OFFSET; no
   gem for a list of a few thousand rows). Newest first (`Receipt.newest_first`): receipts uploaded in the
   app (no ingest number) by upload time, then loaded ones by ingest number, highest first, compared as a
-  number. The filter (`Receipt::Filter`: batch, status, kind, tax QR, incomplete) is a GET form; its state
-  is the URL, carried by every link (rows, pages, counts, receipt pages and back). A value that is not a
-  choice is ignored. The counts per status apply every filter but the status.
+  number. The filter (`Receipt::Filter`: batch, status, kind, tax QR, incomplete, ground truth, the check of
+  a tax-service record) is a GET form; its state is the URL, carried by every link (rows, pages, counts,
+  receipt pages and back). A value that is not a choice is ignored. The counts per status apply every filter
+  but the status; the ground-truth choices (labelled by hand, not labelled by hand, with a tax-service record,
+  with none) and the check choices (checked against the print or not) show their counts under every other
+  filter. A "Truth" column marks each row ("By hand", "Tax" with its check), and a progress line says how
+  many receipts of the list (the ground-truth filter left out) are labelled by hand and how many items their
+  records hold.
 - `/receipts/:id`: the photos in upload order next to the review form (see "Review") while the receipt is
   reviewable (`extracted` or `reviewed`, no OCR queued or running), and next to the stored data, read-only,
   otherwise. Previous / next walk the filtered list (the ids of the whole filter, plucked: cheap at this
-  size). A `failed` receipt shows the stored failure code and message.
+  size). A `failed` receipt shows the stored failure code and message. Under the data column the receipt's
+  ground truth (see "Receipt ground truth"): which sources exist, when each was saved, what pre-filled a
+  person's record, and a tax-service record next to the receipt with its check.
 - `/receipts/new`: one to three photos and an optional batch, sent with the form (no direct upload: Rails'
   Active Storage routes are not drawn). The model's rules are the form's errors; a photo set that was
   already uploaded links to the existing receipt.
@@ -637,15 +650,17 @@ server is still the authority: a stale save is refused as above. What the forms 
 never submits the form: in the last item row it adds a row (focus on its name), in another row it moves to
 the same field of the next row. In the category picker, typing filters the categories and groups, Enter or
 Tab takes the highlighted one, and Escape puts the chosen one back; only a category from the list can be
-sent. Ctrl+S (Cmd+S) saves and Ctrl+Enter (Cmd+Enter) accepts. Focus moves to the row that takes a removed
+sent. Ctrl+S (Cmd+S) saves, Ctrl+Shift+S (Cmd+Shift+S) saves as ground truth (missing Shift only saves) and
+Ctrl+Enter (Cmd+Enter) accepts. Focus moves to the row that takes a removed
 row's place, and after a refused save to the first field marked invalid.
 
 **The live totals** in the form's footer (items, total, difference, QR total) are recalculated in the
 browser as the person types, on integer hundredths (`BigInt`), never floating point, with the rules of
 `MoneyInput`. They are a preview: the figures rendered with the page are the server's.
 
-**One document per receipt.** Everything the form edits lives on the receipt row and its items, so a later
-"save as gold" can snapshot the corrected receipt as one document without touching `ocr_raw`.
+**One document per receipt.** Everything the form edits lives on the receipt row and its items, so "Save as
+ground truth" snapshots the corrected receipt as one document without touching `ocr_raw` (see "Manual ground
+truth").
 
 ## Manual entry
 
@@ -733,11 +748,13 @@ and the two fiscal numbers ("QR ground truth"), but not the items. A `receipt_gr
 | Column | Meaning |
 |---|---|
 | `receipt_id` | the receipt (required) |
-| `source` | `dps_xml`: a receipt file a person saved from the tax service's receipt page, read by the ground-truth import; `manual`: a person's reading of the print, from the review form (a later change). One row per receipt and source |
-| `document` | the receipt in the shape of the OCR contract's `receipt` object (`ml/README.md`): `kind`, `merchant`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `card_last4`, `is_return` and `items` (`name`, `quantity`, `unit_price`, `amount`, `discount`). Every key is present; any value but an item's name may be null (not known), an item's `amount` and `discount` too, unlike in an OCR answer |
-| `schema_version` | the shape of `document` (1 today) |
+| `source` | `dps_xml`: a receipt file a person saved from the tax service's receipt page, read by the ground-truth import; `manual`: a person's reading of the print, saved from the review form ("Save as ground truth"). One row per receipt and source |
+| `document` | the receipt in the shape of the OCR contract's `receipt` object (`ml/README.md`): `kind`, `merchant`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `card_last4`, `is_return`, `category_slug` and `items` (`name`, `quantity`, `unit_price`, `amount`, `discount`, `category_slug`). Every key is present; any value but an item's name may be null (not known), an item's `amount` and `discount` too, unlike in an OCR answer |
+| `schema_version` | the shape of `document`: 1 (no categories) or 2 (with `category_slug`); see "Schema versions" |
 | `items_known` | whether the source gave item lines at all |
-| `prefilled_by` | the model or source that filled the form before a person corrected it; nil for an imported record |
+| `categories_known` | whether the document gives every category (each item's, and a card slip's own); false means none is given |
+| `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version` | what filled the review form before a person corrected it (a model's name, `source:hand` or `source:dps_xml`), and the model's version and prompt version; nil for an imported record. See "The pre-fill rule" |
+| `categories_prefilled_by` | the categoriser whose suggestions were on the form when the person chose the categories (`source:unknown` when suggestions were there and nothing recorded whose); nil when none was, and for an imported record |
 | `source_sha256`, `source_format` | for an imported record: the SHA-256 of the file and the format variant that read it. Never the file's path or content |
 | `checked_at`, `check_outcome`, `check_note` | a person compared the record with the printed receipt: `matches` or `differs`, with an optional note |
 
@@ -768,11 +785,128 @@ Why it is built this way:
 - **`prefilled_by`.** A person who corrects a form a model filled in tends to keep what looks right, so the
   result leans towards that model's answer. Such a record is not test ground truth for that model
   (`independent_of?(model_name)`); it still is for every other model. An imported record was filled by no
-  model, so it has no `prefilled_by` (a database constraint).
+  model, so it has no `prefilled_by` (a database constraint). The same holds for categories and the
+  categoriser whose suggestions were on the form (`categories_independent_of?`).
 - **Checked.** An imported record is what the file says. A person can compare it with the printed receipt and
-  record `matches` or `differs` (`record_check!`, `clear_check!`; the screen for it is a later change). Once
+  record `matches` or `differs` (`record_check!`, `clear_check!`; see "Checking an imported record"). Once
   checked, the import no longer replaces it when the file changes: the person's judgement is about this
   version, and the change is reported as a conflict instead.
+
+### Schema versions
+
+Version 2 adds categories: `category_slug` on each item and on the receipt (a card slip's one category; null
+for any other kind). The values are category slugs (`group/category`, never a group's slug), the key the ML
+service's contract uses for a category: a renamed category keeps its slug, so a record stays right.
+`categories_known` true means every item has one and a slip has its own; false means every category is null
+(both a validation and a database constraint, as `items_known` has). Version 1 is the same without the two
+keys, and cannot say categories are known.
+
+Both versions stay readable, and a stored record is never rewritten to a newer one: an imported record may
+have been checked by a person, and its content does not change with the shape. Everything that reads a
+record takes `current_document`, which reads a version 1 document as version 2 with null categories
+(`ReceiptGroundTruth::Document.upgrade`); the validator checks each record against its own version. Every
+writer writes version 2: the import (with null categories) and "Save as ground truth". The import counts a
+version 1 record whose file and format variant are unchanged, and whose document reads the same, as
+unchanged: it neither rewrites it nor, when it was checked, turns it into a conflict. The export writes every
+record as version 2 (one shape) and says in `stored_schema_version` what it was stored as.
+
+### Manual ground truth
+
+"Save as ground truth" in the review form (`intent=ground_truth`, Ctrl+Shift+S) saves the form as "Save"
+does and then writes or replaces the receipt's `manual` record (`Receipts::SaveGroundTruth`), in one
+database transaction with the receipt row locked. It never creates or changes a transaction and never moves
+the receipt's status: a receipt can be labelled without being accepted, and accepted without being
+labelled. "Save" and "Accept" never write ground truth.
+
+- **A snapshot.** The record is built from the receipt as stored after the save
+  (`ReceiptGroundTruth::Snapshot`), never from the form's text: the header fields (`issued_at` in Kyiv time
+  with its offset, an empty text field as null, `is_return` null since the receipt does not record
+  returns), the items in position order with their categories as slugs, and a slip's category. Money has
+  exactly two places and a quantity three; a stored value with more would raise rather than be rounded. Later
+  edits of the receipt, its items, the ledger (accepting, deleting the transaction), a new OCR result or a
+  renamed category leave it as it was saved; only saving it again changes it.
+- **Before saving**, each gap is an error on its field, with the typed values kept: the kind set; a total and
+  a date and time unless the receipt is marked incomplete; a fiscal receipt's items (each with a name and an
+  amount, as always); every item's category and a slip's own, unless "Save without categories" is ticked
+  (then, when a category is missing, the record says categories are not known and carries none). Whether the
+  items sum to the total is shown in the footer, not enforced: a receipt can print a rounding line.
+- **A booked receipt** (`reviewed`) is saved as ground truth as it is stored: its form must change nothing,
+  since changing a booked receipt is "Accept again"; a form with changes is refused with that advice.
+- **Replacing.** When a record exists and the new snapshot differs (a field, an item, what pre-filled it),
+  the first attempt rolls everything back, form included, and shows a short summary (how many fields, which,
+  and how many items changed, added or removed) with "Replace the ground truth". That button sends a token,
+  the digest of the stored record and the new snapshot: a record changed in between, or a form changed again
+  after the question, asks again. Saving what the record already says writes nothing. Replacing clears a
+  person's check of the old content.
+- After saving, the receipt page opens with "Next receipt to label" focused: the next receipt of the list's
+  filter, after this one and wrapping around, without manual ground truth and with its form open
+  (`extracted` or `reviewed`, no OCR queued or running); the receipt may have left a "Not labelled by hand"
+  filter, so its place is found without that filter. A progress line says how far labelling is in the list.
+
+**Fill the form from the tax-service record.** Where a receipt has a `dps_xml` record and its form is open
+(not booked), the form offers to copy the record's header fields and items into the form, as unsaved edits
+(`receipt_review_controller.js`; the server prepares the values in the form's own formats, so the browser
+converts nothing). A field the record leaves unknown is emptied, so nothing of the model's answer stays;
+every row is replaced and the new rows have no category. The hidden `filled_from` field becomes `dps_xml`,
+and any save then stores it on the receipt (only that value, and only when the record exists).
+
+### The pre-fill rule
+
+`prefilled_by` names what filled the form the person corrected, derived from what the receipt records
+(`ReceiptGroundTruth::Prefill.of`):
+
+| The receipt | `prefilled_by` | versions |
+|---|---|---|
+| `filled_from` is `dps_xml` | `source:dps_xml` | none |
+| else `ocr_model_name` is set | that model's name | `ocr_model_version`, `ocr_prompt_version` |
+| else (entered by hand from nothing) | `source:hand` | none |
+
+`Receipts::ApplyOcr` writes the model's name, version and prompt version together and replaces every field
+and item, and clears `filled_from` and `categoriser_model_name`. "Enter by hand" keeps them: a failed
+receipt that keeps the items of an earlier read is still that model's answer, and an unread one has none.
+A model name never starts with `source:`, so the two fixed values cannot be taken for a model. The rule
+leans towards leaving a receipt out of a model's test set: a person who cleared everything a model filled
+and typed it again still gets the model.
+
+**Read again after a correction.** When a receipt a person corrected (or labelled) is read again by another
+model, the new answer replaces the fields and items, so the form then holds that model's answer: a record
+saved from it names the new model. A record saved before keeps the model it names (a snapshot). A form that
+was open while the new answer arrived is refused as stale (`lock_version`), so a record can never carry the
+corrections of one model's answer under another model's name. What a person remembers from an earlier
+answer is not tracked: an accepted limit.
+
+**Categories.** `categories_prefilled_by` is `receipts.categoriser_model_name` when a kept item (or a card
+slip) carries a suggestion at the time of saving, `source:unknown` when one does and the receipt does not say
+whose (the evaluation then leaves the record out for every categoriser), and nil when none does or the
+record has no categories. A new OCR result replaces the items and so clears `categoriser_model_name`; a
+review save keeps it (it is not a form field). Rows filled from the tax-service record carry no suggestion.
+
+**In the evaluation.** A record whose `prefilled_by` is a model's name is not test ground truth for that
+model, whatever its version or prompt (the same weights answer much the same); one whose
+`categories_prefilled_by` names a categoriser is not test ground truth for that categoriser's categories.
+Records pre-filled by `source:hand` or `source:dps_xml`, and imported records, count for every model.
+
+### Checking an imported record
+
+A receipt page with a `dps_xml` record shows it next to the photos: its header and items beside the
+receipt's saved values (items paired by their place in the list; categories and `is_return` left out, the
+file has neither), each difference marked, and "Matches the print" / "Differs from the print" with an
+optional note (`Receipts::GroundTruthChecksController`: `POST` and `DELETE /receipts/:id/ground_truth_check`).
+A checked record can be checked again (the new outcome and note replace the old ones) or forgotten. A check
+writes only the record's check columns: never its document, the receipt or its items. The plan is to check
+30 to 50 imported records against the print.
+
+### What never touches what
+
+| Writer | Ground truth | Receipt, items | Transaction | Status |
+|---|---|---|---|---|
+| "Save", "Accept" | never | yes | "Accept" books | "Accept" moves it |
+| "Save as ground truth" | writes the `manual` record | as "Save" (nothing on a booked receipt) | never | never |
+| A check | the `dps_xml` record's check columns | never | never | never |
+| The import | the `dps_xml` record (never a checked one) | never | never | never |
+| OCR, "Enter by hand" | never | yes | never | yes |
+| The receipt load | never | its own columns only (QR, ingest, photos of a pristine receipt) | never | never |
+| Deleting a transaction | never | unlinks the receipt | yes | `reviewed` back to `extracted` |
 
 ### Ground-truth import
 
@@ -818,8 +952,11 @@ from the tax service (`docs/decisions/0010-receipt-ground-truth.md` says why).
 
 `bin/rails "receipts:export_ground_truth[OUT_DIR]"` (`GroundTruthExport`) writes every record to
 `OUT_DIR/ground_truth.jsonl` for the offline evaluation (`ml/evaluation/` reads files): `receipt_id`,
-`ingest_id`, `source`, `source_format`, `prefilled_by`, `checked_at`, `check_outcome`, `qr_check`,
-`items_known`, `schema_version` and `document`. `qr_check` is the cross-check made again at export time
+`ingest_id`, `source`, `source_format`, `saved_at`, `prefilled_by`, `prefill_kind` (`model`, `hand`,
+`dps_xml`, null), `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`,
+`checked_at`, `check_outcome`, `qr_check`, `items_known`, `categories_known`, `schema_version` (always 2),
+`stored_schema_version` and `document` (as version 2, categories as `category_slug`). With `prefilled_by`
+and `categories_prefilled_by` the evaluation applies the pre-fill rule. `qr_check` is the cross-check made again at export time
 (`agrees`, `disagrees`, `unverifiable`, `no_qr`), so a record that QR values loaded or changed later
 contradict is marked and the evaluation can leave it out. It refuses a folder inside a git repository, creates it readable by the
 owner only and writes the file with mode 0600 through a new temporary file (exclusive, never through a
@@ -1001,10 +1138,9 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   receipts; `docs/openapi.yaml`, `docs/decisions/0007-read-api.md`) and the read-only MCP server at `/mcp`,
   whose tools call the same query objects (`docs/decisions/0008-mcp-server.md`).
 - A call to `/categorise` that fills `suggested_category` and `confidence` on the items.
-- Saving a reviewed receipt as OCR ground truth ("save as gold": a `manual` ground-truth record with
-  `prefilled_by`), the screen for checking an imported record against the print, and the item-level metrics
-  over the exported ground truth. The review form keeps everything it edits on the receipt and its items,
-  `ocr_raw` untouched, so the corrected receipt is one document to snapshot.
+- The item-level metrics over the exported ground truth (`ml/evaluation/`), with the pre-fill rule.
+- Filling item suggestions and `categoriser_model_name` (the categoriser); recording which suggestion a
+  person took for each item, should the evaluation need more than "suggestions were on the form".
 - A transactions list, editing a booked transaction in the app (its amount, date or account), and
   entering an income or a transfer by hand.
 - A slip's category and suggestion in the read API and the MCP tools (the booked line already carries the
