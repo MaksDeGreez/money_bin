@@ -118,8 +118,9 @@ tests check every response against it. The design is in
 - Money and quantities are decimal strings (`"-1250.40"`, `"0.850"`), never JSON numbers. Amounts are
   signed in the account currency: expenses negative, incomes positive.
 - Dates are `YYYY-MM-DD`; times carry the Kyiv offset (`2026-10-03T18:40:00+03:00`).
-- An unknown parameter, a malformed value or an id that names nothing is a 422 `invalid_parameter` whose
-  message names the parameter; a missing record is a 404 `not_found`.
+- An unknown or repeated parameter, a malformed value, an id that names nothing or a request body is a
+  422 `invalid_parameter` whose message names the parameter; a missing record is a 404 `not_found`.
+  Send every parameter in the query string.
 - Lists come a page at a time (`limit`, 50 by default, at most 200): pass the answer's `next_cursor` as
   `cursor` for the next page, until it is `null`.
 
@@ -166,7 +167,7 @@ curl -s -H "$H" "$API/summary?from=2026-10-01&to=2026-10-31"
 
 # Receipts, newest first (status filters them), and one receipt with its items.
 curl -s -H "$H" "$API/receipts?limit=1"
-# {"receipts":[{"id":7,"status":"reviewed","merchant":"Example Market",
+# {"receipts":[{"id":7,"status":"reviewed","kind":"fiscal","incomplete":false,"merchant":"Example Market",
 #   "issued_at":"2026-10-03T18:40:00+03:00","issued_on":"2026-10-03","total":"1250.40",
 #   "currency":"UAH","transaction_id":81,"items_count":3}],"next_cursor":"…"}
 curl -s -H "$H" "$API/receipts/7"

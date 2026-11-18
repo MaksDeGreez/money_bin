@@ -36,8 +36,12 @@ strings) and return relations or small `Data` value objects; they know nothing o
 
 ### Strict parameters
 
-An unknown parameter, a malformed value, a repeated value (`status[]=...`), an id that names nothing, or
-`to` before `from` is a 422 `invalid_parameter` whose message names the parameter. A missing required
+An unknown parameter, a malformed value, a repeated parameter (`status=a&status=b`, which Rails would
+quietly narrow to its last value, or `status[]=...`), a NUL character, an id that names nothing, or `to`
+before `from` is a 422 `invalid_parameter` whose message names the parameter. So is a request body: every
+endpoint reads only the query string, and an agent whose HTTP tool puts its arguments in a JSON body must
+not get the whole ledger back. The routes take no format suffix (`.xml`, `.json`): the API speaks JSON
+only. A missing required
 parameter (`from` or `to` of the summary) is a 400 `bad_request`, as 0002 set. An agent that misspells a
 filter must get an error, not the whole ledger as if the filter had matched. A malformed path id
 (`/transactions/12abc`) is a 404: Active Record would read it as 12.
@@ -52,8 +56,11 @@ more than the limit to know whether another page exists, so the last page has a 
 is exactly full.
 
 - An offset skips rows that are inserted in front of it and repeats rows when one is deleted; a keyset
-  position stays where it was. An agent walking the ledger while the importer or the owner adds rows
-  sees no duplicates and no gaps.
+  position stays where it was. An agent walking the ledger while the importer or the owner adds or
+  removes rows sees no duplicates and no gaps. A row whose sort key changes during the walk can move
+  across the cursor and be seen twice or not at all: a transaction whose date is edited, or a receipt
+  that OCR gives a time (it moves from its upload time to the printed time). Walking again from the start
+  sees it once.
 - Page N costs what page 1 costs: an index range scan from the cursor, not a skip over N pages.
 - The id makes the order total, so rows of one day keep a fixed order.
 - The cursor is opaque to clients but not signed: it holds nothing a client could not read from the page
@@ -61,7 +68,8 @@ is exactly full.
   consistent, filtered list from the same position. A value the API did not make is a 422.
 - Receipts sort by `issued_at` because "my last receipt" means the last purchase; a photo that OCR has
   not read yet has no time on it and sorts by its upload time, so it is new too and an old failed upload
-  does not stay on top forever.
+  does not stay on top forever. A time misread into the future keeps its receipt on top until a person
+  corrects it.
 
 ### The summary: booked only, transfers out, per currency, by lines
 
@@ -78,7 +86,10 @@ is exactly full.
   deposit returned) lowers its category's figure. `transactions` in `by_category` counts a split
   transaction once in each of its categories; the side's own `transactions` counts it once.
 - **Groups roll up their categories.** A line points at a category, never at a group, so a group's figure
-  is the sum of its categories. Lines with no category are reported with a null category and group.
+  is the sum of its categories. Lines with no category are reported with a null category and group. The
+  "never at a group" rule is the model's only (`docs/domain.md`); a line written past the model at a
+  group would be reported as a category with a null group, in the same null-group row as the
+  uncategorised lines.
 - **Signs are kept.** Expense figures are negative, as in the ledger, so an agent never has to remember
   which endpoint flips the sign.
 - **Months** are calendar months of `occurred_on`, oldest first; a month with nothing in it is absent.
@@ -142,7 +153,11 @@ To make the check strict:
   example request for every documented path, method and status (a documented response without an
   example fails, and so does an example for an undocumented one), runs each and checks the answer, and
   compares the API routes with the documented paths in both directions;
-- the endpoint tests check every response they get, error responses included.
+- the endpoint tests check every response they get, error responses included, and the request too
+  (`strict_query_params`: a query parameter the document does not declare fails);
+- openapi_parser 2.8 drops a key literally named `discriminator` before it checks
+  `additionalProperties: false`, even where no discriminator is declared. `OpenapiTestHelper` therefore
+  refuses that key in every response itself, and the contract test keeps the name out of the document.
 
 ## Alternatives considered
 
@@ -175,4 +190,6 @@ To make the check strict:
   schema in `docs/openapi.yaml`, and an example per response status in the contract test.
 - A new column in an API response is one line in its serializer and one property in the document (added
   to `required`); the receipts serializer has one place (`common`) for fields both receipt shapes share.
+  Receipts carry `kind` and `incomplete`; the card digits (`card_last4`), the QR code and its ground
+  truth (`qr_*`) and `ingest_id` are left out on purpose: an agent reading the ledger needs none of them.
 - The MCP server will call the same query objects and can reuse the serializers for the same JSON.
