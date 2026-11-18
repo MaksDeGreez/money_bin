@@ -88,10 +88,13 @@ class EmbeddingCache:
 
     def __init__(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        folder.chmod(0o700)  # also when the folder already existed
         path = folder / CACHE_FILE
         if not path.exists():
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
         self._db = sqlite3.connect(path)
+        # No journal file next to the cache (it would get the umask's mode, not 600).
+        self._db.execute("PRAGMA journal_mode=MEMORY")
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, dim INTEGER, vector BLOB)"
         )
@@ -183,6 +186,8 @@ class TransformerEncoder:  # pragma: no cover - needs torch, transformers and lo
         return self.spec.key
 
     def _load(self) -> None:
+        # Never reach the Hub while texts are being encoded: everything comes from the local cache.
+        os.environ["HF_HUB_OFFLINE"] = "1"
         try:
             import torch
             from transformers import AutoModel, AutoTokenizer

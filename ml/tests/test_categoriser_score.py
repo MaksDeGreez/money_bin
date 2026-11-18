@@ -11,7 +11,7 @@ from typing import Any
 import joblib
 import pytest
 
-from categoriser import score, selection
+from categoriser import common, score, selection
 from categoriser.common import TrainingError
 from categoriser.taxonomy import DEFAULT_TAXONOMY
 from tests.categoriser_export import build_transactions, private_strings, write_export
@@ -33,8 +33,20 @@ FIRST_VERSION_DAYS = {
 }
 
 
+CLEAN = {"sha": "0" * 40, "dirty": False}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def committed_code() -> Any:
+    """The checks compare git states; the tests run on a fixed, clean one."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(common, "git_state", lambda: dict(CLEAN))
+        patch.setattr(score, "git_state", lambda: dict(CLEAN))
+        yield patch
+
+
 @pytest.fixture(scope="module")
-def scored(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+def scored(tmp_path_factory: pytest.TempPathFactory, committed_code: Any) -> dict[str, Any]:
     root = tmp_path_factory.mktemp("score")
     export = write_export(root / "export")
     encoders = {"fake": FakeEncoder()}
@@ -61,6 +73,7 @@ def scored(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
             out_dir=root / "models",
             resamples=50,
             encoders=encoders,
+            ledger_path=root / "data" / "scores.jsonl",
             echo=lines.append,
         )
     result.update(
@@ -162,21 +175,50 @@ def test_nothing_from_the_export_reaches_an_output(scored: dict[str, Any]) -> No
     assert "McNemar, final vs first_version" in scored["console"]
 
 
-def test_a_second_score_is_refused_unless_a_reason_is_given(scored: dict[str, Any]) -> None:
+def _fresh(tmp_path: Path) -> dict[str, Path]:
+    """An empty output folder and record, so the check under test is the one that refuses."""
+    return {"out_dir": tmp_path / "out", "ledger_path": tmp_path / "scores.jsonl"}
+
+
+def _options(scored: dict[str, Any], **changes: Any) -> dict[str, Any]:
     options = {
         "export_dir": scored["export"],
         "selection_path": scored["selection"]["selection_path"],
         "out_dir": scored["root"] / "models",
         "resamples": 5,
         "encoders": scored["encoders"],
+        "ledger_path": scored["root"] / "data" / "scores.jsonl",
         "echo": lambda _line: None,
     }
-    with pytest.raises(TrainingError, match="already scored"):
-        score.run(**options)
-    with pytest.raises(TrainingError, match="already scored"):
-        score.run(**options, rescore_reason="  ")
+    options.update(changes)
+    return options
 
-    again = score.run(**options, rescore_reason="a crash in the plotting script")
+
+def test_the_unsealing_is_recorded_privately(scored: dict[str, Any]) -> None:
+    ledger = scored["root"] / "data" / "scores.jsonl"
+    entries = [json.loads(line) for line in ledger.read_text().splitlines()]
+
+    assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+    assert entries[0]["manifest_sha256"] == scored["metrics"]["export"]["manifest_sha256"]
+    assert entries[0]["unsealed_at"] == scored["metrics"]["final_scoring"]["scored_at"]
+    assert (
+        entries[0]["configuration"] == scored["metrics"]["final_scoring"]["configuration"]["name"]
+    )
+    assert scored["metrics"]["final_scoring"]["code"]["at_selection"] == CLEAN
+
+
+def test_a_second_score_is_refused_unless_a_reason_is_given(
+    scored: dict[str, Any], tmp_path: Path
+) -> None:
+    with pytest.raises(TrainingError, match="already scored"):
+        score.run(**_options(scored))
+    with pytest.raises(TrainingError, match="already scored"):
+        score.run(**_options(scored, rescore_reason="  "))
+    # Another output folder does not help: the record of test scores is kept apart from it.
+    with pytest.raises(TrainingError, match=r"scores.jsonl line 1"):
+        score.run(**_options(scored, out_dir=tmp_path / "elsewhere"))
+
+    again = score.run(**_options(scored, rescore_reason="a crash in the plotting script"))
 
     final = again["metrics"]["final_scoring"]
     assert final["rescore_reason"] == "a crash in the plotting script"
@@ -185,18 +227,57 @@ def test_a_second_score_is_refused_unless_a_reason_is_given(scored: dict[str, An
     again["model_path"].unlink()
 
 
+def test_the_seal_stays_closed_when_the_refit_fails(
+    scored: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_fit(*_args: Any, **_kwargs: Any) -> Any:
+        raise TrainingError("the model could not be fitted")
+
+    monkeypatch.setattr(score, "fit_system", failing_fit)
+    ledger = tmp_path / "scores.jsonl"
+
+    with pytest.raises(TrainingError, match="could not be fitted"):
+        score.run(**_options(scored, out_dir=tmp_path / "out", ledger_path=ledger))
+
+    assert not ledger.exists()
+
+
+def test_other_code_is_refused_unless_a_reason_is_given(
+    scored: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    options = _options(scored, out_dir=tmp_path / "out", ledger_path=tmp_path / "scores.jsonl")
+    for state in ({"sha": "1" * 40, "dirty": False}, {"sha": "0" * 40, "dirty": True}):
+        monkeypatch.setattr(score, "git_state", lambda state=state: dict(state))
+        with pytest.raises(TrainingError, match="not the committed code"):
+            score.run(**options)
+
+    result = score.run(**options, code_change_reason="a comment was fixed")
+
+    assert result["metrics"]["final_scoring"]["code_change_reason"] == "a comment was fixed"
+    assert result["metrics"]["final_scoring"]["code"]["at_scoring"]["dirty"] is True
+
+
+def test_another_encoder_is_refused(scored: dict[str, Any], tmp_path: Path) -> None:
+    data = json.loads(scored["selection"]["selection_path"].read_text())
+    data["chosen"]["config"] = {**data["first_version"]["config"]}
+    data["chosen"]["config"].update(feature_set="embedding", encoder="fake")
+    changed = tmp_path / "selection.json"
+    changed.write_text(json.dumps(data))
+    other = {"fake": FakeEncoder("fake-encoder@2")}
+
+    with pytest.raises(TrainingError, match="encoder 'fake' is not the one"):
+        score.run(**_options(scored, selection_path=changed, encoders=other, **_fresh(tmp_path)))
+    with pytest.raises(TrainingError, match="encoder 'fake' is not the one"):
+        score.run(**_options(scored, selection_path=changed, encoders={}, **_fresh(tmp_path)))
+
+
 def test_another_export_is_refused(scored: dict[str, Any], tmp_path: Path) -> None:
     transactions = build_transactions()
     transactions[0]["comment"] = "changed"
     other = write_export(tmp_path / "export", transactions)
 
     with pytest.raises(TrainingError, match="not the one the selection used"):
-        score.run(
-            export_dir=other,
-            selection_path=scored["selection"]["selection_path"],
-            out_dir=tmp_path / "out",
-            echo=lambda _line: None,
-        )
+        score.run(**_options(scored, export_dir=other, **_fresh(tmp_path)))
 
 
 def test_another_taxonomy_is_refused(scored: dict[str, Any], tmp_path: Path) -> None:
@@ -205,27 +286,28 @@ def test_another_taxonomy_is_refused(scored: dict[str, Any], tmp_path: Path) -> 
     taxonomy.write_text(taxonomy.read_text() + "\n# changed\n")
 
     with pytest.raises(TrainingError, match="taxonomy is not the one"):
-        score.run(
-            export_dir=scored["export"],
-            selection_path=scored["selection"]["selection_path"],
-            out_dir=tmp_path / "out",
-            taxonomy_path=taxonomy,
-        )
+        score.run(**_options(scored, out_dir=tmp_path / "out", taxonomy_path=taxonomy))
 
 
-def test_a_changed_split_is_refused(scored: dict[str, Any], tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda data: data["split"]["fit"].update(rows=data["split"]["fit"]["rows"] + 1), "split"),
+        (lambda data: data["split"]["test"].update(rows=1), "test set differs"),
+        (lambda data: data["split"]["test"].update(first_date="2000-01-01"), "test set differs"),
+        (lambda data: data.update(selection_version=0), "another version"),
+    ],
+)
+def test_a_changed_selection_is_refused(
+    scored: dict[str, Any], tmp_path: Path, change: Any, message: str
+) -> None:
     data = json.loads(scored["selection"]["selection_path"].read_text())
-    data["split"]["fit"]["rows"] += 1
+    change(data)
     changed = tmp_path / "selection.json"
     changed.write_text(json.dumps(data))
 
-    with pytest.raises(TrainingError, match="split differs"):
-        score.run(
-            export_dir=scored["export"],
-            selection_path=changed,
-            out_dir=tmp_path / "out",
-            echo=lambda _line: None,
-        )
+    with pytest.raises(TrainingError, match=message):
+        score.run(**_options(scored, selection_path=changed, **_fresh(tmp_path)))
 
 
 @pytest.mark.parametrize("content", ["not json", json.dumps({"kind": "other"}), "[]"])
@@ -237,13 +319,17 @@ def test_a_bad_selection_file_is_refused(tmp_path: Path, content: str) -> None:
         score.run(export_dir=tmp_path, selection_path=path, out_dir=tmp_path / "out")
 
 
-def test_an_unreadable_earlier_score_counts_as_a_score(tmp_path: Path) -> None:
+def test_unreadable_earlier_scores_count_as_scores(tmp_path: Path) -> None:
     (tmp_path / "transaction-categoriser-x.final.json").write_text("{")
     (tmp_path / "transaction-categoriser-y.final.json").write_text(
         json.dumps({"export": {"manifest_sha256": "other"}})
     )
+    ledger = tmp_path / "scores.jsonl"
+    ledger.write_text('{"manifest_sha256": "other"}\nnot json\n{"manifest_sha256": "abc"}\n')
 
     assert score._earlier_scores(tmp_path, "abc") == ["transaction-categoriser-x.final.json"]
+    assert score._ledger_scores(ledger, "abc") == ["scores.jsonl line 2", "scores.jsonl line 3"]
+    assert score._ledger_scores(tmp_path / "none.jsonl", "abc") == []
 
 
 def test_main_scores_from_the_command_line(
@@ -256,9 +342,10 @@ def test_main_scores_from_the_command_line(
     )
     path = next(out.glob("*.selection.json"))
     capsys.readouterr()
+    ledger = ["--ledger", str(tmp_path / "data" / "scores.jsonl")]
 
     code = score.main(
-        [str(export), "--selection", str(path), "--out", str(out), "--resamples", "5"]
+        [str(export), "--selection", str(path), "--out", str(out), "--resamples", "5", *ledger]
     )
 
     assert code == 0
@@ -268,7 +355,7 @@ def test_main_scores_from_the_command_line(
     for text in private_strings():
         assert text not in printed
 
-    code = score.main([str(export), "--selection", str(path), "--out", str(out)])
+    code = score.main([str(export), "--selection", str(path), "--out", str(out), *ledger])
 
     assert code == 1
     assert "already scored" in capsys.readouterr().err

@@ -235,6 +235,16 @@ def test_the_rule_gives_ties_to_the_simpler_model() -> None:
     assert chosen["name"] == "light"
 
 
+def test_a_grid_that_repeats_the_first_version_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(selection.TrainingError, match="two candidates are named tfidf"):
+        selection.run(
+            export_dir=write_export(tmp_path / "export"),
+            out_dir=tmp_path / "out",
+            **{**SMALL, "class_weight_powers": (1.0,), "half_lives": ()},
+            echo=lambda _line: None,
+        )
+
+
 @pytest.mark.parametrize(
     ("options", "message"),
     [

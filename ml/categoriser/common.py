@@ -23,6 +23,8 @@ from categoriser.taxonomy import load_taxonomy
 
 MODEL_NAME = "transaction-categoriser"
 DEFAULT_OUT = Path.home() / "Documents" / "money_bin_data" / "models"
+# Every unsealing of a test set is appended here, whatever output folder a run uses.
+DEFAULT_LEDGER = Path.home() / "Documents" / "money_bin_data" / "categoriser-test-scores.jsonl"
 DEFAULT_SEED = 42
 MIN_ROWS = 20
 

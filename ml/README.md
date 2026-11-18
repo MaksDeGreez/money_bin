@@ -569,7 +569,8 @@ none for TF-IDF only), `--embedding-cache DIR`
 (`~/Documents/money_bin_data/cache/embeddings/`), `--taxonomy`
 (`../db/seeds/taxonomy.yml`). `score` options: `--selection FILE` (required),
 `--out DIR`, `--resamples`, `--embedding-cache DIR`, `--taxonomy`,
-`--rescore-reason TEXT`. The seed, the fractions and every tuned value come
+`--rescore-reason TEXT`, `--code-change-reason TEXT`, `--ledger FILE`. The
+seed, the fractions and every tuned value come
 from the selection file.
 
 **Rows.** One per transaction that is not a transfer leg. A split transaction
@@ -598,14 +599,15 @@ them, so a selection run cannot use a test label or write a test metric.
 | `+classweight` | class weights `(n / (K * n_c)) ** power` (1 is "balanced") | the power (`C` kept) |
 | `+recency+classweight` | both, with the tuned half-life and power | `C` again |
 | `+mix` | the hybrid: `w * q + (1 - w) * p_model`, `q` the payee's category shares in the fitting rows, `w = n / (n + k) * purity ** beta`; for an unknown payee, the MCC's shares with weight `alpha_mcc * ...` | `k`, `beta`, `alpha_mcc` |
-| `+switch` | the payee's history decides when it was seen at least `min_count` times with a purity of at least `min_purity`; the model otherwise | `min_count`, `min_purity` |
+| `+switch` | the payee's history decides when it was seen at least `min_count` times with a purity of at least `min_purity`; the model otherwise (its confidence is then close to 1, so its coverage curve says little) | `min_count`, `min_purity` |
 
 The encoders: `e5-base` (`intfloat/multilingual-e5-base`) and `e5-large`
 (`intfloat/multilingual-e5-large`), with the "query: " prefix and mean
 pooling, each at a pinned revision, loaded with `local_files_only` from the
 local Hugging Face cache (no remote code) and run with PyTorch on the Apple
-GPU. Download the weights once (no transaction data is involved):
-`uv run hf download intfloat/multilingual-e5-large --revision <revision in categoriser/embeddings.py>`.
+GPU. Download the weights of each once (no transaction data is involved):
+`uv run hf download intfloat/multilingual-e5-base --revision <revision>` and the same for
+`intfloat/multilingual-e5-large`, with the revisions in `categoriser/embeddings.py`.
 torch and transformers are in the `embeddings` dependency group, which a plain
 `uv sync` installs on macOS on Apple silicon only; elsewhere, and in the tests
 (which use a fake encoder), they are not needed. The vectors are cached in a
@@ -623,8 +625,15 @@ first version).
 taxonomy or split, refits the chosen configuration on the whole training
 period (fitting rows + validation slice) with every tuned value kept, refits
 the first version and the baselines the same way, and scores them all on the
-test set. It refuses to score an export whose final score is already in the
-output folder unless `--rescore-reason` says why (the reason is recorded).
+test set. It also refuses another encoder, another selection format, another
+test set, and code other than the committed code the selection ran on
+(another commit or modified files; `--code-change-reason` overrides, and the
+reason is recorded). It refits before it opens the seal, and appends each
+unsealing to a record of test scores
+(`~/Documents/money_bin_data/categoriser-test-scores.jsonl`, `--ledger`)
+before it reads a test row. It refuses to score an export that the record or
+the output folder shows as scored already, unless `--rescore-reason` says why
+(the reason is recorded).
 
 **Baselines.** `majority` (always the most frequent category) and `payee_mcc`
 (the payee's most frequent category, else the MCC's, else the majority); the

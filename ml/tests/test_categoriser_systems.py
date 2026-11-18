@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from categoriser import selection
 from categoriser.common import TrainingError
 from categoriser.embeddings import (
     ENCODERS,
@@ -306,16 +307,32 @@ def test_a_wrong_number_of_vectors_is_refused(tmp_path: Path) -> None:
         encoder.encode(["a", "b"])
 
 
-def test_real_encoders_are_named_cached_and_lazy(tmp_path: Path) -> None:
+def test_real_encoders_are_named_cached_and_lazy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert real_encoders([], tmp_path / "unused") == {}
     with pytest.raises(TrainingError, match="unknown encoder"):
         real_encoders(["nope"], tmp_path / "cache")
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     with pytest.raises(TrainingError, match="embedding cache is inside a git repository"):
         real_encoders(["e5-large"], tmp_path / "repo" / "cache")
+    monkeypatch.setattr(selection.importlib.util, "find_spec", lambda _name: None)
+    with pytest.raises(EmbeddingError, match="torch and transformers not installed"):
+        real_encoders(["e5-base"], tmp_path / "cache")
+    monkeypatch.setattr(selection.importlib.util, "find_spec", lambda name: name)
 
     encoders = real_encoders(["e5-base", "e5-large"], tmp_path / "cache")
 
     assert set(encoders) == {"e5-base", "e5-large"}
     assert encoders["e5-base"].key == ENCODERS["e5-base"].key
     assert isinstance(encoders["e5-large"].encoder, TransformerEncoder)  # nothing loaded yet
+
+
+def test_an_existing_cache_folder_is_made_private(tmp_path: Path) -> None:
+    folder = tmp_path / "cache"
+    folder.mkdir(mode=0o755)
+
+    EmbeddingCache(folder).put({"k": np.ones(2, dtype=np.float32)})
+
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    assert [path.name for path in folder.iterdir()] == ["embeddings.sqlite3"]

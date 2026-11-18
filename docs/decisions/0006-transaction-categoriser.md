@@ -69,8 +69,8 @@ The rows are ordered by date after the drops above. The last 20% are the **test 
 day lies entirely on one side, so no day is split between training and test. The end of the training
 period (15% of its rows, whole days again) is a **validation slice**: the regularisation strength of the
 model is chosen on it, and so is the "best baseline" that the model is compared with. The test set is
-used once, for the final numbers (see "Improving the model" for how that is enforced). Every fitted part (vocabularies, IDF weights, the payee and MCC tables,
-the model) sees training rows only.
+used once, for the final numbers (see "Improving the model" for how that is enforced). Every fitted
+part (vocabularies, IDF weights, the payee and MCC tables, the model) sees training rows only.
 
 A random split would put transactions of the same payee from the same week on both sides and measure
 memory, not prediction. The time split measures the real question: given the past, how well are new
@@ -143,10 +143,15 @@ protocol, so that the final number is still an honest estimate.
   `SealedTest`, whose rows refuse to be read until the final step unseals them; the selection command
   (`categoriser.selection`) never unseals, writes no test metric (only the test set's size and first
   day, which the split defines) and is tested to be unchanged when every test label is shuffled. The
-  scoring command (`categoriser.score`) is a separate, explicit step: it reads the selection file, checks
-  that the export, the taxonomy and the split are the same, records which configuration it scored, from
-  which selection file (with its SHA-256) and when, and refuses to score the same export a second time
-  unless a reason is given, which it records.
+  scoring command (`categoriser.score`) is a separate, explicit step. It reads the selection file and
+  checks that the export, the taxonomy, the split (test set included), the encoders, the selection
+  format and the code (the same git commit, no modified files) are the ones the selection used; it
+  refits before it opens the seal; it appends each unsealing to a record of test scores kept in the data
+  folder, whatever the output folder, before it reads a test row; and it refuses to score the same
+  export a second time unless a reason is given, which it records. The metrics JSON records which
+  configuration was scored, from which selection file (with its SHA-256) and when. What it cannot stop is
+  a scoring of a different export (a re-export gets a new manifest); the record of test scores keeps
+  that visible.
 
 ### Refit on training + validation
 
@@ -207,6 +212,14 @@ version; the selection JSON holds the whole table and every tuning grid.
 - Many candidates and tuning grids are compared on one validation slice (15% of the training rows). The
   chosen candidate's validation score is therefore optimistic; the test score is the estimate to quote,
   and the gap between the two is itself informative.
+- The hybrids get more tuning than the other candidates (a grid of 27 or 12 settings against 4 or 5),
+  so their validation scores are the more optimistic ones; the tie margin and the preference for the
+  simpler candidate lean against that, but do not remove it.
+- The `switch` hybrid reports a confidence close to 1 on every row its payee rule decides, so its
+  precision-by-coverage curve says little about how well it ranks its own confidence.
+- The sentence vectors are computed once and cached; computing them again with an empty cache, on
+  another device or with another torch version gives vectors that differ in the last digits, so a
+  rerun of the selection from scratch is reproducible only approximately.
 - The validation slice is the end of the training period, not the test period: a candidate that suits
   the shift up to the cut may suit the test period less well.
 - The comparison with the first version on the test set is paired (the same rows, the same resamples,
@@ -232,10 +245,11 @@ version; the selection JSON holds the whole table and every tuning grid.
 ## Consequences
 
 - `ml/` gains scikit-learn, SciPy, joblib, PyYAML and their dependencies (NumPy among them); the HTTP
-  service does not import them yet. The `embeddings` group (torch, transformers below 5, einops) installs
-  on macOS on Apple silicon only, through platform markers, so Linux CI resolves and installs without it.
+  service does not import them yet. The `embeddings` group (torch and transformers 5, which the `mlx` group
+  needs too) installs on macOS on Apple silicon only, through platform markers, so Linux CI resolves and
+  installs without it.
 - A trained model is a file on the owner's machine, named by the export's manifest hash and the time of
   the run. The first version's one-step command (`categoriser.train`, which fitted and scored in one go)
   is replaced by the two steps above; its configuration is the `tfidf` candidate, and the final step
-  reproduces its test numbers exactly for the same seed. Serving it over HTTP and showing suggestions in the app are separate changes; they read the
-  model file from the same private folder.
+  reproduces its test numbers exactly for the same seed. Serving it over HTTP and showing suggestions in
+  the app are separate changes; they read the model file from the same private folder.

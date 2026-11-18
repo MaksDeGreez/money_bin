@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import importlib.util
 import itertools
 import json
 import sys
@@ -217,7 +218,7 @@ def run(
             variants.append((config, system))
         for config, system in variants:
             model_p = system.model_probabilities(validation)
-            candidates[config.name] = config
+            _add(candidates, config)
             predictions[config.name] = system.predict(validation, model_p)
             for grid in (mix_grid, switch_grid):
                 if not grid:
@@ -230,7 +231,7 @@ def run(
                     scores.append({"params": params.as_dict(), "validation_macro_f1": score})
                 best = max(range(len(grid)), key=lambda i: (scores[i]["validation_macro_f1"], -i))
                 hybrid = system.with_hybrid(grid[best])
-                candidates[hybrid.config.name] = hybrid.config
+                _add(candidates, hybrid.config)
                 predictions[hybrid.config.name] = hybrid.predict(validation, model_p)
                 tuning[hybrid.config.name] = {**tuning[config.name], "hybrid": scores}
         echo(f"Tuned: {tuned_c.name} and its variants ({time.perf_counter() - started:.0f} s)")
@@ -432,6 +433,17 @@ def _optional_versions(names: Sequence[str]) -> dict[str, str | None]:
     return versions
 
 
+def _add(candidates: dict[str, Config], config: Config) -> None:
+    """A candidate name stands for one configuration: a grid that repeats the first version's
+    values (a power of 1, say) would otherwise overwrite another candidate silently."""
+    if config.name in candidates:
+        raise TrainingError(
+            f"two candidates are named {config.name}; leave the first version's values out of "
+            "the grids"
+        )
+    candidates[config.name] = config
+
+
 def real_encoders(names: Sequence[str], cache_dir: Path) -> dict[str, Encoder]:
     """The named local encoders behind the on-disk cache (outside any git repository)."""
     if not names:
@@ -440,6 +452,12 @@ def real_encoders(names: Sequence[str], cache_dir: Path) -> dict[str, Encoder]:
     if unknown:
         raise TrainingError(f"unknown encoder(s): {', '.join(unknown)}")
     refuse_repository(cache_dir, "the embedding cache")
+    missing = [name for name in ("torch", "transformers") if importlib.util.find_spec(name) is None]
+    if missing:
+        raise EmbeddingError(
+            f"{' and '.join(missing)} not installed: the embeddings dependency group installs only "
+            "on macOS on Apple silicon (uv sync in ml/); `--encoders` alone means TF-IDF only"
+        )
     cache = EmbeddingCache(cache_dir)
     return {name: CachedEncoder(TransformerEncoder(ENCODERS[name]), cache) for name in names}
 
