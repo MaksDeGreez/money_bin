@@ -175,9 +175,15 @@ module Receipts
         false
       end
 
-      # Whether the form changes anything stored: a header field, an item, a row added or removed.
+      # Whether the form changes anything stored: a header field, an item, a row added or removed. An empty
+      # text field the form sends ("") for a stored nil is no change.
       def form_changes?
-        @receipt.changed? || @receipt.items.any? { |item| item.new_record? || item.marked_for_destruction? || item.changed? }
+        changed = ->(record) { record.changes.any? { |_, (old, new)| blank_as_nil(old) != blank_as_nil(new) } }
+        changed.(@receipt) || @receipt.items.any? { |item| item.new_record? || item.marked_for_destruction? || changed.(item) }
+      end
+
+      def blank_as_nil(value)
+        value.is_a?(String) ? value.strip.presence : value
       end
 
       def not_editable_message

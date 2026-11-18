@@ -185,6 +185,16 @@ class Receipts::SaveGroundTruthTest < ActiveSupport::TestCase
     assert_equal 3, record(receipt).items.size
   end
 
+  test "a booked receipt's empty fields, sent as empty text by the form, are no change" do
+    receipt = receipts(:market_receipt)
+    receipt.update_columns(receipt_number: nil, merchant_name: nil)
+    params = form(receipt).merge(transaction_lock_version: receipt.ledger_transaction.lock_version.to_s)
+    assert_equal "", params[:receipt_number]
+    saved, review = label(params, receipt:)
+    assert saved, review.form_receipt.errors.full_messages.to_sentence
+    assert_nil record(receipt).document["receipt_number"]
+  end
+
   test "a booked receipt with changes on the form is refused: that is Accept again" do
     receipt = receipts(:market_receipt)
     params = form(receipt, merchant_name: "Another").merge(transaction_lock_version: receipt.ledger_transaction.lock_version.to_s)
