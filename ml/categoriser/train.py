@@ -14,6 +14,7 @@ The console shows counts and metrics only. The metrics JSON holds category names
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -30,6 +31,7 @@ import joblib
 import numpy as np
 import scipy
 import sklearn
+from sklearn.pipeline import Pipeline
 
 from categoriser.baselines import (
     MajorityBaseline,
@@ -40,8 +42,17 @@ from categoriser.baselines import (
 from categoriser.dataset import Row, build_rows
 from categoriser.export import ExportError, load_export
 from categoriser.features import FEATURE_VERSION, build_model, features
-from categoriser.metrics import Encoded, difference, evaluate, headline, mcnemar, per_class
+from categoriser.metrics import (
+    Encoded,
+    day_block_intervals,
+    difference,
+    evaluate,
+    headline,
+    mcnemar,
+    per_class,
+)
 from categoriser.split import SplitError, split_by_date
+from categoriser.taxonomy import DEFAULT_TAXONOMY, TaxonomyError, load_taxonomy
 
 METRICS_VERSION = 1
 MODEL_NAME = "transaction-categoriser"
@@ -67,9 +78,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             c_grid=tuple(args.c_grid),
             resamples=args.resamples,
             min_df=args.min_df,
+            taxonomy_path=Path(args.taxonomy).expanduser(),
             echo=print,
         )
-    except (ExportError, SplitError, TrainingError) as error:
+    except (ExportError, SplitError, TaxonomyError, TrainingError) as error:
         print(f"The training stopped: {error}", file=sys.stderr)
         return 1
     print(f"Model:   {result['model_path']}")
@@ -87,6 +99,7 @@ def run(
     c_grid: Sequence[float] = DEFAULT_C_GRID,
     resamples: int = 1000,
     min_df: int = 2,
+    taxonomy_path: Path = DEFAULT_TAXONOMY,
     echo: Callable[[str], Any] = print,
 ) -> dict[str, Any]:
     """Run the whole training and evaluation; return the metrics and the paths written."""
@@ -96,8 +109,9 @@ def run(
         raise TrainingError("resamples must be at least 1")
     _refuse_repository(out_dir)
 
+    taxonomy = load_taxonomy(taxonomy_path)
     export = load_export(export_dir)
-    rows, row_counts = build_rows(export)
+    rows, row_counts = build_rows(export, taxonomy)
     echo(
         f"Export: {row_counts['transactions']} transactions, "
         f"{row_counts['transfer_legs_excluded']} transfer legs excluded, "
@@ -118,9 +132,7 @@ def run(
     # Tuning: everything is fitted on the rows before the validation slice and scored on the slice.
     tuning = []
     for c in c_grid:
-        model = build_model(c=c, seed=seed, min_df=min_df).fit(
-            features(fit_rows), _labels(fit_rows)
-        )
+        model = _fit_model(fit_rows, c=c, seed=seed, min_df=min_df)
         score = _macro_f1(validation, model_predictions(model, validation))
         tuning.append({"c": c, "validation_macro_f1": score})
         echo(f"Tuning: C={c:g} validation macro-F1 {score:.4f}")
@@ -134,7 +146,7 @@ def run(
 
     # The final systems: fitted on the whole training period, evaluated once on the test set.
     started = time.perf_counter()
-    model = build_model(c=best_c, seed=seed, min_df=min_df).fit(features(train), _labels(train))
+    model = _fit_model(train, c=best_c, seed=seed, min_df=min_df)
     fit_seconds = time.perf_counter() - started
     majority = MajorityBaseline().fit(train)
     payee_mcc = PayeeMccBaseline().fit(train)
@@ -149,6 +161,9 @@ def run(
     encoded = Encoded(y_test, systems)
     overall = evaluate(encoded, resamples=resamples, seed=seed)
     bootstrap = overall.pop("_bootstrap")
+    by_day = day_block_intervals(
+        encoded, [row.occurred_on for row in test], resamples=resamples, seed=seed
+    )
     correct = {name: encoded.top1[name] == encoded.true for name in encoded.systems}
 
     train_payees = {row.payee for row in train if row.payee}
@@ -188,6 +203,7 @@ def run(
                 "min_df": min_df,
                 "bootstrap_resamples": resamples,
             },
+            "taxonomy_sha256": hashlib.sha256(taxonomy_path.read_bytes()).hexdigest(),
         },
         "rows": row_counts,
         "split": {
@@ -211,6 +227,7 @@ def run(
         },
         "training_seconds": round(fit_seconds, 3),
         "test": overall,
+        "test_ci95_resampling_days": by_day,
         "model_minus_best_baseline_ci95": difference(bootstrap, "model", best_baseline),
         "mcnemar_model_vs_best_baseline": {
             "baseline": best_baseline,
@@ -243,6 +260,19 @@ def run(
     )
     _echo_summary(echo, metrics)
     return {"metrics": metrics, "model_path": model_path, "metrics_path": metrics_path}
+
+
+def _fit_model(rows: Sequence[Row], *, c: float, seed: int, min_df: int) -> Pipeline:
+    labels = _labels(rows)
+    if len(set(labels)) < 2:
+        raise TrainingError("the rows to fit hold fewer than two categories")
+    try:
+        return build_model(c=c, seed=seed, min_df=min_df).fit(features(rows), labels)
+    except ValueError:
+        # scikit-learn's message may quote data; say only what kind of problem it is.
+        raise TrainingError(
+            "the model could not be fitted (for example, no text is left after --min-df)"
+        ) from None
 
 
 def _labels(rows: Sequence[Row]) -> list[str]:
@@ -376,6 +406,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--resamples", type=int, default=1000, help="bootstrap resamples")
     parser.add_argument("--min-df", type=int, default=2, help="minimum rows per n-gram")
+    parser.add_argument(
+        "--taxonomy",
+        default=str(DEFAULT_TAXONOMY),
+        help="the app's taxonomy; categories outside it are dropped (default: %(default)s)",
+    )
     return parser
 
 

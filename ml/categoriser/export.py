@@ -136,7 +136,14 @@ def _parse_jsonl(name: str, data: bytes) -> list[dict[str, Any]]:
         raise ExportError(f"{name} is not valid UTF-8") from None
     required = REQUIRED_KEYS[name]
     rows = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    seen_ids: set[str] = set()
+    # Lines end at "\n" only, as in the importer: U+2028 and the like may sit inside a string.
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            raise ExportError(f"{name} line {number}: an empty line")
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -146,5 +153,9 @@ def _parse_jsonl(name: str, data: bytes) -> list[dict[str, Any]]:
         for key in required:
             if key not in row:
                 raise ExportError(f"{name} line {number}: the key {key} is missing")
+        legacy_id = str(row["legacy_id"])
+        if legacy_id in seen_ids:
+            raise ExportError(f"{name} line {number}: a duplicate legacy_id")
+        seen_ids.add(legacy_id)
         rows.append(row)
     return rows

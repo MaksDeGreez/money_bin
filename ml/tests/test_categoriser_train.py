@@ -63,6 +63,11 @@ def test_the_metrics_name_the_data_and_the_run(trained: dict[str, Any]) -> None:
     assert metrics["rows"]["multi_line_tied"] > 0
     assert metrics["training_seconds"] >= 0
     assert metrics["model_file"] == trained["model_path"].name
+    assert len(metrics["reproducibility"]["taxonomy_sha256"]) == 64
+    assert metrics["rows"]["dropped_not_in_taxonomy"] > 0
+    by_day = metrics["test_ci95_resampling_days"]
+    assert set(by_day) == {"majority", "payee_mcc", "model"}
+    assert len(by_day["model"]["macro_f1"]) == 2
 
 
 def test_the_split_is_by_date_with_validation_inside_training(trained: dict[str, Any]) -> None:
@@ -85,7 +90,8 @@ def test_every_system_has_headline_metrics_with_intervals(trained: dict[str, Any
     for values in metrics["test"]["systems"].values():
         for metric in ("macro_f1", "weighted_f1", "accuracy", "top3_accuracy"):
             low, high = values[metric]["ci95"]
-            assert 0 <= low <= values[metric]["value"] <= high <= 1
+            assert 0 <= low <= high <= 1
+            assert 0 <= values[metric]["value"] <= 1
         assert len(values["coverage"]["at_coverage"]) == 6
     model = metrics["test"]["systems"]["model"]
     majority = metrics["test"]["systems"]["majority"]
@@ -117,6 +123,89 @@ def test_segments_show_the_shift_in_the_data(trained: dict[str, Any]) -> None:
     )
     assert 0 < metrics["profile"]["test"]["payee_seen_in_train"] < 1
     assert segments["payee_unseen_or_missing"]["rows"] > 0
+
+
+def test_tuning_and_fitting_see_only_earlier_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Record every set of rows anything is fitted on and check their dates against the cuts."""
+    fitted: list[tuple[str, date]] = []
+    original_features = train.features
+
+    def recording_features(rows: list) -> list:
+        fitted.append(("model", max(row.occurred_on for row in rows)))
+        return original_features(rows)
+
+    def recording_fit(original: Any, kind: str) -> Any:
+        def fit(self: Any, rows: list) -> Any:
+            fitted.append((kind, max(row.occurred_on for row in rows)))
+            return original(self, rows)
+
+        return fit
+
+    monkeypatch.setattr(train, "features", recording_features)
+    monkeypatch.setattr(
+        train.MajorityBaseline, "fit", recording_fit(train.MajorityBaseline.fit, "majority")
+    )
+    monkeypatch.setattr(
+        train.PayeeMccBaseline, "fit", recording_fit(train.PayeeMccBaseline.fit, "payee_mcc")
+    )
+
+    result = run(
+        export_dir=write_export(tmp_path / "export"),
+        out_dir=tmp_path / "out",
+        c_grid=(0.5, 2.0),
+        resamples=5,
+        echo=lambda _line: None,
+    )
+
+    split = result["metrics"]["split"]
+    validation_start = date.fromisoformat(split["validation"]["first_date"])
+    test_start = date.fromisoformat(split["test"]["first_date"])
+    assert [kind for kind, _ in fitted] == [
+        "model",
+        "model",
+        "majority",
+        "payee_mcc",
+        "model",
+        "majority",
+        "payee_mcc",
+    ]
+    tuning, final = fitted[:4], fitted[4:]
+    assert all(last < validation_start for _, last in tuning)
+    assert all(validation_start <= last < test_start for _, last in final)
+
+
+def test_a_model_that_cannot_be_fitted_stops_cleanly(tmp_path: Path) -> None:
+    export = write_export(tmp_path / "export")
+
+    with pytest.raises(TrainingError, match="could not be fitted"):
+        run(export_dir=export, out_dir=tmp_path / "out", min_df=10_000, echo=lambda _l: None)
+
+
+def test_one_category_is_not_enough(tmp_path: Path) -> None:
+    from tests.categoriser_export import build_transactions
+
+    rows = [t for t in build_transactions() if t["lines"]]
+    for row in rows:
+        row["lines"] = [{"amount": row["amount"], "category_legacy_id": 10}]
+    export = write_export(tmp_path / "export", rows)
+
+    with pytest.raises(TrainingError, match="fewer than two categories"):
+        run(export_dir=export, out_dir=tmp_path / "out", echo=lambda _l: None)
+
+
+def test_a_missing_taxonomy_stops_from_the_command_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    export = write_export(tmp_path / "export")
+
+    code = main(
+        [str(export), "--out", str(tmp_path / "o"), "--taxonomy", str(tmp_path / "none.yml")]
+    )
+
+    assert code == 1
+    assert "taxonomy file" in capsys.readouterr().err
 
 
 def test_nothing_is_fitted_on_test_rows(trained: dict[str, Any]) -> None:

@@ -12,7 +12,10 @@ import pytest
 from categoriser.dataset import Row, build_rows, label_for, normalize_payee
 from categoriser.export import ExportError, load_export
 from categoriser.split import SplitError, split_by_date
+from categoriser.taxonomy import TaxonomyError, load_taxonomy
 from tests.categoriser_export import build_transactions, write_export
+
+TAXONOMY = load_taxonomy()
 
 
 def make_row(day: date, legacy_id: str = "1", **fields: object) -> Row:
@@ -67,7 +70,7 @@ def test_load_export_reads_a_valid_export(tmp_path: Path) -> None:
     export = load_export(write_export(tmp_path / "export"))
 
     assert len(export.accounts) == 3
-    assert len(export.categories) == 7
+    assert len(export.categories) == 8
     assert len(export.payees) == 8
     assert len(export.transactions) == len(build_transactions())
     assert len(export.manifest_sha256) == 64
@@ -183,6 +186,34 @@ def test_a_bad_row_is_refused_without_its_content(
         load_export(folder)
 
 
+def test_line_separators_inside_a_string_do_not_end_a_line(tmp_path: Path) -> None:
+    payees = '{"legacy_id": 100, "name": "A\u2028B\u0085C\u2029"}\n'.encode()
+    folder = _export_with_payee_lines(tmp_path, payees)
+
+    assert len(load_export(folder).payees) == 1
+
+
+@pytest.mark.parametrize(
+    ("payees", "message"),
+    [
+        (b'{"legacy_id": 1, "name": "A"}\n\n{"legacy_id": 2, "name": "B"}\n', "line 2: an empty"),
+        (
+            b'{"legacy_id": 1, "name": "A"}\n{"legacy_id": "1", "name": "B"}\n',
+            "line 2: a duplicate",
+        ),
+    ],
+)
+def test_empty_lines_and_duplicate_ids_are_refused(
+    tmp_path: Path, payees: bytes, message: str
+) -> None:
+    with pytest.raises(ExportError, match=message):
+        load_export(_export_with_payee_lines(tmp_path, payees))
+
+
+def test_an_empty_data_file_has_no_rows(tmp_path: Path) -> None:
+    assert load_export(_export_with_payee_lines(tmp_path, b"")).payees == []
+
+
 def test_a_last_line_without_a_newline_is_counted(tmp_path: Path) -> None:
     folder = _export_with_payee_lines(tmp_path, b'{"legacy_id": 100, "name": "A"}')
 
@@ -208,7 +239,9 @@ def test_normalize_payee() -> None:
 
 def test_build_rows_counts_every_rule(tmp_path: Path) -> None:
     transactions = build_transactions()
-    rows, counts = build_rows(load_export(write_export(tmp_path / "export", transactions)))
+    rows, counts = build_rows(
+        load_export(write_export(tmp_path / "export", transactions)), TAXONOMY
+    )
 
     legs = sum(1 for t in transactions if t["transfer_key"] is not None)
     multi = sum(1 for t in transactions if len(t["lines"]) > 1)
@@ -223,11 +256,14 @@ def test_build_rows_counts_every_rule(tmp_path: Path) -> None:
     assert counts["multi_line_tied"] == tied > 0
     assert counts["dropped_line_without_category"] == counts["dropped_unmapped_category"]
     assert counts["dropped_uncategorised"] == counts["dropped_unmapped_category"]
+    assert counts["dropped_not_in_taxonomy"] == counts["dropped_unmapped_category"] > 0
     dropped = (
         counts["dropped_line_without_category"]
         + counts["dropped_unmapped_category"]
+        + counts["dropped_not_in_taxonomy"]
         + counts["dropped_uncategorised"]
     )
+    assert "Groceries / Snacks" not in {row.label for row in rows}
     assert counts["labelled_rows"] == len(rows) == len(transactions) - legs - dropped
 
 
@@ -237,7 +273,9 @@ def test_the_largest_line_labels_a_split_and_the_first_line_wins_a_tie(tmp_path:
         tx(2, [line("-50.00", 12), line("-50.00", 10)]),
         tx(3, [line("-120.00", 11), line("20.00", 10)], amount="-100.00"),
     ]
-    rows, counts = build_rows(load_export(write_export(tmp_path / "export", transactions)))
+    rows, counts = build_rows(
+        load_export(write_export(tmp_path / "export", transactions)), TAXONOMY
+    )
 
     assert [row.label for row in rows] == [
         "Groceries / Groceries",
@@ -250,7 +288,9 @@ def test_the_largest_line_labels_a_split_and_the_first_line_wins_a_tie(tmp_path:
 
 def test_a_split_whose_largest_line_is_uncategorised_is_dropped(tmp_path: Path) -> None:
     transactions = [tx(1, [line("-30.00", 10), line("-70.00", None)])]
-    rows, counts = build_rows(load_export(write_export(tmp_path / "export", transactions)))
+    rows, counts = build_rows(
+        load_export(write_export(tmp_path / "export", transactions)), TAXONOMY
+    )
 
     assert rows == []
     assert counts["dropped_line_without_category"] == 1
@@ -269,7 +309,7 @@ def test_row_fields_come_from_the_transaction_and_its_account(tmp_path: Path) ->
         ),
         tx(2, [{"amount": "10.00", "category_legacy_id": 14}], amount="10.00", account_legacy_id=3),
     ]
-    rows, _ = build_rows(load_export(write_export(tmp_path / "export", transactions)))
+    rows, _ = build_rows(load_export(write_export(tmp_path / "export", transactions)), TAXONOMY)
 
     first, second = rows
     assert first.payee == "example market"
@@ -304,8 +344,38 @@ def test_a_row_the_rules_cannot_use_is_refused(
     base.update(change)
     export = load_export(write_export(tmp_path / "export", [base]))
 
-    with pytest.raises(ExportError, match=rf"line 1: .*{message}"):
-        build_rows(export)
+    with pytest.raises(ExportError, match=rf"line 1: .*{message}") as error:
+        build_rows(export, TAXONOMY)
+    for value in ("2025-13-01", "1,5", "NaN", "99"):
+        assert value not in str(error.value)
+
+
+# The taxonomy
+
+
+def test_the_taxonomy_holds_the_app_categories() -> None:
+    assert ("Groceries", "Groceries") in TAXONOMY
+    assert ("Eating out", "Cafes, bars & restaurants") in TAXONOMY
+    assert ("Uncategorised", "Uncategorised") in TAXONOMY
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("taxonomy: [{group: A}]\n", "expected shape"),
+        ("taxonomy: [{group: A, categories: [{name: 3}]}]\n", "expected shape"),
+        ("taxonomy: [\n", "expected shape"),
+        ("taxonomy: []\n", "no categories"),
+    ],
+)
+def test_a_bad_taxonomy_is_refused(tmp_path: Path, content: str, message: str) -> None:
+    path = tmp_path / "taxonomy.yml"
+    path.write_text(content)
+
+    with pytest.raises(TaxonomyError, match=message):
+        load_taxonomy(path)
+    with pytest.raises(TaxonomyError, match="does not exist"):
+        load_taxonomy(tmp_path / "missing.yml")
 
 
 # The date split

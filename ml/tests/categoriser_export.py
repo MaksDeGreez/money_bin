@@ -48,6 +48,7 @@ CATEGORIES = [
         "group_en": "Uncategorised",
         "category_en": "Uncategorised",
     },
+    {"legacy_id": 17, "legacy_path": "Snacks", "group_en": "Groceries", "category_en": "Snacks"},
 ]
 
 # payee legacy id -> (name, category legacy id, MCC, bank text stem)
@@ -162,6 +163,11 @@ def build_transactions(seed: int = 7) -> list[dict[str, Any]]:
                 occurred_on=day.isoformat(),
                 amount="-44.00",
                 lines=[{"amount": "-44.00", "category_legacy_id": 16}],
+            )
+            add(
+                occurred_on=day.isoformat(),
+                amount="-45.00",
+                lines=[{"amount": "-45.00", "category_legacy_id": 17}],
             )
         if offset % 30 == 0:  # an income in another currency
             add(

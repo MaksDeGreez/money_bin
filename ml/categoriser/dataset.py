@@ -8,8 +8,9 @@ The rules:
   on a tie, the first of the tied lines in the export's order. The other lines are not used.
 - The label is the chosen line's category as the export names it: the English group and category
   names, joined as "Group / Category". A line without a category, or one whose category the export
-  does not map (or maps to Uncategorised), gives no label, and the row is dropped. Each drop is
-  counted.
+  does not map, maps to names outside the app's taxonomy, or maps to Uncategorised, gives no label,
+  and the row is dropped. Each drop is counted. The split and tie counts cover every transaction
+  that is not a transfer leg, before these drops.
 - The features come from the transaction only (payee, comment, bank fields, amount, account kind),
   never from its lines, so that a new transaction without lines can be scored the same way.
 """
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -33,6 +35,7 @@ COUNT_KEYS = (
     "multi_line_tied",
     "dropped_line_without_category",
     "dropped_unmapped_category",
+    "dropped_not_in_taxonomy",
     "dropped_uncategorised",
     "labelled_rows",
 )
@@ -77,8 +80,14 @@ def normalize_payee(name: str | None) -> str:
     return _squish(unicodedata.normalize("NFKC", name)).lower()
 
 
-def build_rows(export: Export) -> tuple[list[Row], dict[str, int]]:
-    """Build the labelled rows and the counts of what was kept and dropped."""
+def build_rows(
+    export: Export, taxonomy: Collection[tuple[str, str]]
+) -> tuple[list[Row], dict[str, int]]:
+    """Build the labelled rows and the counts of what was kept and dropped.
+
+    `taxonomy` holds the (group, category) name pairs the app has; a category outside it is dropped,
+    as the importer sends it to Uncategorised.
+    """
     accounts = {str(a["legacy_id"]): a for a in export.accounts}
     categories = {str(c["legacy_id"]): c for c in export.categories}
     payees = {str(p["legacy_id"]): normalize_payee(p["name"]) for p in export.payees}
@@ -108,6 +117,10 @@ def build_rows(export: Export) -> tuple[list[Row], dict[str, int]]:
             raise ExportError(f"transactions.jsonl line {number}: unknown category_legacy_id")
         if category["group_en"] is None or category["category_en"] is None:
             counts["dropped_unmapped_category"] += 1
+            continue
+        pair = (_squish(category["group_en"]), _squish(category["category_en"]))
+        if pair not in taxonomy:
+            counts["dropped_not_in_taxonomy"] += 1
             continue
         label = label_for(category["group_en"], category["category_en"])
         if label is None:
