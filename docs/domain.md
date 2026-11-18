@@ -16,7 +16,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
-| `receipts` | A photographed shop receipt and its OCR result | `transaction_id` (nullable), `status`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `qr_payload`, `batch`, `sha256` |
+| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
@@ -78,7 +78,16 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   receipt was accepted into the ledger. `ocr_raw` keeps the OCR service's full answer, or the reason of a
   failure, and `ocr_model_name` and `ocr_model_version` say which model produced it. `currency` is what OCR
   read (nil when unknown).
-  `batch` is a free label for a bulk upload. `sha256` is the photo fingerprint.
+  `kind` says what the paper is: `fiscal` (a cash register receipt, the kind with a tax QR code) or
+  `card_slip` (a card terminal slip: a total and a card number, usually no items); nil means "not known
+  yet". OCR sets it and a person corrects it at review; nothing else does (see "QR ground truth" for why a
+  QR code does not). `incomplete` marks a torn or cut-off receipt whose total or date cannot be read
+  (false by default). `card_last4` is the last four digits of the card printed on a slip, as OCR read them.
+  `qr_payload` is the text of the receipt's QR code, and `qr_issued_at`, `qr_total`, `qr_fiscal_number` and
+  `qr_receipt_number` are what a tax-service QR code says (see "QR ground truth").
+  `batch` is a free label for a bulk upload (for a loaded receipt, the ingest batch). `ingest_id` is the
+  stable number the receipt ingest tool gave the receipt (`rcpt_000123`, see "Receipt load"); nil for a
+  receipt uploaded in the app. `sha256` is the photo fingerprint.
 - **Receipt item.** `amount` is what was paid for the item after its `discount`. It is normally positive,
   but it can be negative (a bottle deposit returned) or zero (a free item). `suggested_category` and
   `confidence` (0..1) are the categoriser's guess. `category` is the accepted category, and
@@ -95,7 +104,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | Amounts are `decimal(15, 2)`; transaction, line and original amounts are never zero | Model + DB (`*_amount_non_zero`, `transactions_original_amount_consistent`) |
 | Money has at most 2 decimal places and a receipt item quantity at most 3; more is refused, never rounded | Model only (`DecimalPlacesValidator`) |
 | Currency codes are three upper-case letters (accounts, original currency, receipts) | Model (also upper-cases) + DB (`*_currency_format`) |
-| Enum values (account kind, transaction source and status, receipt status) are from their lists | Model (`enum ..., validate: true`) + DB (`*_allowed` check constraints) |
+| Enum values (account kind, transaction source and status, receipt status and kind) are from their lists; a receipt's `kind` may be nil | Model (`enum ..., validate: true`) + DB (`*_allowed` check constraints) |
 | Account names are unique; an account `external_id` is unique when present | Model + DB (unique indexes) |
 | An account's currency cannot change once it has transactions | Model only |
 | A transaction (a transfer leg too) can move only to an account in the same currency | Model only |
@@ -122,6 +131,11 @@ listed, the model gives a readable error and the database is the safety net for 
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
 | A `reviewed` receipt has a transaction: destroying the transaction moves its receipt back to `extracted` | Model (in the destroy's database transaction); the foreign key only nullifies the link |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
+| A receipt's `card_last4` is exactly four digits when present | Model + DB (`receipts_card_last4_format`) |
+| A receipt's `ingest_id` is `rcpt_` and six or more digits, and unique when present | Model + DB (`receipts_ingest_id_format`, partial unique index) |
+| A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
+| OCR never writes the QR ground truth (`qr_*`, `qr_payload`), `ingest_id`, `batch` or `incomplete` | Model only (`Receipts::ApplyOcr` assigns only its own fields) |
+| A receipt's `sha256` and photos change only through the receipt load, and only while the receipt is pristine | Model only (`ReceiptLoad::Writer`, under a row lock) |
 
 ### The line sum is enforced in the model, not by a trigger
 
@@ -231,7 +245,10 @@ cross-currency pair may have any two amounts: the exchange rate is implied by th
 
 `Receipt.fingerprint(sources)` computes it from uploaded files, IO objects, Active Storage attachable hashes
 (`{ io:, filename: }`) or blobs. A new receipt gets it automatically when photos are attached and the field
-is blank. It is never recomputed: it identifies the original upload. Limits that are accepted:
+is blank. It identifies the original upload, so nothing in the app recomputes it. It is changed only by
+the receipt load, and only while the receipt is pristine: when the ingest tool regrouped the photos of a
+receipt (a merge or a split), the loader replaces its photos and sets the new fingerprint explicitly (see
+"Receipt load"). Limits that are accepted:
 
 - the same scene photographed twice gives different bytes and is not caught;
 - a receipt with only some of the photos of an earlier one (one page of two) has a different fingerprint,
@@ -255,8 +272,13 @@ the work:
   Every failure is a subclass of `MlClient::Error` with a short `code` and `transient?`.
 - `Receipts::ApplyOcr.call(receipt, result)` stores one OCR result (details below).
 - `ReceiptOcrJob` (Sidekiq) runs the two for one receipt. Nothing enqueues it on its own: no model
-  callback does it. The upload flow calls `ReceiptOcrJob.perform_later(receipt)` after it saved the
-  receipt.
+  callback does it, and neither does the receipt load. The upload flow calls
+  `ReceiptOcrJob.perform_later(receipt)` after it saved the receipt.
+- The job has its own queue, `receipt_ocr`, worked by a Sidekiq capsule with one thread
+  (`config/sidekiq.yml`). A local OCR model reads one receipt at a time; with several jobs in parallel each
+  would wait for the others inside the ML service and run into the client's OCR timeout. Other jobs keep the
+  default capsule (4 threads), and the threads of all capsules together stay within the database
+  connection pool, since every thread may hold a connection.
 
 Who moves the status:
 
@@ -279,7 +301,10 @@ What is stored where:
 - on success, `ocr_raw` is the service's full response body as returned (the `receipt` part plus
   `backend`, `model_name` and `model_version`). `ocr_model_name` and `ocr_model_version` are copied from
   it; `merchant_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total` and `currency` come from
-  the `receipt` part (a null stores nil);
+  the `receipt` part (a null stores nil). `kind` (`fiscal` or `card_slip`, in any letter case) and
+  `card_last4` (four ASCII digits) are stored when the answer carries a valid value; anything else, a
+  missing key included, stores nil. The QR ground truth, `qr_payload`, `ingest_id`, `batch`, `incomplete`
+  and the photos are never touched;
 - the items are replaced by the returned ones, in the same database transaction. An item's `position` is
   its place in the answer counting from 1, so position N is item N of `ocr_raw`. Amounts and quantities
   are parsed from decimal strings with `BigDecimal`; anything else (a float, unreadable text) counts as
@@ -330,6 +355,30 @@ refuses a file over `ML_MAX_IMAGE_BYTES` (the same 15 MB by default) with 413 `i
 limit is a constant: it does not read `ML_MAX_IMAGE_BYTES`. Raising that setting alone changes nothing for
 uploads, and lowering it below 15 MB lets the app store photos that the OCR job then fails.
 
+### QR ground truth
+
+A Ukrainian fiscal receipt carries a QR code that links to the tax service's receipt check page. Its query
+holds the register's fiscal number, the receipt's fiscal number, the total, the date and the time. The
+receipt ingest tool reads it (`tools/receipt_ingest/README.md`, "QR codes"), and the receipt load stores it
+in four columns of their own: `qr_issued_at`, `qr_total`, `qr_fiscal_number` and `qr_receipt_number`. Each
+is named after the OCR column it is compared with (`issued_at`, `total`, `fiscal_number`,
+`receipt_number`).
+
+Why separate columns, and why OCR never writes them:
+
+- they are two sources with different trust. The QR code is printed by the cash register and decoded
+  exactly; OCR reads the printed text and can be wrong. Keeping both lets a review screen show where they
+  disagree, and lets the OCR evaluation score the model against values it did not produce;
+- if OCR wrote into the same columns, or the QR values were copied over the OCR ones, the ground truth would
+  be lost the first time either step ran again;
+- `tax_qr?` (any of the four present) and the scopes `with_tax_qr` / `without_tax_qr` let a list filter on
+  them.
+
+A tax QR code does not set `kind`. `kind` holds what OCR read and what a person corrected; an evaluation
+that needs "this is a fiscal receipt" takes it from the QR columns themselves. A QR field that could not be
+read stays nil (the others are still stored), and a receipt whose photos carry two different QR codes
+(`qr_conflict`) gets no QR value at all, `qr_payload` included: it is not known which code is its own.
+
 ### Acceptance
 
 When a receipt is accepted, the transaction's lines are the item amounts summed per category.
@@ -368,6 +417,65 @@ Every refusal raises a subclass of `Receipts::Accept::Error`: `NotAcceptable` (s
 to a transfer leg), `AccountRequired`, `CurrencyMismatch`, `NothingToBook` (the items sum to zero or less,
 so there is no expense) and `TotalMismatch`.
 
+## Receipt load
+
+`bin/rails "receipts:load[DIR]"` loads the output folder of the receipt ingest tool (`tools/receipt_ingest/`,
+its `receipts.jsonl` and `images/`). The code is in `app/services/receipt_load/` (`Runner` is the entry
+point). It is meant to run again after every ingest run.
+
+Checks before any write (`ReceiptLoad::Verifier`); any problem stops the load and nothing is written:
+
+- every line is a JSON object with the keys and types the loader needs; receipt ids are `rcpt_` and six
+  or more digits and unique; no two lines to load have the same photos;
+- every image file is a regular file inside DIR (no absolute path, no `..`, no symlink out of it), with
+  the recorded size and SHA-256, and the line's `fingerprint` is `Receipt.fingerprint` of the images;
+- `qr_fields` values are null or parse: `issued_at` an ISO 8601 time with an offset, `total` a decimal with
+  two places (read with `BigDecimal`, never a float).
+
+Skipped and counted, not problems: a line without images; a line with more than three photos
+(`too_many_parts`: fix the grouping in the ingest tool's override file and run it again); a line flagged
+`processing_failed` or `raw_missing` whose files fail the check (the tool says it may leave such a line;
+its next run repairs it), with a warning. Crops are not loaded.
+
+Finding the receipt of a line: by `ingest_id` first, then by `sha256` (the line's fingerprint).
+
+| Found | What happens |
+|---|---|
+| nothing | a new receipt: `uploaded`, the photos in part order, `sha256` = the fingerprint, `ingest_id`, `batch`, `qr_payload` and the `qr_*` columns |
+| a receipt with the same `sha256` (and the same or no `ingest_id`) | only the ingest fields are written (`ingest_id` when blank, `batch`, `qr_payload`, `qr_*`), and only when they differ; OCR fields, `kind`, `incomplete`, items, status and the transaction are never touched. A photo file missing from storage is uploaded again |
+| the same `ingest_id`, another `sha256` (the tool regrouped the photos) | while the receipt is pristine (`uploaded`, no items, no transaction), checked again under a row lock: its photos are replaced and its `sha256` set to the new fingerprint; otherwise a conflict |
+| one receipt by `ingest_id` and another by `sha256`, or a `sha256` match that carries another `ingest_id` | a conflict |
+
+A conflict is left alone and reported with ids. A loaded receipt whose `ingest_id` is no longer in the file
+(the tool merged, excluded or regrouped it) is deleted while pristine, and kept and reported otherwise:
+never silently. These go first, so a merge (the photos of a retired receipt join another one) settles in
+one run. A receipt uploaded in the app (no `ingest_id`) is never deleted.
+
+**One database transaction per receipt, not one for the whole load.** The history import is all or nothing
+because its rows refer to each other (transfer pairs, payees, accounts). Receipts do not: each stands
+alone. And the photo files are written by Active Storage to the disk, outside any database transaction, so
+one transaction over 1.4 GB of photos would still not make the files all or nothing. Instead each receipt
+is safe on its own:
+
+- its photo files are uploaded first, then attached inside the receipt's database transaction, so a
+  committed receipt always has its files. When the transaction fails (or a regrouped receipt turns out not
+  to be pristine), the uploads are deleted again;
+- the bytes are checked once more after the upload (the MD5 Active Storage computes against the one from
+  the check), so a file that changed in between fails its receipt instead of being stored;
+- a receipt that fails is counted and named, the others go on, and the task exits with status 1;
+- a second run of the same folder writes nothing, so a load that stopped half way is simply run again. A
+  run that was killed between an upload and its commit can leave unattached blobs
+  (`ActiveStorage::Blob.unattached`); they hold no receipt and can be purged.
+
+`DRY_RUN=1` does all of it inside one outer database transaction, with a savepoint per receipt, and rolls
+back at the end. It uploads no file: it creates blob rows only (marked as identified, so attaching them does
+not read a file), which the rollback removes.
+
+The load never sets `kind` and never enqueues OCR. It prints counts per outcome (in total and per batch) and
+warnings with receipt ids, never a QR payload, a raw photo name, a total or a date; Active Record's SQL log
+is silenced while it runs, for the same reason. A real run needs Redis: attaching a photo enqueues Active
+Storage's analysis job, and the task checks Redis before it writes.
+
 ## Decisions and why
 
 **The model is called `Transaction`; a line points back with `parent`.** It is the domain word. Rails
@@ -393,7 +501,7 @@ Money is never rounded on the way in. Rails rounds a decimal to the column's sca
 `"12.345"` would quietly be stored as 12.35. `DecimalPlacesValidator` (`app/validators/`) checks the value as
 it was given, before that cast, and refuses more than two decimal places on `Transaction#amount` and
 `#original_amount`, `TransactionLine#amount`, `ReceiptItem#amount`, `#unit_price` and `#discount`, and
-`Receipt#total`; a receipt item `quantity` (`decimal(12, 3)`) gets the same rule with three places. A
+`Receipt#total` and `#qr_total`; a receipt item `quantity` (`decimal(12, 3)`) gets the same rule with three places. A
 converted amount (a USD price in UAH) is rounded by the writer that converts it, on purpose, before it
 reaches the model. The sign carries the direction, so a balance is `SUM(amount)` over the booked rows
 and a report never needs a "kind" column.
@@ -426,7 +534,8 @@ bank item to a receipt. Deriving one from the other would invent data or move ro
 
 **Receipt fingerprint.** It is defined on the bytes, so it is cheap, exact and does not depend on OCR.
 Several photos are combined through their sorted digests, so a client can compute the same value before
-uploading, in any order.
+uploading, in any order. The receipt ingest tool computes the same value for its `fingerprint`, which is how
+the receipt load recognises a receipt that was uploaded in the app first.
 
 **Acceptance builds lines from categories, not from items.** A ledger line is a category share; an item is
 a product. Keeping items on the receipt and summing them per category into lines gives reports one code path
@@ -469,7 +578,8 @@ parsed values), so an exporter that spells a decimal or a time differently does 
 - Autosaved nested lines are validated during the parent's `valid?`, before the save callbacks. The
   "parent is in charge" flag (`managing_lines?`) is therefore set in `valid?` as well as around save and
   destroy, and that callback is declared before `has_many :lines, dependent: :destroy`.
-- `occurred_at` and `issued_at` are `timestamptz`; the Rails timestamps stay `timestamp` (UTC).
+- `occurred_at`, `issued_at` and `qr_issued_at` are `timestamptz`; the Rails timestamps stay `timestamp`
+  (UTC).
 - Tests never call the ML service: `test/support/ml_service_stubs.rb` stubs it with WebMock in the
   service's response shapes and keeps the requests it answered (`ml_requests`), so a test can check the
   multipart parts.
