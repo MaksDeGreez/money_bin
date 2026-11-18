@@ -422,7 +422,7 @@ for development can never point the tests at development data; a real environmen
 | `REDIS_URL`      | `redis://localhost:6379/<db>`   | Redis for Sidekiq, the cache and Action Cable; overrides the database numbers below |
 | `ML_SERVICE_URL` | `http://127.0.0.1:8100`         | where Rails finds the ML service |
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
-| `MLX_OCR_MODEL`  | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
+| `MLX_OCR_MODEL`  | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
 | `APP_HOST`       | (unset)                         | one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1`: for pages in production only, for the MCP server in every environment |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |
