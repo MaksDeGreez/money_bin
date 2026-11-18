@@ -1,17 +1,20 @@
 module Receipts
-  # Stores a person's corrections from the review form, and with `intent: "accept"` books the receipt
-  # (docs/domain.md, "Review").
+  # Stores a person's corrections from the review form, with `intent: "accept"` books the receipt, and with
+  # `intent: "ground_truth"` saves it as the receipt's manual ground truth (docs/domain.md, "Review" and
+  # "Manual ground truth").
   #
   #   review = Receipts::Review.new(receipt, form_params, intent: "save")
   #   review.call        # => true, or false with errors on review.form_receipt and its items
   #   review.transaction # the booked transaction after an accept
+  #   review.ground_truth # the Receipts::SaveGroundTruth result after "Save as ground truth"
   #
   # `form_params` are the form's fields: the header (kind, merchant_name, issued_at, total, currency,
   # fiscal_number, receipt_number, card_last4, incomplete, category_id), `items_attributes` (id, name,
   # quantity, unit_price, discount, amount, category_id, _destroy), `lock_version` (the receipt's version the
   # page was rendered from), `transaction_lock_version` (for a reviewed receipt, its transaction's), and
   # `account_id` and `remove_items` (the confirmation that turning a receipt with items into a card slip
-  # removes them).
+  # removes them), `filled_from` ("dps_xml" when the person filled the form from the tax-service record),
+  # `without_categories` and `replace_ground_truth` (for "Save as ground truth").
   #
   # Rules:
   # - Only a receipt a person may review is saved: `extracted` or `reviewed`, with no OCR queued or running
@@ -32,6 +35,15 @@ module Receipts
   # - The save always writes the receipt row, so its `lock_version` moves and an older form is refused.
   # - "Accept" saves and then runs Receipts::Accept, in one database transaction: a refusal (TotalMismatch,
   #   no account, ...) leaves nothing saved, and the typed values stay on the form with the reason.
+  # - "Save as ground truth" saves as "Save" does and then writes the manual ground-truth record from the
+  #   stored receipt (Receipts::SaveGroundTruth), in one database transaction; it never books and never moves
+  #   the status. Before it, the form must be complete enough to be ground truth (the kind set, a total and
+  #   a date unless the receipt is marked incomplete, a fiscal receipt's items, and every category unless
+  #   "Save without categories" is ticked): each gap is an error on its field. Replacing a record that exists
+  #   needs a confirmation (the first attempt rolls back and returns the differences). On a `reviewed`
+  #   receipt nothing may change (that is "Accept again"): the stored receipt is saved as ground truth as it is.
+  # - `filled_from` is written only as "dps_xml", only when the receipt has a tax-service record; a later
+  #   save leaves it as it is (the values still come from that fill), and a new OCR result clears it.
   #
   # After a failure `form_receipt` holds what the person typed, with the errors, to render the form again:
   # the receipt itself when the values could be assigned, or a detached copy when the receipt changed under
@@ -41,17 +53,22 @@ module Receipts
     ITEM_FIELDS = %i[id name quantity unit_price discount amount category_id _destroy].freeze
     MONEY_ITEM_FIELDS = %i[unit_price discount amount].freeze
     NUMERIC_ITEM_FIELDS = (MONEY_ITEM_FIELDS + %i[quantity]).freeze
-    INTENTS = %w[save accept].freeze
+    INTENTS = %w[save accept ground_truth].freeze
     ISSUED_AT_FORMAT = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?\z/
     CONFLICT = "This receipt changed somewhere else after this page was opened (OCR read it again, or it was saved " \
       "in another tab). Nothing was saved. Your values are still on this page: open the current version, check it, " \
       "and enter your changes there.".freeze
 
-    attr_reader :receipt, :form_receipt, :transaction, :version, :transaction_version, :account
+    BOOKED_UNCHANGED = "This receipt is booked, so it changes only through \"Accept again\". Accept it again first, " \
+      "then save it as ground truth. Nothing was saved.".freeze
+    CATEGORIES_NEEDED = "Every item needs a category to be saved as ground truth (a card slip needs its own), or tick " \
+      "\"Save without categories\".".freeze
+
+    attr_reader :receipt, :form_receipt, :transaction, :version, :transaction_version, :account, :ground_truth
 
     def self.permitted_params
-      [ *HEADER_FIELDS, :lock_version, :transaction_lock_version, :account_id, :remove_items,
-        { items_attributes: ITEM_FIELDS } ]
+      [ *HEADER_FIELDS, :lock_version, :transaction_lock_version, :account_id, :remove_items, :filled_from,
+        :without_categories, :replace_ground_truth, { items_attributes: ITEM_FIELDS } ]
     end
 
     def initialize(receipt, params, intent: "save")
@@ -68,6 +85,20 @@ module Receipts
       @intent == "accept"
     end
 
+    def ground_truth?
+      @intent == "ground_truth"
+    end
+
+    # "Save as ground truth" stopped to ask before replacing the record that exists (ground_truth holds the
+    # differences and the token); nothing was saved.
+    def confirmation_needed?
+      @ground_truth&.confirm? == true
+    end
+
+    def without_categories?
+      ActiveModel::Type::Boolean.new.cast(@params[:without_categories]) == true
+    end
+
     # True when the receipt changed under the form.
     def conflict?
       @conflict == true
@@ -81,18 +112,28 @@ module Receipts
 
         assign
         next false unless valid?
+        next refuse(BOOKED_UNCHANGED) if ground_truth? && @receipt.reviewed? && form_changes?
 
-        @receipt.updated_at = Time.current
-        @removed_items = @receipt.items.select(&:marked_for_destruction?)
-        @receipt.save!
+        unless ground_truth? && @receipt.reviewed?
+          @receipt.updated_at = Time.current
+          @removed_items = @receipt.items.select(&:marked_for_destruction?)
+          @receipt.save!
+        end
         @transaction = Accept.call(Receipt.find(@receipt.id), account: @account) if accept?
+        if ground_truth?
+          @ground_truth = SaveGroundTruth.call(Receipt.includes(:category, items: :category).find(@receipt.id),
+            confirm: @params[:replace_ground_truth])
+          raise ActiveRecord::Rollback if @ground_truth.confirm?
+        end
         true
       rescue Accept::Error => error
         accept_refused(error)
         raise ActiveRecord::Rollback
       rescue ActiveRecord::RecordInvalid => error
         # A booking the models refuse (the items sum past the amount limit, say): a reason on the form, not a 500.
-        @receipt.errors.add(:base, "Not accepted: #{error.record.errors.full_messages.to_sentence}.")
+        @ground_truth = nil
+        prefix = ground_truth? ? "Not saved as ground truth" : "Not accepted"
+        @receipt.errors.add(:base, "#{prefix}: #{error.record.errors.full_messages.to_sentence}.")
         raise ActiveRecord::Rollback
       rescue ActiveRecord::StaleObjectError
         refuse_detached(CONFLICT, conflict: true)
@@ -129,13 +170,23 @@ module Receipts
         @transaction_version != current
       end
 
+      def refuse(message)
+        @receipt.errors.add(:base, message)
+        false
+      end
+
+      # Whether the form changes anything stored: a header field, an item, a row added or removed.
+      def form_changes?
+        @receipt.changed? || @receipt.items.any? { |item| item.new_record? || item.marked_for_destruction? || item.changed? }
+      end
+
       def not_editable_message
         if @receipt.ocr_in_flight?
           "Not saved: OCR is reading this receipt again, and its result will replace these fields and items. " \
             "Your values are still on this page."
         elsif !Receipt::REVIEWABLE_STATUSES.include?(@receipt.status)
           "Not saved: a receipt that is #{@receipt.status} cannot be reviewed."
-        elsif @receipt.reviewed? && !accept?
+        elsif @receipt.reviewed? && !accept? && !ground_truth?
           "An accepted receipt changes only through \"Accept again\", which books the change too."
         end
       end
@@ -147,6 +198,15 @@ module Receipts
         target.assign_attributes(header_attributes)
         assign_items(target, detached:)
         assign_slip(target) unless detached
+        assign_filled_from(target)
+      end
+
+      # Only the one value, and only when there is a record to have filled the form from.
+      def assign_filled_from(target)
+        return unless @params[:filled_from].to_s == "dps_xml"
+        return unless ReceiptGroundTruth.dps_xml.exists?(receipt_id: @receipt.id)
+
+        target.filled_from = "dps_xml"
       end
 
       def header_attributes
@@ -285,7 +345,34 @@ module Receipts
           @receipt.errors.add(:kind, "is a card slip, which has no items: confirm removing the " \
             "#{@receipt.kept_items.size} item(s) below, or keep it a fiscal receipt")
         end
+        ground_truth_gaps if ground_truth?
         @receipt.errors.empty? && @receipt.items.all? { |item| item.marked_for_destruction? || item.errors.empty? }
+      end
+
+      # What ground truth needs beyond a valid receipt, each gap on its own field. The sum of the items is not
+      # checked against the total: a receipt can print a rounding line.
+      def ground_truth_gaps
+        receipt = @receipt
+        receipt.errors.add(:kind, "must be set to save as ground truth") if receipt.kind.nil? && receipt.errors[:kind].empty?
+        unless receipt.incomplete?
+          { total: "a total", issued_at: "a date and time" }.each do |field, what|
+            next if receipt.public_send(field).present? || receipt.errors[field].any?
+
+            receipt.errors.add(field, "is needed to save as ground truth (#{what} is printed on a whole receipt; " \
+              "tick \"Incomplete\" if it is torn or cut off)")
+          end
+        end
+        items = receipt.kept_items
+        if receipt.fiscal? && items.empty?
+          receipt.errors.add(:base, "A fiscal receipt needs its items to be saved as ground truth.")
+        end
+        return if without_categories?
+
+        missing = items.select { |item| item.category_id.nil? }
+        missing.each { |item| item.errors.add(:category_id, "must be chosen to save as ground truth") }
+        slip_missing = receipt.card_slip? && receipt.category_id.nil?
+        receipt.errors.add(:category_id, "must be chosen to save as ground truth") if slip_missing
+        receipt.errors.add(:base, CATEGORIES_NEEDED) if missing.any? || slip_missing
       end
 
       # --- Refusals ---------------------------------------------------------------------------------------
