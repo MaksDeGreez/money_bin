@@ -644,7 +644,8 @@ the page has news. The form's own submission is never held back: the response of
 renders with its errors and the typed values, and focus goes to the first field marked invalid. While a submission is on its way the
 form is inert, so nothing typed then is lost to the response. Leaving the page while dirty asks first. The
 server is still the authority: a stale save is refused as above. What the forms post (`receipt[...]`,
-`manual_expense[...]`) is filtered out of the request log.
+`manual_expense[...]`, and `ground_truth_check[...]` from the check of a tax-service record) is filtered out
+of the request log.
 
 **Keyboard.** Tab follows the reading order (the header fields, then each item row left to right). Enter
 never submits the form: in the last item row it adds a row (focus on its name), in another row it moves to
@@ -842,6 +843,7 @@ labelled. "Save" and "Accept" never write ground truth.
   filter, after this one and wrapping around, without manual ground truth and with its form open
   (`extracted` or `reviewed`, no OCR queued or running); the receipt may have left a "Not labelled by hand"
   filter, so its place is found without that filter. A progress line says how far labelling is in the list.
+  An account chosen on the form stays chosen, as after a Save.
 
 **Fill the form from the tax-service record.** Where a receipt has a `dps_xml` record and its form is open
 (not booked), the form offers to copy the record's header fields and items into the form, as unsaved edits
@@ -893,7 +895,10 @@ receipt's saved values (items paired by their place in the list; categories and 
 file has neither), each difference marked, and "Matches the print" / "Differs from the print" with an
 optional note (`Receipts::GroundTruthChecksController`: `POST` and `DELETE /receipts/:id/ground_truth_check`).
 A checked record can be checked again (the new outcome and note replace the old ones) or forgotten. A check
-writes only the record's check columns: never its document, the receipt or its items. The plan is to check
+is about the content the person looked at: the page carries the record's `content_version` (a digest of the
+document, `items_known` and `categories_known`), and a check is refused when a new import replaced the record
+in between, with the new content shown. A check writes only the record's check columns: never its document,
+the receipt or its items. The note is posted as `ground_truth_check[note]`, filtered from the request log. The plan is to check
 30 to 50 imported records against the print.
 
 ### What never touches what

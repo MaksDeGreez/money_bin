@@ -22,6 +22,15 @@
 # - A manual record must say what pre-filled it; an imported one has no categories and no pre-fill.
 class AddLabellingFields < ActiveRecord::Migration[8.1]
   def up
+    # No writer of manual records existed before this change, so none should lack `prefilled_by`. If one does,
+    # what pre-filled it is not known, and guessing (by hand, or the receipt's model) could put a model's own
+    # answer into its test set: stop and let a person decide.
+    unattributed = select_value("SELECT COUNT(*) FROM receipt_ground_truths WHERE source = 'manual' AND prefilled_by IS NULL").to_i
+    if unattributed.positive?
+      raise ActiveRecord::MigrationError, "#{unattributed} manual ground-truth record(s) do not say what pre-filled " \
+        "them; set prefilled_by on them (or delete them) before migrating"
+    end
+
     change_table :receipts, bulk: true do |t|
       t.string :ocr_prompt_version
       t.string :filled_from

@@ -50,7 +50,8 @@ class ReceiptsController < ApplicationController
     @review = Receipts::Review.new(@receipt, review_params, intent: params[:intent])
     if @review.call
       if @review.ground_truth
-        redirect_to receipt_path(@receipt, @filter.to_params.merge(labelled: 1)), status: :see_other,
+        # The account chosen on the form stays chosen, as after a Save.
+        redirect_to receipt_path(@receipt, @filter.to_params.merge(labelled: 1, account: @review.account&.id).compact), status: :see_other,
           notice: GROUND_TRUTH_NOTICES.fetch(@review.ground_truth.status)
       elsif @review.transaction
         redirect_to transaction_path(@review.transaction, @filter.to_params.merge(accepted: 1)), status: :see_other,

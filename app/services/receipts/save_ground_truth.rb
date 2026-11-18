@@ -68,17 +68,8 @@ module Receipts
     def self.token(record, attributes)
       payload = [ record.id, record.updated_at.utc.iso8601(6), record.schema_version, record.document,
                   attributes.transform_keys(&:to_s) ]
-      Digest::SHA256.hexdigest(JSON.generate(canonical(payload)))
+      Digest::SHA256.hexdigest(JSON.generate(ReceiptGroundTruth.canonical(payload)))
     end
-
-    def self.canonical(value)
-      case value
-      when Hash then value.keys.map(&:to_s).sort.map { |key| [ key, canonical(value[key] || value[key.to_sym]) ] }
-      when Array then value.map { |item| canonical(item) }
-      else value
-      end
-    end
-    private_class_method :canonical
 
     private
       def snapshot_attributes

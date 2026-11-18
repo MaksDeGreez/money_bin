@@ -91,6 +91,13 @@ class ReceiptLabellingTest < ActionDispatch::IntegrationTest
     assert_equal "Corner Shop", corner.reload.merchant_name
   end
 
+  test "the account chosen on the form stays chosen after Save as ground truth" do
+    patch receipt_path(corner), params: { intent: "ground_truth", receipt: review_params(corner, account_id: accounts(:cash_uah).id) }
+    assert_redirected_to receipt_path(corner, labelled: 1, account: accounts(:cash_uah).id)
+    follow_redirect!
+    assert_select "select#receipt_account_id option[selected][value=?]", accounts(:cash_uah).id.to_s
+  end
+
   test "saving again shows a short summary of what changes and replaces only once confirmed" do
     patch receipt_path(corner), params: { intent: "ground_truth", receipt: review_params(corner) }
     params = review_params(corner, merchant_name: "Corner Shop Ltd")
@@ -144,16 +151,23 @@ class ReceiptLabellingTest < ActionDispatch::IntegrationTest
     end
   end
 
+  def check(record, outcome, note: nil, receipt: corner, **query)
+    post receipt_ground_truth_check_path(receipt, **query),
+      params: { outcome:, ground_truth_check: { version: record&.content_version, note: } }
+  end
+
   test "a tax-service record is checked against the print, checked again, and forgotten" do
     record = add_dps_record(corner)
+    get receipt_path(corner)
+    assert_select "input[name='ground_truth_check[version]'][value=?]", record.content_version
 
-    post receipt_ground_truth_check_path(corner, truth: "dps_xml"), params: { outcome: "differs", note: " the second line is smudged " }
+    check(record, "differs", note: " the second line is smudged ", truth: "dps_xml")
     assert_redirected_to receipt_path(corner, truth: "dps_xml", anchor: "ground-truth")
     record.reload
     assert record.check_differs?
     assert_equal "the second line is smudged", record.check_note
 
-    post receipt_ground_truth_check_path(corner), params: { outcome: "matches" }
+    check(record, "matches")
     assert record.reload.check_matches?
     assert_nil record.check_note
     follow_redirect!
@@ -166,24 +180,35 @@ class ReceiptLabellingTest < ActionDispatch::IntegrationTest
   test "a check never touches the record's document, the receipt or its items" do
     record = add_dps_record(corner)
     before = [ record.document, corner.attributes.except("updated_at"), corner.items.map(&:attributes) ]
-    post receipt_ground_truth_check_path(corner), params: { outcome: "matches" }
+    check(record, "matches")
     assert_equal before, [ record.reload.document, corner.reload.attributes.except("updated_at"), corner.items.map(&:attributes) ]
   end
 
   test "a check needs an outcome and a tax-service record" do
     record = add_dps_record(corner)
-    post receipt_ground_truth_check_path(corner), params: { outcome: "maybe" }
+    check(record, "maybe")
     assert_match(/Not recorded/, flash[:alert])
     assert_not record.reload.checked?
 
-    post receipt_ground_truth_check_path(receipts(:new_receipt)), params: { outcome: "matches" }
+    check(record, "matches", receipt: receipts(:new_receipt))
     assert_equal "This receipt has no tax-service record to check.", flash[:alert]
+  end
+
+  test "a check is about the content the page showed: a record replaced since is not checked" do
+    record = add_dps_record(corner)
+    shown = record.content_version
+    record.update!(document: record.document.merge("total" => "999.00"), source_sha256: "d" * 64)
+
+    post receipt_ground_truth_check_path(corner), params: { outcome: "matches", ground_truth_check: { version: shown } }
+
+    assert_match(/changed after this page was opened/, flash[:alert])
+    assert_not record.reload.checked?
   end
 
   test "checks need a signed-in session" do
     record = add_dps_record(corner)
     sign_out
-    post receipt_ground_truth_check_path(corner), params: { outcome: "matches" }
+    check(record, "matches")
     assert_redirected_to new_session_path
     patch receipt_path(corner), params: { intent: "ground_truth", receipt: review_params(corner) }
     assert_redirected_to new_session_path

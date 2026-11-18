@@ -80,6 +80,24 @@ class ReceiptGroundTruth < ApplicationRecord
     Document.upgrade(document, schema_version)
   end
 
+  # A digest of what the record says (the document as version 2, whether items and categories are known). A
+  # page that shows the record carries it, so a check is refused when the record changed after the person
+  # looked at it (a new import replaced it).
+  def content_version
+    payload = [ self.class.canonical(current_document), items_known, categories_known ]
+    Digest::SHA256.hexdigest(JSON.generate(payload))
+  end
+
+  # `value` with every Hash's keys sorted, at any depth, so a digest does not depend on key order (jsonb
+  # stores keys in its own order).
+  def self.canonical(value)
+    case value
+    when Hash then value.keys.map(&:to_s).sort.map { |key| [ key, canonical(value.key?(key) ? value[key] : value[key.to_sym]) ] }
+    when Array then value.map { |item| canonical(item) }
+    else value
+    end
+  end
+
   # The document with its items as a list of Hashes, string keys, as stored.
   def items
     document.is_a?(Hash) ? Array(document["items"]) : []

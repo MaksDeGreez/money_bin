@@ -73,7 +73,9 @@ ruby:
     p.text-sm.text-ink-muted The record has no item lines (the file gave none, or one the reader could not keep).
 
   = form_with url: receipt_ground_truth_check_path(receipt, filter.to_params), method: :post, class: "space-y-3",
-    aria: { label: "Check the tax-service record" } do |f|
+    scope: :ground_truth_check, aria: { label: "Check the tax-service record" } do |f|
+    / The content this page shows: a record replaced since is not checked by this form.
+    = f.hidden_field :version, value: record.content_version
     .field.max-w-xl
       = f.label :note, "Note (optional)"
       = f.text_field :note, value: record.check_note, autocomplete: "off", placeholder: "What differs, or anything worth knowing"
