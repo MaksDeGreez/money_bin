@@ -455,3 +455,189 @@ def test_an_invalid_setting_is_a_usage_error(
     with pytest.raises(UsageError, match="invalid setting"):
         ocr_run.run(args, io.StringIO())
     assert not (tmp_path / "runs").exists()
+
+
+# A hosted run (the openrouter backend with a fake transport) ---------------------------
+
+
+def hosted_run(
+    ingest: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transport: Any = None,
+    *extra: str,
+) -> tuple[dict[str, Any], Path, str]:
+    from app.backends.openrouter import OpenRouterBackend
+    from tests.test_openrouter_backend import FAKE_KEY, MODEL, FakeTransport
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("OPENROUTER_OCR_MODEL", MODEL)
+    fake = transport or FakeTransport()
+    seen: list[Any] = []
+
+    def create(name: str, settings: Any) -> OpenRouterBackend:
+        seen.append(settings)
+        return OpenRouterBackend(settings, transport=fake)
+
+    monkeypatch.setattr(ocr_run, "create_backend", create)
+    out = tmp_path / "runs"
+    args = ["--ingest", str(ingest), "--out", str(out), "--backend", "openrouter", *extra]
+    console = io.StringIO()
+    summary = ocr_run.run(ocr_run.parse_args(args), console)
+    return summary, the_run(out), console.getvalue()
+
+
+def test_a_hosted_run_records_cost_latency_and_providers(
+    ingest: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_openrouter_backend import DATED_MODEL, FAKE_KEY
+
+    summary, run_dir, console = hosted_run(ingest, tmp_path, monkeypatch)
+
+    records = list(read_jsonl(run_dir / "predictions.jsonl"))
+    assert [r["status"] for r in records] == ["ok", "ok", "ok", "skipped", "ok"]
+    diagnostics = records[0]["diagnostics"]
+    assert diagnostics["cost_usd"] == "0.000123456789"
+    assert diagnostics["providers"] == ["Alpha"]
+    assert diagnostics["structured_output"] is True
+    assert diagnostics["calls"][0]["seconds"] >= 0
+    assert summary["model_version"] == DATED_MODEL
+    assert summary["cost_usd"] == {
+        "total_usd": "0.000493827156",
+        "receipts_with_cost": 4,
+        "receipts_without_cost": 0,
+        "complete": True,
+        "per_receipt_usd": "0.000123",
+        "per_1000_receipts_usd": "0.1235",
+    }
+    assert summary["upstream_providers"] == {"Alpha": 4}
+    assert summary["settings"]["zdr_endpoints"] == ["alpha", "beta/fp8"]
+    assert summary["settings"]["structured_endpoints"] == ["alpha"]
+    assert summary["settings"]["structured_output"] is True
+    assert "cost: total $0.000493827156, per receipt $0.000123" in console
+    for name in ("predictions.jsonl", "run.json"):
+        assert FAKE_KEY not in (run_dir / name).read_text()
+    assert FAKE_KEY not in console
+
+    scores_console = io.StringIO()
+    scores = ocr_fields.run(ocr_fields.parse_args(["--run", str(run_dir)]), scores_console)
+    assert scores["cost_usd"]["per_1000_receipts_usd"] == "0.1235"
+    assert "per 1,000 receipts: $0.1235 (n=4)" in scores_console.getvalue()
+
+
+def test_hosted_overrides_reach_the_openrouter_settings(
+    ingest: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_openrouter_backend import DATED_MODEL
+
+    summary, _, _ = hosted_run(
+        ingest,
+        tmp_path,
+        monkeypatch,
+        None,
+        "--limit",
+        "1",
+        "--model",
+        DATED_MODEL,
+        "--image-max-side",
+        "1024",
+        "--max-tokens",
+        "99",
+    )
+
+    assert summary["model_name"] == DATED_MODEL
+    assert summary["settings"]["image_max_side"] == 1024
+    assert summary["settings"]["max_tokens"] == 99
+
+
+def test_a_hosted_failure_keeps_the_cost_of_its_calls(
+    ingest: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.backends.openrouter import HttpResponse
+    from tests.test_openrouter_backend import FakeTransport, chat_answer
+
+    transport = FakeTransport(
+        HttpResponse(200, chat_answer("bad", cost="0.5")),
+        HttpResponse(429, "{}"),
+        HttpResponse(200, chat_answer(cost=None)),
+    )
+
+    summary, run_dir, console = hosted_run(ingest, tmp_path, monkeypatch, transport)
+
+    records = list(read_jsonl(run_dir / "predictions.jsonl"))
+    assert (records[0]["status"], records[0]["error"]) == ("error", "openrouter_rate_limited")
+    assert records[0]["diagnostics"]["cost_usd"] == "0.5"
+    assert summary["cost_usd"]["receipts_with_cost"] == 1
+    assert summary["cost_usd"]["receipts_without_cost"] == 3
+    assert summary["cost_usd"]["complete"] is False
+    assert "3 receipt(s) without a reported cost" in console
+
+
+def test_a_hosted_run_without_settings_is_a_usage_error(ingest: Path, tmp_path: Path) -> None:
+    args = ocr_run.parse_args(
+        ["--ingest", str(ingest), "--out", str(tmp_path / "runs"), "--backend", "openrouter"]
+    )
+
+    with pytest.raises(UsageError, match="OPENROUTER_OCR_MODEL and OPENROUTER_API_KEY"):
+        ocr_run.run(args, io.StringIO())
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize(
+    ("transport_options", "message"),
+    [
+        ({"zdr": {"data": []}}, "no endpoint with zero data retention"),
+        ({"catalogue_status": 503}, "zero-retention endpoints could not be read"),
+    ],
+)
+def test_a_hosted_run_stops_when_retention_cannot_be_enforced(
+    ingest: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transport_options: dict[str, Any],
+    message: str,
+) -> None:
+    from tests.test_openrouter_backend import FakeTransport
+
+    transport = FakeTransport(**transport_options)
+
+    with pytest.raises(UsageError, match=message):
+        hosted_run(ingest, tmp_path, monkeypatch, transport)
+    assert transport.posts == []
+
+
+def test_cost_summary() -> None:
+    from evaluation.common import cost_summary
+
+    def record(cost: Any, calls: int = 1) -> dict[str, Any]:
+        return {"diagnostics": {"cost_usd": cost, "model_calls": calls}}
+
+    assert cost_summary([{"diagnostics": {}}, {"diagnostics": {"peak_memory_gb": 1.0}}]) is None
+    summary = cost_summary(
+        [record("0.001"), record("0.002"), record(None, calls=0), record("NaN"), record(7)]
+    )
+    assert summary == {
+        "total_usd": "0.003",
+        "receipts_with_cost": 2,
+        "receipts_without_cost": 2,
+        "complete": False,
+        "per_receipt_usd": "0.001500",
+        "per_1000_receipts_usd": "1.5000",
+    }
+    assert cost_summary([record(None)]) == {
+        "total_usd": "0",
+        "receipts_with_cost": 0,
+        "receipts_without_cost": 1,
+        "complete": False,
+        "per_receipt_usd": None,
+        "per_1000_receipts_usd": None,
+    }
+
+
+def test_a_local_run_reports_no_cost(ingest: Path, tmp_path: Path) -> None:
+    out = tmp_path / "runs"
+    summary = ocr_run.run(ocr_run.parse_args(run_args(ingest, out, "--limit", "1")), io.StringIO())
+
+    assert "cost_usd" not in summary
+    scores = ocr_fields.run(ocr_fields.parse_args(["--run", str(the_run(out))]), io.StringIO())
+    assert scores["cost_usd"] is None

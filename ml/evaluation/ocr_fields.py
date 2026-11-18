@@ -17,7 +17,10 @@ Scores:
   in for item quality);
 - `kind_fiscal`: the share the model called `fiscal` (a tax QR means it is);
 - parse failures, and seconds per receipt (mean, median, 90th percentile) over
-  every receipt the backend answered or failed to parse.
+  every receipt the backend answered or failed to parse;
+- for a hosted backend, the cost per receipt and per 1,000 receipts in US
+  dollars (`evaluation.common.cost_summary`: what OpenRouter reported, over
+  every receipt that made a model call); null for a local backend.
 
 The scores are printed and written to `scores.json` in the run folder. Only
 aggregates are printed.
@@ -35,6 +38,7 @@ from zoneinfo import ZoneInfo
 
 from evaluation.common import (
     UsageError,
+    cost_summary,
     read_jsonl,
     read_receipt_set,
     timing_summary,
@@ -156,6 +160,7 @@ def score(predictions: list[dict[str, Any]], receipt_set: list[dict[str, Any]]) 
         "errors": sum(r["status"] == "error" for r in attempted),
         "repaired": sum(bool(r.get("repaired")) for r in attempted),
         "seconds_per_receipt": timing_summary(r["seconds"] for r in answered),
+        "cost_usd": cost_summary(predictions),
     }
 
 
@@ -180,6 +185,16 @@ def print_scores(scores: dict[str, Any], out: TextIO) -> None:
         f"p90 {timing['p90']} (n={timing['count']})",
         file=out,
     )
+    cost = scores.get("cost_usd")
+    if cost is not None:
+        line_text = (
+            f"  cost per receipt: ${cost['per_receipt_usd']}, "
+            f"per 1,000 receipts: ${cost['per_1000_receipts_usd']} "
+            f"(n={cost['receipts_with_cost']})"
+        )
+        if not cost["complete"]:
+            line_text += f", {cost['receipts_without_cost']} without a reported cost"
+        print(line_text, file=out)
 
 
 def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:

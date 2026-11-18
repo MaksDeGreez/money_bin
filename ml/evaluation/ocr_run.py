@@ -13,7 +13,14 @@ post-processing and settings). The run folder `OUT/<run id>/` gets:
   `receipt` as the API returns it (or null), `error` (a code) and
   `diagnostics` (token counts, peak memory, post-processing counts);
 - `run.json`: the backend, model, weights revision, prompt version, git commit,
-  settings, filters, counts and timings.
+  settings, filters, counts and timings; for a hosted backend also the cost
+  (a sum of what OpenRouter reported, per receipt and per 1,000 receipts),
+  the upstream providers that served the calls and the zero-retention
+  endpoints the requests were limited to.
+
+A hosted run (`--backend openrouter`) reads `OPENROUTER_API_KEY` and
+`OPENROUTER_OCR_MODEL` from the environment like the service; the key is never
+written to the run folder or printed.
 
 The output folder must be outside any git repository: answers hold receipt
 content. The console shows counts only.
@@ -33,7 +40,8 @@ from typing import Any, TextIO
 
 from pydantic import ValidationError
 
-from app.backends import BACKENDS, Backend, ImageInput, create_backend
+from app.backends import BACKENDS, Backend, BackendError, ImageInput, create_backend
+from app.backends.openrouter import OpenRouterBackend, missing_settings
 from app.config import Settings
 from app.main import MAX_IMAGES
 from app.ocr.images import ImageDecodeError
@@ -42,6 +50,7 @@ from app.ocr.prompt import PROMPT_VERSION
 from evaluation.common import (
     FILE_MODE,
     UsageError,
+    cost_summary,
     ensure_private_folder,
     inside_git_repository,
     read_receipt_set,
@@ -60,9 +69,17 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--ingest", required=True, type=Path, help="the receipt set folder")
     parser.add_argument("--out", required=True, type=Path, help="the folder for run folders")
     parser.add_argument("--backend", default="mlx", choices=sorted(BACKENDS))
-    parser.add_argument("--model", help="the model id (default: MLX_OCR_MODEL or its default)")
-    parser.add_argument("--image-max-side", type=int, help="override MLX_OCR_IMAGE_MAX_SIDE")
-    parser.add_argument("--max-tokens", type=int, help="override MLX_OCR_MAX_TOKENS")
+    parser.add_argument(
+        "--model", help="the model id (default: MLX_OCR_MODEL, or OPENROUTER_OCR_MODEL)"
+    )
+    parser.add_argument(
+        "--image-max-side",
+        type=int,
+        help="override MLX_OCR_IMAGE_MAX_SIDE (or OPENROUTER_OCR_IMAGE_MAX_SIDE)",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, help="override MLX_OCR_MAX_TOKENS (or OPENROUTER_MAX_TOKENS)"
+    )
     parser.add_argument(
         "--only-tax-qr",
         action="store_true",
@@ -77,6 +94,40 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be 1 or more")
     return args
+
+
+# The settings that `--model`, `--image-max-side` and `--max-tokens` override, per backend.
+SETTING_FIELDS: dict[str, dict[str, str]] = {
+    "mlx": {
+        "model": "mlx_ocr_model",
+        "image_max_side": "mlx_ocr_image_max_side",
+        "max_tokens": "mlx_ocr_max_tokens",
+    },
+    "openrouter": {
+        "model": "openrouter_ocr_model",
+        "image_max_side": "openrouter_ocr_image_max_side",
+        "max_tokens": "openrouter_max_tokens",
+    },
+}
+
+
+def backend_settings(backend: Backend, settings: Settings) -> dict[str, Any]:
+    """The settings a run used, for `run.json`. Never the API key."""
+    if isinstance(backend, OpenRouterBackend):
+        catalogue = backend.catalogue
+        return {
+            "image_max_side": settings.openrouter_ocr_image_max_side,
+            "max_tokens": settings.openrouter_max_tokens,
+            "timeout_seconds": settings.openrouter_timeout,
+            "structured_output": bool(catalogue and catalogue.structured_endpoints),
+            "zdr_endpoints": list(catalogue.endpoints) if catalogue else [],
+            "structured_endpoints": list(catalogue.structured_endpoints) if catalogue else [],
+        }
+    return {
+        "image_max_side": settings.mlx_ocr_image_max_side,
+        "max_tokens": settings.mlx_ocr_max_tokens,
+        "constrained_decoding": settings.mlx_ocr_constrained_decoding,
+    }
 
 
 def read_ids(path: Path) -> list[str]:
@@ -178,6 +229,10 @@ def run_one(backend: Backend, ingest: Path, line: dict[str, Any], *, crops: bool
         record["diagnostics"] = dict(error.diagnostics)
     except ImageDecodeError:
         record.update(status="error", error="image_unreadable")
+    except BackendError as error:
+        # The calls made before the failure were paid for: keep their accounting.
+        record.update(status="error", error=error.code)
+        record["diagnostics"] = dict(error.diagnostics)
     except Exception as error:  # one broken receipt must not end the run
         record.update(status="error", error=type(error).__name__)
     else:
@@ -219,28 +274,39 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     if not selected:
         raise UsageError("no receipt matches the filters")
 
+    fields = SETTING_FIELDS.get(args.backend, SETTING_FIELDS["mlx"])
     overrides: dict[str, Any] = {"ocr_backend": args.backend}
     if args.model:
-        overrides["mlx_ocr_model"] = args.model
+        overrides[fields["model"]] = args.model
     if args.image_max_side is not None:
-        overrides["mlx_ocr_image_max_side"] = args.image_max_side
+        overrides[fields["image_max_side"]] = args.image_max_side
     if args.max_tokens is not None:
-        overrides["mlx_ocr_max_tokens"] = args.max_tokens
+        overrides[fields["max_tokens"]] = args.max_tokens
     try:
         settings = Settings(**overrides)
     except ValidationError as error:
         fields = ", ".join(str(detail["loc"][0]) for detail in error.errors())
         raise UsageError(f"invalid setting: {fields}") from None
     backend = create_backend(args.backend, settings)
+    if isinstance(backend, OpenRouterBackend):
+        missing = missing_settings(settings)
+        if missing:
+            raise UsageError(f"set {' and '.join(missing)} in the environment")
 
     started_at = datetime.now(UTC)
     statuses: Counter[str] = Counter()
     seconds: list[float] = []
     repaired = 0
     peak_memory = 0.0
+    records: list[dict[str, Any]] = []
     try:
         load_started = time.perf_counter()
-        backend.start()
+        try:
+            backend.start()
+        except BackendError as error:
+            raise UsageError(error.message) from None
+        if isinstance(backend, OpenRouterBackend) and backend.catalogue is None:
+            raise UsageError("the list of zero-retention endpoints could not be read")
         load_seconds = round(time.perf_counter() - load_started, 3)
         print(f"model loaded in {load_seconds:.1f} s; {len(selected)} receipt(s)", file=out)
         run_dir = make_run_dir(runs, run_id_for(backend.name, backend.model_name, started_at))
@@ -254,8 +320,11 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
                     seconds.append(record["seconds"])
                 repaired += int(record["repaired"])
                 peak_memory = max(peak_memory, record["diagnostics"].get("peak_memory_gb", 0.0))
+                records.append(record)
                 took = "" if record["seconds"] is None else f" {record['seconds']:.1f} s"
                 print(f"{number}/{len(selected)} {record['status']}{took}", file=out)
+        # Read before `stop()`, which forgets the endpoint list.
+        used_settings = backend_settings(backend, settings)
     finally:
         backend.stop()
 
@@ -266,12 +335,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         "model_version": backend.model_version,
         "prompt_version": PROMPT_VERSION if backend.name != "stub" else None,
         "git": git_commit(),
-        "settings": {
-            "image_max_side": settings.mlx_ocr_image_max_side,
-            "max_tokens": settings.mlx_ocr_max_tokens,
-            "constrained_decoding": settings.mlx_ocr_constrained_decoding,
-            "crops": args.crops,
-        },
+        "settings": {**used_settings, "crops": args.crops},
         "filters": {
             "only_tax_qr": args.only_tax_qr,
             "ids_file": args.ids is not None,
@@ -285,6 +349,17 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         "seconds_per_receipt": timing_summary(seconds),
         "peak_memory_gb": peak_memory,
     }
+    if isinstance(backend, OpenRouterBackend):
+        summary["cost_usd"] = cost_summary(records)
+        summary["upstream_providers"] = dict(
+            sorted(
+                Counter(
+                    call.get("provider") or "unknown"
+                    for record in records
+                    for call in record["diagnostics"].get("calls", [])
+                ).items()
+            )
+        )
     write_private_json(run_dir / "run.json", summary)
     print_summary(summary, out)
     return summary
@@ -312,6 +387,20 @@ def print_summary(summary: dict[str, Any], out: TextIO) -> None:
             f"p90 {timing['p90']}; peak memory {summary['peak_memory_gb']} GB",
             file=out,
         )
+    cost = summary.get("cost_usd")
+    if cost is not None:
+        print(format_cost(cost), file=out)
+
+
+def format_cost(cost: dict[str, Any]) -> str:
+    """One console line about the cost of a hosted run."""
+    line = (
+        f"cost: total ${cost['total_usd']}, per receipt ${cost['per_receipt_usd']}, "
+        f"per 1,000 receipts ${cost['per_1000_receipts_usd']}"
+    )
+    if not cost["complete"]:
+        line += f" ({cost['receipts_without_cost']} receipt(s) without a reported cost)"
+    return line
 
 
 def main(argv: Sequence[str] | None = None) -> int:
