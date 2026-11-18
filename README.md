@@ -28,7 +28,9 @@ runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-o
 hosted model reads receipts under a zero-data-retention rule in
 [`docs/decisions/0012-hosted-ocr-backend.md`](docs/decisions/0012-hosted-ocr-backend.md), and how receipt
 items get category suggestions (the label memory, a zero-shot model, where confidence comes from) in
-[`docs/decisions/0015-item-categoriser.md`](docs/decisions/0015-item-categoriser.md).
+[`docs/decisions/0015-item-categoriser.md`](docs/decisions/0015-item-categoriser.md), and how a hosted
+decision model categorises items, checks another model's answer and is combined with the other methods in
+[`docs/decisions/0016-decision-model-categoriser.md`](docs/decisions/0016-decision-model-categoriser.md).
 
 ## Status
 
@@ -495,7 +497,11 @@ OCR runs in Sidekiq (`bin/dev` starts it) with the ML service (`OCR_BACKEND`, se
 
 To compare categorisers offline, `bin/rails "categories:export_items[FILE]"` writes the candidate categories
 the app sends, and `ml/evaluation/item_categories_run` runs a backend over the labelled items of the
-ground-truth export (see `ml/README.md`, "Evaluating the item categoriser").
+ground-truth export; `ml/evaluation/item_categories_combine` combines runs (a cascade, a weighted average, or
+a logistic regression cross-validated by receipt and forward in time) into one run scored like any other (see `ml/README.md`,
+"Evaluating the item categoriser"). `CATEGORISE_BACKEND=decisions` asks a hosted decision model
+(`DECISIONS_MODEL`, for example `typesafe/jev-1.14`) through OpenRouter's Decisions API instead: only item
+names and the category list are sent, to zero-retention endpoints only.
 
 The pages follow OCR live (Turbo Streams over Action Cable, through Redis): the status and the data change
 when a job starts, finishes or fails, without a reload. The rules are in

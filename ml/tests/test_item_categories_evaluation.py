@@ -475,7 +475,7 @@ def test_the_sanity_command_needs_every_slug(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("prefilled_by", "items"),
-    [("example/model", 0), ("source:unknown", 0), ("label-memory", 40), ("another/model", 40)],
+    [("example/model", 0), ("source:unknown", 0), ("label-memory", 40), ("another/gemma-2-9b", 40)],
 )
 def test_labels_the_model_pre_filled_are_not_fitted_on(
     tmp_path: Path, prefilled_by: str, items: int

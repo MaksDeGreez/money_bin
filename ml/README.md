@@ -22,6 +22,11 @@ Each job has its own backend setting: `OCR_BACKEND` for OCR and
   and the fixed prompt leave the machine; for categorisation the item names and
   the fixed prompt with the category list. Nothing else does (see "The
   openrouter backend" and "The hosted categoriser").
+- **`decisions`** (categorisation only) asks a hosted *decision model* (for
+  example TypeSafe's Jev) through OpenRouter's Decisions API, with the same
+  zero-retention rules: one typed question per item, answered with a
+  probability for every category. Only the item names and the category list
+  leave the machine (see "The decision-model categoriser").
 
 So OCR can run locally while categorisation is hosted, or the other way round.
 
@@ -82,10 +87,14 @@ model (`python -m evaluation.item_sanity`, below).
 | Variable                       | Default                                     | Values                      | Meaning |
 | ------------------------------ | ------------------------------------------- | --------------------------- | ------- |
 | `OCR_BACKEND`                  | `stub`                                      | `stub`, `mlx`, `openrouter` | The OCR backend. |
-| `CATEGORISE_BACKEND`           | `stub`                                      | `stub`, `mlx`, `openrouter`, `off` | The item categoriser, chosen apart from OCR. `off` switches suggestions off: `/categorise` answers 501, and the Rails app, which reads the same setting, asks nothing and fills nothing, not even from its label memory (labelling with no suggestions on screen, `docs/domain.md`). |
+| `CATEGORISE_BACKEND`           | `stub`                                      | `stub`, `mlx`, `openrouter`, `decisions`, `off` | The item categoriser, chosen apart from OCR. `off` switches suggestions off: `/categorise` answers 501, and the Rails app, which reads the same setting, asks nothing and fills nothing, not even from its label memory (labelling with no suggestions on screen, `docs/domain.md`). |
 | `MLX_CATEGORISE_MODEL`         | empty: `MLX_OCR_MODEL`                      | a Hugging Face id or a folder | The local categoriser's model. Empty means the OCR model: with `OCR_BACKEND=mlx` the one loaded model does both jobs (see "One model or two"). A text model such as `mlx-community/Qwen3-4B-Instruct-2507-4bit` works too. |
 | `CATEGORISE_CALIBRATION_FILE`  | none                                        | a path outside the repository | A calibration of the categoriser's scores (see "Calibration"). It must have been fitted for the configured categoriser and model, or the service does not start. |
 | `OPENROUTER_CATEGORISE_MODEL`  | none                                        | a model id from openrouter.ai/models | The hosted categoriser's model (text only is fine). No default: with `CATEGORISE_BACKEND=openrouter` the service does not start without it. |
+| `DECISIONS_MODEL`              | none                                        | a decision model's id on openrouter.ai | The decision-model categoriser's model, for example `typesafe/jev-1.14`. No default: with `CATEGORISE_BACKEND=decisions` the service does not start without it. A moving alias (`~typesafe/jev-latest`) is refused: it has no zero-retention endpoint of its own. |
+| `DECISIONS_STRATEGY`           | `flat`                                      | `flat`, `two-stage`         | One question per item over every category, or the group first and then the category within it (see "The decision-model categoriser"). |
+| `DECISIONS_RECEIPT_CONTEXT`    | `true`                                      | `true`, `false`             | Give each item the other item names of its receipt; `false` sends each item alone (for comparison only). |
+| `DECISIONS_MAX_QUESTIONS`      | `16`                                        | 1 to 64                     | The most items (questions) in one request; a request is also cut below 24,000 bytes. |
 | `ML_MAX_IMAGE_BYTES`           | `15728640`                                  | a whole number above 0      | The largest image file, in bytes (15 MB). |
 | `MLX_OCR_MODEL`                | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | a Hugging Face id or a folder | The `mlx` backend's model. `mlx-community/Qwen3-VL-8B-Instruct-4bit` works too. |
 | `MLX_OCR_MAX_TOKENS`           | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer. A receipt with 40 items needs about 2,000. |
@@ -274,7 +283,8 @@ The response:
 - `results`, in the order of `texts`: 1 to 3 candidates per item, best first,
   scores in 0..1 adding up to at most 1;
 - `score_kind`: where the scores come from (`label_probability`,
-  `token_logprobs`, `fixed`, `stub`; see "How confidence is computed");
+  `token_logprobs`, `fixed`, `stub`, `decision_probability`; see "How
+  confidence is computed");
 - `calibrated`: the best candidate's score went through a calibration fitted on
   labelled items for exactly this categoriser, model, prompt and score kind;
   otherwise it is the raw score;
@@ -576,6 +586,13 @@ else (`hosted_messages`): the shop, amounts, dates and ids cannot reach it.
   gets 0.5 (`FALLBACK_SCORE`), the only candidate. It is a marker, not a
   confidence, and it is below any sensible acceptance threshold; a calibration
   fitted on such answers turns it into the model's measured precision.
+- **Decision model (`decisions`, `score_kind: decision_probability`).** The
+  model answers each item's question with a probability for every listed
+  category (or, with `two-stage`, for every group and then every category of
+  the most likely groups; a category's score is the product). Those are the
+  scores, normalised to add up to 1 per question. The provider claims they are
+  calibrated in aggregate but publishes no figures, and they vary by a few
+  hundredths between identical calls; calibrate them like any other score.
 - **Stub (`score_kind: stub`).** Shares of a hash; they mean nothing.
 
 ### Calibration
@@ -634,6 +651,91 @@ one, which stops OCR and categorisation alike until the service restarts.
   `categorise_parse_failed` (no repair pass: the schema already constrains it).
   Cost, latency and provider per call are accounted as for OCR.
 
+### The decision-model categoriser
+
+`app/categorise/decisions.py` (`CATEGORISE_BACKEND=decisions`), over the client
+`app/decisions.py`. A decision model does not write text: it takes a `state`
+and typed questions, and answers a `choice` question with a probability for
+every option, a `noul` (yes/no) question with the probability of yes. A closed
+list of categories is exactly that question, so the answer can never name a
+category outside the list and needs no parsing, and its probabilities are a
+confidence for every category without token log-probabilities. Reasons and the
+trial: `docs/decisions/0016-decision-model-categoriser.md`.
+
+- **Zero retention**: the client calls through `OpenRouterClient`
+  (`decisions=True`), so every rule of "Zero data retention" holds, in the same
+  code: the model must be listed as a decision model (OpenRouter lists those
+  only in `/api/v1/models?output_modalities=all`) and have strict
+  zero-retention endpoints (no Safety Retention), which every request names in
+  `provider.only` with `zdr: true` and `data_collection: "deny"`; nothing is
+  sent when the lists cannot be read; the provider of every answer is checked,
+  and an answer from elsewhere halts every hosted call (OCR included) until the
+  service restarts. On 2026-11-18 `typesafe/jev-1.14` had one such endpoint
+  (`typesafe`, provider TypeSafe, `safety_retention: false`).
+- **What is sent**: the body is `model`, `state`, `questions` and `provider`,
+  nothing else (no `user`, `session_id`, `trace`, no attribution header).
+  `state` holds item names only: `line_1`, `line_2`, ... for the items of the
+  receipt (the neighbours show what kind of shop it was, which the hosted
+  model is never told), or `item` alone with `DECISIONS_RECEIPT_CONTEXT=false`;
+  and, in offline runs with `--examples`, `examples`: similar item names a
+  person labelled in earlier receipts, each with its category's label. The
+  questions hold fixed instructions and the category names and descriptions.
+  The shop's name, amounts, quantities, dates and ids are not read by the code
+  that builds a request. Never use this client for transactions, payees or
+  bank descriptions: those stay on this machine.
+- **Strategies**: `flat` asks one `choice` per item over every category, each
+  option labelled "Group / Name" and described by its description. `two-stage`
+  asks for the group first (each group described by its categories), then the
+  category within the two most likely groups of more than one category (the
+  second only above 0.05); a category alone in its group needs no second
+  question. `verify` (offline only, below) asks "does this item belong to this
+  category?" for each candidate another categoriser proposed.
+- **Batching**: every item is its own question, and a question carries its
+  whole option text (about 3,000 bytes for the 37 categories), because the
+  question key is never shown to the model. A receipt's questions go in as few
+  requests as fit `DECISIONS_MAX_QUESTIONS` and 24,000 bytes, well below the
+  ~32,000 bytes past which the model switches to a slower and less accurate
+  long-input mode: about 4 to 7 items per request with `flat`.
+- **Answers**: every answer is checked against its question: a missing or
+  unasked answer, an option not offered, a missing or extra probability, a
+  value outside 0..1 and probabilities that do not add up to 1 (within 0.02)
+  are errors (502 `decisions_bad_answer` / `decisions_answer_missing`); never
+  dropped or guessed. They are 5xx, so the app retries them: an answer varies
+  between calls, and a retry costs about $0.0001. A refusal fails the receipt
+  (422 `decisions_refused`; with `two-stage`, a refused second question for the
+  most likely group overall does too, while one for a less likely group only
+  drops that group): the service promises a candidate for every item. A question too long
+  for the normal input mode on its own is refused before sending (422
+  `decisions_request_too_large`). Each item is asked once: answers vary
+  slightly between calls, and a run keeps the first.
+- **Prompt versions**: the prompt version names the strategy, the context and
+  whether examples were shown, and `verify` has its own; a calibration
+  (matched on the prompt version) fitted on one mode never applies to another.
+  `/categorise` answers never carry examples.
+
+On the invented sanity set (98 items in 21 receipts, the first 43 as above;
+`typesafe/jev-1.14`, 37 categories, 2026-11-18; no shop name, as for every
+hosted path):
+
+| Variant | Right (top 1) | Of the first 43 | Top 3 | Best ≥ 0.9 but wrong | Requests | Input tokens per item | Seconds per item | Dollars per 1,000 items |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `flat`, receipt context, batched | 96 of 98 | 43 | 98 | 0 | 25 | 1,126 | 0.09 | 0.047 |
+| `flat`, one item per request | 95 of 98 | 43 | 98 | 0 | 98 | 1,442 | 0.28 | 0.061 |
+| `flat`, each item alone (no context) | 88 of 98 | 40 | 91 | 1 | 98 | 1,277 | 0.29 | 0.054 |
+| `two-stage`, receipt context | 92 of 98 | 42 | 98 | 0 | 46 | 1,174 | 0.12 | 0.049 |
+
+The reliability of `flat` (top score band: items, accuracy): below 0.5: 1,
+1.0; 0.5 to 0.7: 8, 0.75; 0.7 to 0.9: 5, 1.0; 0.9 to 0.95: 6, 1.0; 0.95 and
+above: 78, 1.0. Verifying `flat`'s three candidates (one `noul` each) and
+ranking by the yes-probability got 90 of 98, worse than the `choice` itself,
+for about a third more tokens (294 short questions); as a confidence it was no
+better calibrated either. Two runs of the same `flat` request differed only in
+the second decimal place of a few scores. So `flat` with the receipt's lines is
+the default. The
+set is invented and small, the items obvious on purpose: these numbers show the
+model works, not how well it will do on real receipts; the evaluation on the
+labelled items decides.
+
 ## Evaluating the item categoriser
 
 ```sh
@@ -684,6 +786,95 @@ commit, `calibrated`, the score kinds, the memory rule, counts (receipts, items,
 labelled items, memory and model items, failures, labels outside the category
 list), seconds per call and per model item, and for a hosted backend the cost
 (total, per receipt, per 1,000 items). Scoring is the evaluation harness's job.
+
+**Decision models.** `--backend decisions` (with `--model typesafe/jev-1.14`
+or `DECISIONS_MODEL`) adds `--strategy flat|two-stage`, `--no-receipt-context`,
+`--max-questions N`, `--examples K` (up to K, at most 5, similar items labelled in EARLIER
+receipts, from the label memory's store: `LabelMemory.similar`, character
+trigram similarity of the name keys) and `--verify RUN_DIR` (instead of
+categorising, ask one yes/no question per candidate of that run's items; the
+yes-probability becomes the score, so a local model's answer gets a confidence
+from an independent model). `run.json` then has a `decisions` block (strategy,
+context, examples, the verified run and how many of its items had no
+candidates, the zero-retention endpoints used), `combined_from` when another
+categoriser shaped the answers (the label memory that supplied the examples;
+every categoriser of the verified run), which the harness's pre-fill rule reads,
+and the answers'
+`prompt_versions` (`prompt_version` is null when they differ, as in a run with
+examples, whose first receipt has none to show; such a run is not calibrated). The
+key comes from the environment: `uv run --env-file ../.env ...`.
+`item_sanity` takes the same options, plus `--verify` to check its own
+candidates, and reports the top-score distribution, the reliability table, the
+share auto-accepted at 95% precision, and requests, tokens and dollars.
+
+**Combining runs.** `python -m evaluation.item_categories_combine` takes two or
+more run folders over the same items and the ground-truth export, and writes a
+combined run folder in the same format (`source: combined`):
+
+- `--method cascade --thresholds T1,...` (one per run but the last): the first
+  run whose best score reaches its threshold decides each item;
+- `--method average [--weights W1,...]`: a weighted average of the runs'
+  per-category scores;
+- `--method learned [--folds 5] [--c 1.0]`: a multinomial logistic regression
+  on the runs' per-category scores side by side (plus a "no candidates" column
+  per run), cross-validated by receipt and forward in time: the receipts with
+  usable labels, in time order, are cut into `folds + 1` consecutive blocks,
+  and each block after the first is scored by a fit on the blocks before it
+  only. No item is scored by a model fitted on its own receipt, nor on a later
+  one: with the label memory or examples, a later receipt's scores already
+  contain earlier labels, so random folds would let a held-out label back in.
+  The first block gets the plain average (`warm_up_items`); unscored items a fit
+  on every usable label. Because of the warm-up block the run never claims
+  `calibrated` scores, although the fitted probabilities are fitted to labels.
+
+Items whose labels were chosen with one of the combined categorisers on screen
+(`categories_prefilled_by` names a categoriser behind one of the runs: its
+model, the label memory when it answered first, and every `combined_from`
+entry, which names the memory that supplied examples and the categorisers of a
+verified run; or is `source:unknown`; names compared by the harness's rule,
+`evaluation/models.py`, so another spelling of the same model counts) are
+neither fitted on nor counted (`item_categories_calibrate` applies the same
+rule). The forward split follows the order in which the runner processed the
+receipts (the order of their lines), and runs that disagree on it are refused. The combined run's
+`run.json` has `combined_from` with every categoriser behind every input, so
+the harness applies the same rule,
+and reports `agreement` (how often all runs agree on the best category and how
+precise that is, the combined accuracy where they disagree, each pair's
+agreement) and the combined run's scores on the usable items.
+
+The commands once items are labelled (the exports as above):
+
+```sh
+cd ml
+GT=~/Documents/money_bin_data/exports/ground_truth.jsonl
+CATS=~/Documents/money_bin_data/exports/item_categories.json
+RUNS=~/Documents/money_bin_data/runs
+SET=~/Documents/money_bin_data/receipts
+# 1. The local model with the label memory first (no key needed).
+uv run python -m evaluation.item_categories_run --ground-truth $GT --ingest $SET \
+  --categories $CATS --out $RUNS --backend mlx --memory
+# 2. The decision model alone, and with the memory first and labelled examples.
+uv run --env-file ../.env python -m evaluation.item_categories_run --ground-truth $GT \
+  --ingest $SET --categories $CATS --out $RUNS --backend decisions --model typesafe/jev-1.14
+uv run --env-file ../.env python -m evaluation.item_categories_run --ground-truth $GT \
+  --ingest $SET --categories $CATS --out $RUNS --backend decisions --model typesafe/jev-1.14 \
+  --memory --examples 3
+# 3. The decision model as the local model's confidence: verify run 1's candidates.
+uv run --env-file ../.env python -m evaluation.item_categories_run --ground-truth $GT \
+  --ingest $SET --categories $CATS --out $RUNS --backend decisions --model typesafe/jev-1.14 \
+  --verify $RUNS/<run 1>
+# 4. Combinations (same items in every run).
+uv run python -m evaluation.item_categories_combine --ground-truth $GT --out $RUNS \
+  --run $RUNS/<run 1> --run $RUNS/<run 2, flat> --method learned
+uv run python -m evaluation.item_categories_combine --ground-truth $GT --out $RUNS \
+  --run $RUNS/<run 1> --run $RUNS/<run 3, verify> --method learned
+uv run python -m evaluation.item_categories_combine --ground-truth $GT --out $RUNS \
+  --run $RUNS/<run 1> --run $RUNS/<run 2, flat> --method cascade --thresholds 0.95
+```
+
+Each run and combination is then scored by the evaluation harness (`make eval`,
+"The evaluation harness" below) with the same table: macro-F1, top-3, the share auto-accepted at 95% precision, calibration,
+seconds and dollars per 1,000 items.
 
 `item_categories_calibrate` fits on the model items of a run that have a label
 (at least 30, `--min-items`; `--ids` for a calibration slice), writes the file
@@ -810,7 +1001,10 @@ numbers by name), `seconds_per_item`, `cost_usd`, `scores_calibrated` (true when
 calibrated, for example on a validation set; false when they are raw; absent or null when not
 known), `sources` (any `source` values its lines use besides `memory`, `model`, `decision` and
 `combined`) and, for a run made by combining other runs, `combined_from`: a list of
-`{"run_id", "backend", "model_name", "model_version"}`, one per run it combines. `predictions.jsonl`, one line per
+`{"run_id", "backend", "model_name", "model_version"}`, one per run it combines (any key may be
+missing). `item_categories_combine` lists every categoriser behind every input there, and a
+decision-model run lists the label memory that supplied its examples and the categoriser behind
+a verified run; the pre-fill rule then applies to all of them, and such a run counts as combined. `predictions.jsonl`, one line per
 item:
 
 ```json
@@ -1012,6 +1206,7 @@ app/
   schemas.py       request and response models
   errors.py        the shared error shape and handlers
   config.py        settings from environment variables
+  decisions.py     the Decisions API client: typed questions, checked answers
   backends/        OCR
     __init__.py    registry: backend name -> class
     base.py        the Backend interface and the shared errors
@@ -1029,6 +1224,7 @@ app/
     calibration.py reading and applying a calibration
     taxonomy.py    the category hand-over: a request's list or an exported file
     stub.py, mlx.py, openrouter.py, off.py  the categorisers (off: switched off)
+    decisions.py   the decision-model categoriser: flat, two-stage, verify
     mlx_token_model.py  the real token model (mlx-vlm); Apple silicon only
   ocr/
     prompt.py      the prompt, the answer schema, PROMPT_VERSION
@@ -1041,6 +1237,8 @@ evaluation/
   item_categories_run.py        run a categoriser over labelled items
   item_categories_calibrate.py  fit a calibration from a run
   item_sanity.py   a smoke test on the invented sanity set
+  item_categories_combine.py    combine runs: cascade, average, learned (CV by receipt)
+  item_scores.py   accuracy, top-3, reliability, auto-accept share
   label_memory.py  the label memory's rule, as the app applies it
   common.py        shared helpers (timings, cost summary)
   harness.py       the evaluation harness (make eval): every run, comparisons, eval/results/

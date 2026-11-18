@@ -41,7 +41,7 @@ from evaluation.common import (
     read_jsonl,
     write_private_json,
 )
-from evaluation.item_categories_run import TASK, read_ground_truth
+from evaluation.item_categories_run import TASK, prefilled_by_run, read_ground_truth
 from evaluation.ocr_run import read_ids
 
 DEFAULT_OUT = Path("~/Documents/money_bin_data/models")
@@ -74,6 +74,8 @@ def read_run(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     kinds = summary.get("score_kinds") or {}
     if len(kinds) != 1:
         raise UsageError("the run's answers have more than one score kind (or none)")
+    if len(summary.get("prompt_versions") or {}) > 1:
+        raise UsageError("the run's answers come from more than one prompt version")
     return summary, list(read_jsonl(run_dir / "predictions.jsonl"))
 
 
@@ -129,7 +131,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
     labels = {
         (receipt.ingest_id, item.position): item.label
         for receipt in receipts
-        if not prefilled_by(receipt.categories_prefilled_by, summary["model_name"])
+        if not prefilled_by_run(receipt.categories_prefilled_by, summary)
         for item in receipt.items
         if item.label
     }

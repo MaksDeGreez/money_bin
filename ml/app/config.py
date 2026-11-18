@@ -1,6 +1,7 @@
 """Service settings, read from environment variables."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
@@ -59,6 +60,19 @@ class Settings(BaseSettings):
     # The model that categorises receipt items with CATEGORISE_BACKEND=openrouter. No
     # default either. Only item names are sent to it.
     openrouter_categorise_model: str | None = None
+    # The decision-model categoriser (CATEGORISE_BACKEND=decisions): a decision model on
+    # OpenRouter's Decisions API (for example "typesafe/jev-1.14"), through the same
+    # zero-retention rules. No default. Only item names and the category text are sent;
+    # never use it for transactions (docs/decisions/0016-decision-model-categoriser.md).
+    decisions_model: str | None = None
+    # "flat": one question per item over every category; "two-stage": the group first, then the
+    # category within it.
+    decisions_strategy: Literal["flat", "two-stage"] = "flat"
+    # Give each item the other item names of its receipt as context (off: one item per request).
+    decisions_receipt_context: bool = True
+    # The most questions (items) in one request; a request is also cut below the model's
+    # long-input threshold (app/categorise/decisions.py).
+    decisions_max_questions: int = Field(default=16, ge=1, le=64)
     # Seconds for one receipt: the endpoint list (when it is due to be read
     # again), the call and the repair call together, as a hard deadline. A call
     # is not started with less than 10 seconds left (a repair call: less than

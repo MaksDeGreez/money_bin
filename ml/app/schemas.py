@@ -161,7 +161,9 @@ class CategoriseResponse(BackendInfo):
     """
 
     results: list[CategoriseResult]
-    score_kind: Literal["label_probability", "token_logprobs", "fixed", "stub"]
+    score_kind: Literal[
+        "label_probability", "token_logprobs", "fixed", "stub", "decision_probability"
+    ]
     calibrated: bool
     prompt_version: str | None
     categories_version: str

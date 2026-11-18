@@ -7,8 +7,12 @@ backend (`app.ocr`), so a comparison differs only in the model.
 `OpenRouterClient` holds everything that keeps a hosted call private: the
 catalogue of strict zero-retention endpoints, the fixed provider preferences,
 the provider check of every answer and the halt after a wrong one, the key, the
-deadline and the accounting. The OCR backend and the hosted item categoriser
-(`app.categorise.openrouter`) both call through it, so the rules exist once.
+deadline and the accounting. The OCR backend, the hosted item categoriser
+(`app.categorise.openrouter`) and the decision-model categoriser
+(`app.categorise.decisions`, through `app.decisions`) all call through it, so
+the rules exist once. A chat model is called with `call` (chat completions), a
+decision model with `decide` (the Decisions API); both go through the same
+catalogue, key, lock, halt and provider check.
 
 Privacy rules (`docs/decisions/0012-hosted-ocr-backend.md`):
 
@@ -72,6 +76,10 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://openrouter.ai/api/v1"
 CHAT_URL = f"{API_BASE}/chat/completions"
 MODELS_URL = f"{API_BASE}/models"
+# Decision models are listed only when every output modality is asked for.
+ALL_MODELS_URL = f"{MODELS_URL}?output_modalities=all"
+DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
+DECISIONS_MODALITY = "decisions"
 ZDR_ENDPOINTS_URL = f"{API_BASE}/endpoints/zdr"
 
 # How long the list of zero-retention endpoints is trusted before it is read again.
@@ -463,15 +471,26 @@ def read_catalogue(
     timeout: float = CATALOGUE_TIMEOUT_SECONDS,
     needs_images: bool = True,
     setting: str = OCR_MODEL_SETTING,
+    decisions: bool = False,
 ) -> Catalogue:
     """Read the model and its strict zero-retention endpoints from OpenRouter's public lists.
 
     Raises `BackendConfigError` when the model is unknown, takes no images
-    (when `needs_images`) or has no endpoint with zero retention and no Safety
-    Retention, and a 503 `BackendError` when the lists cannot be read.
-    `setting` names the model's setting in the messages.
+    (when `needs_images`), is not a decision model (when `decisions`: those are
+    listed only in the list of every output modality) or has no endpoint with
+    zero retention and no Safety Retention, and a 503 `BackendError` when the
+    lists cannot be read. `setting` names the model's setting in the messages.
+    A moving alias (`~vendor/model-latest`) has no entry of its own in the
+    zero-retention list, so it never has an endpoint here.
     """
-    models = _get_json(transport, MODELS_URL, timeout)
+    if decisions and model.startswith("~"):
+        # A moving alias may start answering from another model at any time: a run must name
+        # the model it measured.
+        raise BackendConfigError(
+            "openrouter_moving_alias",
+            f"{setting} {model!r} is a moving alias; name a concrete model.",
+        )
+    models = _get_json(transport, ALL_MODELS_URL if decisions else MODELS_URL, timeout)
     entry = next(
         (
             item
@@ -491,6 +510,12 @@ def read_catalogue(
         raise BackendConfigError(
             "openrouter_model_without_images",
             f"{setting} {model!r} does not take images.",
+        )
+    outputs = architecture.get("output_modalities") if isinstance(architecture, dict) else None
+    if decisions and (not isinstance(outputs, list) or DECISIONS_MODALITY not in outputs):
+        raise BackendConfigError(
+            "openrouter_not_a_decision_model",
+            f"{setting} {model!r} is not a decision model.",
         )
     ids = {entry.get("id"), entry.get("canonical_slug")} - {None}
     listed = [
@@ -603,8 +628,9 @@ class OpenRouterClient:
     """One hosted model behind the zero-retention rules: catalogue, key, calls, accounting.
 
     `model_setting` is the setting that names the model (`OPENROUTER_OCR_MODEL`,
-    `OPENROUTER_CATEGORISE_MODEL`); `needs_images` refuses a model that takes no
-    images. A given transport (the tests' fake) is used again after `stop()`;
+    `OPENROUTER_CATEGORISE_MODEL`, `DECISIONS_MODEL`); `needs_images` refuses a
+    model that takes no images, `decisions` one that is not a decision model. A
+    given transport (the tests' fake) is used again after `stop()`;
     without one, a new HTTP client is made when the first call needs it.
     """
 
@@ -614,12 +640,14 @@ class OpenRouterClient:
         model_setting: str,
         *,
         needs_images: bool,
+        decisions: bool = False,
         transport: Transport | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings
         self.model_setting = model_setting
         self.needs_images = needs_images
+        self.decisions = decisions
         self._make_transport: Callable[[], Transport] = (
             (lambda: transport) if transport is not None else HttpxTransport
         )
@@ -690,6 +718,7 @@ class OpenRouterClient:
                     timeout=timeout,
                     needs_images=self.needs_images,
                     setting=self.model_setting,
+                    decisions=self.decisions,
                 )
                 self._catalogue = catalogue
                 self.model_version = catalogue.model_version
@@ -731,16 +760,35 @@ class OpenRouterClient:
         waiting for the previous one.
         """
         with _CALL_LOCK:
-            return self._call_alone(body, catalogue, calls, deadline, structured)
+            text, seconds = self._post(CHAT_URL, body, calls, deadline, structured)
+            return self._read_answer(text, seconds, catalogue, calls, structured)
 
-    def _call_alone(
+    def decide(
         self,
         body: Mapping[str, Any],
         catalogue: Catalogue,
         calls: list["Call"],
         deadline: float,
+    ) -> dict[str, Any]:
+        """One Decisions API request within `deadline`; its accounting goes into `calls`.
+
+        Returns the answer document once its provider is checked; reading the
+        answers is the caller's (`app.decisions`). `body` must carry `provider`
+        from `provider_preferences`. Under the same lock and halt as chat calls.
+        """
+        with _CALL_LOCK:
+            text, seconds = self._post(DECISIONS_URL, body, calls, deadline, False)
+            return self._read_decision(text, seconds, catalogue, calls)
+
+    def _post(
+        self,
+        url: str,
+        body: Mapping[str, Any],
+        calls: list["Call"],
+        deadline: float,
         structured: bool,
-    ) -> Answer:
+    ) -> tuple[str, float]:
+        """POST one request (under `_CALL_LOCK`); the halt and the deadline are checked first."""
         transport = self.transport_or_new()
         api_key = self.api_key()
         self.check_not_halted()
@@ -756,7 +804,7 @@ class OpenRouterClient:
             calls.append(Call(seconds=time.perf_counter() - started, structured_output=structured))
 
         try:
-            response = transport.post_json(CHAT_URL, body, api_key=api_key, timeout=remaining)
+            response = transport.post_json(url, body, api_key=api_key, timeout=remaining)
         except httpx.ConnectTimeout:
             raise _out_of_time() from None
         except httpx.TimeoutException:
@@ -770,7 +818,53 @@ class OpenRouterClient:
         seconds = time.perf_counter() - started
         if response.status_code != 200:
             raise upstream_error(response.status_code)
-        return self._read_answer(response.text, seconds, catalogue, calls, structured)
+        return response.text, seconds
+
+    def _verify_provider(self, call: "Call", catalogue: Catalogue) -> None:
+        if call.provider is None or _provider_key(call.provider) not in catalogue.providers:
+            # The request named only strict zero-retention endpoints; an answer from
+            # anywhere else (or from an unnamed provider) is not accepted, and nothing
+            # more is sent until a person has looked at it and restarted the service.
+            _HALT.set()
+            logger.error(
+                "OpenRouter answered from a provider outside the zero-retention list; "
+                "nothing more is sent to OpenRouter until the service is restarted"
+            )
+            raise _provider_unverified()
+
+    def _read_decision(
+        self, text: str, seconds: float, catalogue: Catalogue, calls: list["Call"]
+    ) -> dict[str, Any]:
+        """A Decisions API answer document. The call's accounting goes into `calls` first."""
+        try:
+            document = _decode(text)
+        except ValueError:
+            document = None
+        if not isinstance(document, dict):
+            calls.append(Call(seconds=seconds))
+            raise BackendError(
+                502, "openrouter_bad_response", "The decision model's answer was not JSON."
+            )
+        usage = document.get("usage") if isinstance(document.get("usage"), dict) else {}
+        provider = document.get("provider")
+        call = Call(
+            seconds=seconds,
+            # The Decisions API counts `input_tokens` and `output_tokens` (output is free).
+            prompt_tokens=_count(usage.get("input_tokens")),
+            completion_tokens=_count(usage.get("output_tokens")),
+            cost_usd=_decimal(usage.get("cost")),
+            provider=provider if isinstance(provider, str) else None,
+            model=document.get("model") if isinstance(document.get("model"), str) else None,
+        )
+        calls.append(call)
+        embedded = _embedded_error(document, None)
+        if embedded is not None and call.provider is None and not document.get("answers"):
+            # An error reported with HTTP 200 before any provider answered (no answers at all).
+            raise embedded
+        self._verify_provider(call, catalogue)
+        if embedded is not None:
+            raise embedded
+        return document
 
     def _read_answer(
         self,
@@ -819,16 +913,7 @@ class OpenRouterClient:
         if not usable and call.provider is None:
             # An error reported with HTTP 200 before any provider answered.
             raise embedded or _upstream_failed()
-        if call.provider is None or _provider_key(call.provider) not in catalogue.providers:
-            # The request named only strict zero-retention endpoints; an answer from
-            # anywhere else (or from an unnamed provider) is not accepted, and nothing
-            # more is sent until a person has looked at it and restarted the service.
-            _HALT.set()
-            logger.error(
-                "OpenRouter answered from a provider outside the zero-retention list; "
-                "nothing more is sent to OpenRouter until the service is restarted"
-            )
-            raise _provider_unverified()
+        self._verify_provider(call, catalogue)
         if not usable:
             raise embedded or _upstream_failed()
         assert isinstance(choice, dict)
