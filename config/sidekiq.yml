@@ -1,7 +1,20 @@
 # Sidekiq process configuration. Started by bin/dev (Procfile.dev) with
 # `bundle exec sidekiq -C config/sidekiq.yml`.
-:concurrency: 5
+#
+# Two capsules (thread pools inside the one process, each working its own queues):
+# - the default one, 4 threads, for everything else;
+# - `ocr`, 1 thread, for ReceiptOcrJob's queue: the local OCR model reads one receipt at a time, so parallel
+#   jobs would only queue up inside the ML service and run into the client's timeout.
+# Every thread may hold a database connection, so the threads of all capsules together (5) must not exceed
+# the Active Record pool (`max_connections` in config/database.yml, 5 unless RAILS_MAX_THREADS says
+# otherwise). test/config/sidekiq_config_test.rb checks both.
+:concurrency: 4
 :queues:
   - default
   - mailers
 :timeout: 25
+:capsules:
+  :ocr:
+    :queues:
+      - receipt_ocr
+    :concurrency: 1
