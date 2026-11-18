@@ -4,7 +4,7 @@ import { Controller } from "@hotwired/stimulus"
 // shortcuts.
 //
 //   form data-controller="form-guard" data-form-guard-dirty-value="false" data-form-guard-errors-value="false"
-//     button data-form-guard-target="save" / "accept";  [data-form-guard-target="notice"] hidden
+//     button data-form-guard-target="save" / "groundTruth" / "accept";  [data-form-guard-target="notice"] hidden
 //
 // - Unsaved changes: any input or change in the form (or a row added or removed) marks it dirty; a server
 //   that refused a save renders it dirty already, since the values on screen are not saved.
@@ -17,13 +17,15 @@ import { Controller } from "@hotwired/stimulus"
 //   typed values, and focus goes to the first field marked invalid.
 // - While a submission is on its way the form is inert, so nothing typed then can be lost to the response.
 // - Leaving the page while dirty asks first (a Turbo visit, and closing or reloading the tab).
-// - Enter never submits the form by accident; Ctrl+S (Cmd+S) clicks Save and Ctrl+Enter (Cmd+Enter) clicks
-//   Accept, when the form has them and they are enabled.
-// - After a refused save, focus goes to the first field marked invalid.
+// - Enter never submits the form by accident; Ctrl+S (Cmd+S) clicks Save, Ctrl+Shift+S (Cmd+Shift+S) clicks
+//   Save as ground truth and Ctrl+Enter (Cmd+Enter) clicks Accept, when the form has them and they are
+//   enabled. Missing Shift on the ground-truth shortcut only saves, which is harmless.
+// - After a refused save, focus goes to an element marked data-form-guard-focus (the confirmation of
+//   replacing ground truth), else to the first field marked invalid.
 const LEAVE_MESSAGE = "Leave this page? Your changes are not saved."
 
 export default class extends Controller {
-  static targets = ["save", "accept", "notice"]
+  static targets = ["save", "groundTruth", "accept", "notice"]
   static values = { dirty: Boolean, errors: Boolean }
 
   connect() {
@@ -112,15 +114,18 @@ export default class extends Controller {
   }
 
   focusFirstInvalid() {
-    this.element.querySelector("[aria-invalid='true']")?.focus()
+    const target = this.element.querySelector("[data-form-guard-focus]") || this.element.querySelector("[aria-invalid='true']")
+    target?.focus()
   }
 
   shortcut(event) {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return
 
+    const s = event.key === "s" || event.key === "S"
     let button = null
-    if (event.key === "s" || event.key === "S") button = this.hasSaveTarget ? this.saveTarget : null
-    else if (event.key === "Enter") button = this.hasAcceptTarget ? this.acceptTarget : null
+    if (s && event.shiftKey) button = this.hasGroundTruthTarget ? this.groundTruthTarget : null
+    else if (s) button = this.hasSaveTarget ? this.saveTarget : null
+    else if (event.key === "Enter" && !event.shiftKey) button = this.hasAcceptTarget ? this.acceptTarget : null
     else return
 
     event.preventDefault()

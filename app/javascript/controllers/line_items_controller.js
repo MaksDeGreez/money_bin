@@ -13,6 +13,8 @@ import { Controller } from "@hotwired/stimulus"
 //   row leaves the page. Focus moves to the row that took its place, else the one before, else "Add".
 // - Enter in a row's field (one the combobox did not take): the last row adds a row; any other row moves to
 //   the same field of the next row. Never a form submission.
+// - replaceRows(rows) (called by receipt_review_controller.js): every row is removed as above, and one new row
+//   is added per entry, its fields set by name ({ name: "Bread", amount: "40.40", ... }).
 // Each change dispatches "line-items:changed" (bubbling) for the totals and the unsaved-changes guard.
 export default class extends Controller {
   static targets = ["body", "template", "row", "addButton"]
@@ -45,6 +47,27 @@ export default class extends Controller {
     const next = rows[index] || rows[index - 1]
     if (next) this.focusField(next, 0)
     else if (this.hasAddButtonTarget) this.addButtonTarget.focus()
+    this.changed()
+  }
+
+  replaceRows(rows) {
+    for (const row of this.visibleRows) {
+      if (row.querySelector("input[type='hidden'][name$='[id]']")) {
+        row.querySelector("[data-line-items-destroy]").value = "1"
+        row.hidden = true
+      } else {
+        row.remove()
+      }
+    }
+    for (const values of rows) {
+      const key = `${Date.now()}${this.counter++}`
+      this.bodyTarget.insertAdjacentHTML("beforeend", this.templateTarget.innerHTML.replaceAll("NEW_ROW", key))
+      const row = this.visibleRows.at(-1)
+      for (const [field, value] of Object.entries(values)) {
+        const input = row.querySelector(`input[name$='[${field}]']`)
+        if (input) input.value = value ?? ""
+      }
+    }
     this.changed()
   }
 

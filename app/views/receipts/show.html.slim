@@ -24,12 +24,27 @@ div data-controller="live-refresh" data-live-refresh-pending-value=receipt_ocr_i
       = ui_link_button receipt_path(@next_id, @filter.to_params), variant: :secondary, size: :sm, rel: "next" do
         span Next
         = ui_icon "chevron-right"
+    - if @next_to_label_id
+      / After "Save as ground truth" the focus waits here, so Enter opens the next receipt to label.
+      = ui_link_button receipt_path(@next_to_label_id, @filter.to_params), variant: :primary, size: :sm, autofocus: true,
+        id: "next-to-label", data: { controller: "autofocus" } do
+        span Next receipt to label
+        = ui_icon "chevron-right"
 
 .mt-3.flex.flex-wrap.items-center.gap-2.text-sm.text-ink-muted
   = render "receipts/status_badge", receipt: @receipt
   span = receipt_kind_label(@receipt)
   - if @receipt.batch
     span = "· batch #{@receipt.batch}"
+  - if @receipt.ground_truths.any?
+    = link_to "#ground-truth", class: "inline-flex items-center gap-1", "aria-label": "Ground truth" do
+      = ground_truth_badges(@receipt.ground_truths)
+
+- if @progress
+  p.mt-3.text-sm.text-ink-muted role="status"
+    = "Labelled by hand in this list: #{@progress.labelled} of #{pluralize(@progress.receipts, 'receipt')}, #{pluralize(@progress.labelled_items, 'item')}."
+    - unless @next_to_label_id
+      =< "No other receipt in this list waits to be labelled."
 
 / Two columns: the photos, which stay in view while the data column scrolls, and the data: the review form
 / while a person may edit the receipt (Receipt#reviewable?), or after a refused save (with the typed values);
@@ -37,7 +52,9 @@ div data-controller="live-refresh" data-live-refresh-pending-value=receipt_ocr_i
 .review-layout.mt-8
   .review-photos
     = render "receipts/photos", receipt: @receipt
-  - if @review || @receipt.reviewable?
-    = render "receipts/review", receipt: @receipt, review: @review, filter: @filter, chosen_account: @chosen_account
-  - else
-    = render "receipts/data", receipt: @receipt
+  .min-w-0.space-y-8
+    - if @review || @receipt.reviewable?
+      = render "receipts/review", receipt: @receipt, review: @review, filter: @filter, chosen_account: @chosen_account
+    - else
+      = render "receipts/data", receipt: @receipt
+    = render "receipts/ground_truth", receipt: @receipt, filter: @filter

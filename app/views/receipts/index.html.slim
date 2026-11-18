@@ -11,7 +11,10 @@ div data-controller="live-refresh" data-live-refresh-pending-value=in_flight.to_
     = ui_icon "upload"
     span Upload
 
-= render "receipts/filter", filter: @filter, batches: @batches
+= render "receipts/filter", filter: @filter, batches: @batches, truth_counts: @truth_counts, check_counts: @check_counts
+
+p.mt-4.text-sm.text-ink-muted role="status"
+  = "Labelled by hand: #{@progress.labelled} of #{pluralize(@progress.receipts, 'receipt')} in this list, #{pluralize(@progress.labelled_items, 'item')}."
 
 .mt-6.flex.flex-col.gap-4 class="lg:flex-row lg:items-center lg:justify-between"
   = render "ui/count_tabs", label: "Status",
@@ -45,6 +48,7 @@ div data-controller="live-refresh" data-live-refresh-pending-value=in_flight.to_
           th Status
           th Kind
           th QR
+          th Truth
           th Merchant
           th Date
           th.data-grid-num Total

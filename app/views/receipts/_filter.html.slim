@@ -1,4 +1,5 @@
-/ The list filter, a GET form: its state is the URL (Receipt::Filter).
+/ The list filter, a GET form: its state is the URL (Receipt::Filter). The ground-truth choices show how many
+/ receipts each would list under the other filters.
 = form_with url: receipts_path, method: :get, class: "filter-bar mt-8", role: "search", aria: { label: "Filter receipts" } do |f|
   .field
     = f.label :batch, "Batch"
@@ -12,6 +13,12 @@
   .field
     = f.label :qr, "Tax QR"
     = f.select :qr, options_for_select(Receipt::Filter::QR_CHOICES.invert, filter.qr), include_blank: "With or without"
+  .field
+    = f.label :truth, "Ground truth"
+    = f.select :truth, options_for_select(Receipt::Filter::TRUTH_CHOICES.map { |value, label| [ "#{label} (#{truth_counts.fetch(value)})", value ] }, filter.truth), include_blank: "Any"
+  .field
+    = f.label :check, "Tax-service record"
+    = f.select :check, options_for_select(Receipt::Filter::CHECK_CHOICES.map { |value, label| [ "#{label} (#{check_counts.fetch(value)})", value ] }, filter.check), include_blank: "Checked or not"
   .field
     label.form-check-label
       = f.check_box :incomplete, { checked: filter.incomplete.present? }, "1", nil

@@ -1,6 +1,6 @@
 # The receipts: the list with its filter, one receipt with its photos and its review form, the upload, OCR
-# requests (docs/domain.md, "Who enqueues OCR"), saving and accepting a review (Receipts::Review), and
-# "Enter by hand" (Receipts::EnterByHand).
+# requests (docs/domain.md, "Who enqueues OCR"), saving and accepting a review and saving it as ground truth
+# (Receipts::Review), and "Enter by hand" (Receipts::EnterByHand).
 #
 # The list filter lives in the URL (Receipt::Filter). A receipt page carries the same parameters, so its
 # previous / next links walk the filtered list and "Back" returns to it.
@@ -10,6 +10,10 @@
 # speculative loads send `Sec-Purpose: prefetch`, and a HEAD request shows nothing, so neither queues OCR.
 class ReceiptsController < ApplicationController
   PREFETCH_HEADERS = %w[HTTP_SEC_PURPOSE HTTP_X_SEC_PURPOSE HTTP_PURPOSE].freeze
+  GROUND_TRUTH_NOTICES = {
+    created: "Saved as ground truth.", replaced: "Saved as ground truth: the earlier record is replaced.",
+    unchanged: "Saved. The ground truth already said exactly this, so it is unchanged."
+  }.freeze
   QUEUE_UNAVAILABLE = "OCR could not be queued: the job queue (Redis) cannot be reached. Try again later."
 
   before_action :set_filter, only: %i[ index show read_all update enter_by_hand ]
@@ -17,9 +21,12 @@ class ReceiptsController < ApplicationController
 
   def index
     @pagination = Pagination.new(@filter.scope, page: params[:page])
-    @receipts = @pagination.records.with_attached_images.includes(:ledger_transaction)
+    @receipts = @pagination.records.with_attached_images.includes(:ledger_transaction, :ground_truths)
       .select("receipts.*", "(SELECT COUNT(*) FROM receipt_items WHERE receipt_items.receipt_id = receipts.id) AS items_count")
     @status_counts = @filter.status_counts
+    @truth_counts = @filter.truth_counts
+    @check_counts = @filter.check_counts
+    @progress = @filter.labelling_progress
     @readable_count = Receipts::RequestOcr.readable(@filter.scope.unscope(:order)).count
     @batches = Receipt::Filter.batches
   end
@@ -28,6 +35,11 @@ class ReceiptsController < ApplicationController
     request_first_read unless prefetch? || request.head?
     flash.now[:alert] = @queue_unavailable if @queue_unavailable
     @previous_id, @next_id = @filter.neighbours(@receipt)
+    # Right after "Save as ground truth": the next receipt to label, and how far labelling is in this list.
+    if params[:labelled].present?
+      @next_to_label_id = @filter.next_to_label(@receipt)
+      @progress = @filter.labelling_progress
+    end
     # The account chosen before a Save (the redirect carries it), so a later Accept books where the person said.
     @chosen_account = Account.active.find_by(id: params[:account]) if params[:account].present?
   end
@@ -37,7 +49,10 @@ class ReceiptsController < ApplicationController
   def update
     @review = Receipts::Review.new(@receipt, review_params, intent: params[:intent])
     if @review.call
-      if @review.transaction
+      if @review.ground_truth
+        redirect_to receipt_path(@receipt, @filter.to_params.merge(labelled: 1)), status: :see_other,
+          notice: GROUND_TRUTH_NOTICES.fetch(@review.ground_truth.status)
+      elsif @review.transaction
         redirect_to transaction_path(@review.transaction, @filter.to_params.merge(accepted: 1)), status: :see_other,
           notice: "Accepted into the ledger."
       else

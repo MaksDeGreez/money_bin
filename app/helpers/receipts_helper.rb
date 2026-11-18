@@ -129,6 +129,102 @@ module ReceiptsHelper
     end
   end
 
+  # --- Ground truth ---------------------------------------------------------------------------------------
+
+  GROUND_TRUTH_FIELD_LABELS = {
+    "kind" => "Kind", "merchant" => "Merchant", "fiscal_number" => "Fiscal number", "receipt_number" => "Receipt number",
+    "issued_at" => "Date and time", "total" => "Total", "currency" => "Currency", "card_last4" => "Card digits",
+    "is_return" => "Return", "category_slug" => "Category"
+  }.freeze
+  GROUND_TRUTH_ITEM_LABELS = {
+    "name" => "name", "quantity" => "quantity", "unit_price" => "unit price", "amount" => "amount",
+    "discount" => "discount", "category_slug" => "category"
+  }.freeze
+  # The review form's field ids that "Fill the form from the tax-service record" writes, by document key.
+  GROUND_TRUTH_FORM_FIELDS = {
+    "kind" => "receipt_kind", "merchant" => "receipt_merchant_name", "issued_at" => "receipt_issued_at",
+    "total" => "receipt_total", "currency" => "receipt_currency", "fiscal_number" => "receipt_fiscal_number",
+    "receipt_number" => "receipt_receipt_number", "card_last4" => "receipt_card_last4"
+  }.freeze
+
+  # What filled the form a manual record was corrected from, in words.
+  def ground_truth_prefill_label(record)
+    case record.prefill_kind
+    when :hand then "nothing (entered by hand)"
+    when :dps_xml then "the tax-service record"
+    when :model
+      details = [ record.prefilled_model_version, ("prompt #{record.prefilled_prompt_version}" if record.prefilled_prompt_version) ].compact
+      details.any? ? "#{record.prefilled_by} (#{details.join(', ')})" : record.prefilled_by
+    end
+  end
+
+  def ground_truth_categoriser_label(record)
+    return "no suggestions" if record.categories_prefilled_by.nil?
+    return "suggestions of an unrecorded categoriser" if record.categories_prefilled_by == ReceiptGroundTruth::CATEGORISER_UNKNOWN
+
+    record.categories_prefilled_by
+  end
+
+  # Small badges for a receipt's ground truth (the list and the receipt page): "By hand" for a manual record,
+  # "Tax" for a tax-service record, with its check. `records` are the receipt's ReceiptGroundTruth rows.
+  def ground_truth_badges(records)
+    badges = records.sort_by(&:source).map do |record|
+      if record.manual?
+        ui_badge("By hand", tone: :accent, title: "Labelled by hand")
+      elsif record.check_matches?
+        ui_badge(tone: :solid, title: "Tax-service record, checked: matches the print") { ui_icon("check", size: :xs) + "Tax" }
+      elsif record.check_differs?
+        ui_badge(tone: :danger, title: "Tax-service record, checked: differs from the print") { ui_icon("x", size: :xs) + "Tax" }
+      else
+        ui_badge("Tax", tone: :neutral, title: "Tax-service record, not checked yet")
+      end
+    end
+    safe_join(badges, " ")
+  end
+
+  # What replacing a manual record changes, in one sentence of counts (the confirmation of "Save as ground
+  # truth"): the header fields that differ, the items changed, added and removed, and the record's own fields.
+  def ground_truth_change_summary(result)
+    diff = result.diff
+    parts = []
+    if diff.fields.any?
+      names = diff.fields.map { |key| GROUND_TRUTH_FIELD_LABELS.fetch(key, key).downcase }
+      parts << "#{pluralize(diff.fields.size, 'field')} (#{names.join(', ')})"
+    end
+    items = { "changed" => diff.items_changed, "added" => diff.items_added, "removed" => diff.items_removed }
+      .select { |_, count| count.positive? }
+    parts << "#{items.values.sum == 1 ? '1 item' : "#{items.values.sum} items"} (#{items.map { |what, count| "#{count} #{what}" }.join(', ')})" if items.any?
+    parts << result.meta_changes.map { |key| Receipts::SaveGroundTruth::META_FIELDS.fetch(key) }.join(", ") if result.meta_changes.any?
+    parts.any? ? "What changes: #{parts.join('; ')}." : "The document is the same; only its schema version changes."
+  end
+
+  # A document value for people: money and quantities as stored (decimal strings), a time in Kyiv time.
+  def ground_truth_value(key, value)
+    return tag.span("—", class: "text-ink-muted") if value.nil?
+
+    case key
+    when "issued_at" then receipt_time(Time.iso8601(value))
+    when "kind" then KIND_LABELS.fetch(value, value)
+    when "is_return" then value ? "Yes" : "No"
+    else value.to_s
+    end
+  rescue ArgumentError
+    value.to_s
+  end
+
+  # What "Fill the form from the tax-service record" writes: each header field by its id (an unknown value
+  # empties the field, so nothing of the earlier answer stays) and the item rows, as the form takes them.
+  def ground_truth_fill_data(record)
+    document = record.current_document
+    fields = GROUND_TRUTH_FORM_FIELDS.to_h do |key, id|
+      value = document[key]
+      value = Time.iso8601(value).in_time_zone.strftime("%Y-%m-%dT%H:%M:%S") if key == "issued_at" && value
+      [ id, value.to_s ]
+    end
+    items = document["items"].map { |item| item.slice("name", "quantity", "unit_price", "discount", "amount").transform_values(&:to_s) }
+    { fields:, items: }
+  end
+
   # Why a transaction booked from a receipt needs review, or nil (Receipts::Accept.review_reasons).
   def transaction_review_reasons(transaction)
     return [] unless transaction.needs_review?

@@ -6,10 +6,41 @@ import { Controller } from "@hotwired/stimulus"
 // - "Use the QR value" copies the QR ground truth into its field (the QR columns are never written);
 // - "Use" on an item takes its suggested category, and "Accept suggestions" takes every suggestion at or
 //   above the typed confidence for items that have no category yet (never replacing a chosen one).
+// - "Fill the form from the tax-service record" replaces the header fields and the item rows with the
+//   record's (data-receipt-review-fill-value, prepared by the server in the form's own formats), as unsaved
+//   edits, and sets the hidden filled_from field, so a save records that the record pre-filled the form.
+//   The rows come without categories, for the person to choose. Nothing is saved until the person saves.
 // Taking a suggestion sets the row's category select and fires "change", like a choice by hand: the
 // server then marks the item accepted_by_user.
+const FILL_QUESTION = "Replace the fields and items in this form with the tax-service record? Nothing is saved until you save."
+
 export default class extends Controller {
-  static targets = ["kind", "slipOnly", "itemsOnly", "threshold", "suggestionStatus"]
+  static targets = ["kind", "slipOnly", "itemsOnly", "threshold", "suggestionStatus", "filledFrom", "fillStatus"]
+  static values = { fill: Object }
+  static outlets = ["line-items"]
+
+  fillFromRecord() {
+    const { fields, items } = this.fillValue
+    if (!fields || !this.hasLineItemsOutlet || !window.confirm(FILL_QUESTION)) return
+
+    for (const [id, value] of Object.entries(fields)) {
+      const input = document.getElementById(id)
+      if (!input) continue
+      input.value = value
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    }
+    this.kindChanged()
+    this.lineItemsOutlet.replaceRows(items || [])
+    if (this.hasFilledFromTarget) {
+      this.filledFromTarget.value = "dps_xml"
+      this.filledFromTarget.dispatchEvent(new Event("change", { bubbles: true }))
+    }
+    if (this.hasFillStatusTarget) {
+      const count = (items || []).length
+      this.fillStatusTarget.textContent = `Filled from the tax-service record: ${count} item${count === 1 ? "" : "s"}. ` +
+        "Choose their categories, check them against the photo and save."
+    }
+  }
 
   kindChanged() {
     const slip = this.kindTarget.value === "card_slip"
