@@ -164,7 +164,8 @@ To make the check strict:
 
 - Writes over the API (an agent proposing a draft transaction, accepting a receipt) and the MCP server.
 - Serving receipt photos to an agent.
-- A JSON 404 for unknown `/api` paths (still Rails' HTML 404, as in 0002).
+- A JSON 404 for unknown `/api` paths (still Rails' HTML 404, as in 0002), and a JSON 400 for a query
+  string Rails cannot decode (invalid %-encoding is refused before the controller runs, with an HTML 400).
 - Several values for one filter (`status=draft,needs_review`), sorting options, a total row count.
 - Zero-filled months in the summary, and a summary filtered by category or account.
 

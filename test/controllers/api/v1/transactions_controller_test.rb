@@ -152,6 +152,15 @@ module Api
         assert_invalid_parameter("status")
       end
 
+      # (Bytes that are not UTF-8 never get here: Rails refuses the query string with a 400 first.)
+      test "a NUL character is 422, not a server error" do
+        [ "q=a%00b", "status=draft%00" ].each do |query|
+          get "#{api_v1_transactions_path}?#{query}", headers: bearer(plain_token(:agent_read))
+
+          assert_invalid_parameter(query[/\A\w+/])
+        end
+      end
+
       test "show: an unknown or malformed id is 404, a parameter is 422" do
         [ "0", "999999999", "12abc", "abc" ].each do |id|
           api_get "/api/v1/transactions/#{id}"

@@ -32,13 +32,15 @@ module Api
       end
 
       # The parameter as a non-empty String, or nil when it is absent. An array or hash value
-      # (`status[]=...`) or an empty one (`status=`) is refused.
+      # (`status[]=...`), an empty one (`status=`) and one that is not UTF-8 text are refused.
       def string_parameter(name)
         return nil unless request.query_parameters.key?(name.to_s)
 
         value = request.query_parameters[name.to_s]
         raise InvalidParameter.new(name, "must be a single value") unless value.is_a?(String)
         raise InvalidParameter.new(name, "must not be empty") if value.empty?
+        # PostgreSQL refuses both in a query, which would surface as a server error.
+        raise InvalidParameter.new(name, "must be UTF-8 text without NUL characters") if !value.valid_encoding? || value.include?("\0")
 
         value
       end
