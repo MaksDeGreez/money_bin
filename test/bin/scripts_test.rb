@@ -95,11 +95,44 @@ class BinScriptsTest < ActiveSupport::TestCase
                              "--focus", "the plan's ordering", "--effort", "medium", "--dry-run")
 
     assert status.success?, out
-    assert_match(%r{\A/no/such/codex exec -s read-only -C .+ --color never -o tmp/codex/\S+/review\.md -c model_reasoning_effort="medium" -$}, out)
+    assert_match(%r{\A/no/such/codex exec -s read-only -C .+ --color never -o tmp/codex/\S+/review\.md -m gpt-6\.2-sol -c model_reasoning_effort="medium" -$}, out)
     assert_match(/Review the plan in `README\.md`/, out)
     assert_match(/Extra focus from the requester: the plan's ordering/, out)
     assert_match(/Work read-only/, out)
     assert_match(/^## Verdict$/, out)
+  end
+
+  # The model and the effort are always on the command line, so a review does not depend on the machine's
+  # own Codex config. A flag wins over the environment, the environment over the built-in default.
+  test "codex-review runs on its default model and effort, which the environment or a flag can change" do
+    clean = { "CODEX_BIN" => "/no/such/codex", "CODEX_REVIEW_MODEL" => nil, "CODEX_REVIEW_EFFORT" => nil }
+    ends_with = ->(model, effort) { %r{review\.md -m #{Regexp.escape(model)} -c model_reasoning_effort="#{effort}" -$} }
+
+    out, status = run_script(clean, "bin/codex-review", "--plan", "README.md", "--dry-run")
+    assert status.success?, out
+    assert_match ends_with.call("gpt-6.2-sol", "high"), out.lines.first
+
+    from_env = clean.merge("CODEX_REVIEW_MODEL" => "example-model", "CODEX_REVIEW_EFFORT" => "low")
+    out, = run_script(from_env, "bin/codex-review", "--plan", "README.md", "--dry-run")
+    assert_match ends_with.call("example-model", "low"), out.lines.first
+
+    out, = run_script(from_env, "bin/codex-review", "--plan", "README.md", "--model", "other-model", "--effort", "xhigh", "--dry-run")
+    assert_match ends_with.call("other-model", "xhigh"), out.lines.first
+
+    out, = run_script(clean.merge("CODEX_REVIEW_MODEL" => " ", "CODEX_REVIEW_EFFORT" => ""), "bin/codex-review", "--plan", "README.md", "--dry-run")
+    assert_match ends_with.call("gpt-6.2-sol", "high"), out.lines.first
+  end
+
+  test "codex-review refuses an effort or a model that cannot be one" do
+    clean = { "CODEX_BIN" => "/no/such/codex", "CODEX_REVIEW_MODEL" => nil, "CODEX_REVIEW_EFFORT" => nil }
+
+    out, status = run_script(clean.merge("CODEX_REVIEW_EFFORT" => "maximum"), "bin/codex-review", "--plan", "README.md", "--dry-run")
+    assert_equal 2, status.exitstatus, out
+    assert_match(/CODEX_REVIEW_EFFORT must be one of low, medium, high, xhigh/, out)
+
+    out, status = run_script(clean, "bin/codex-review", "--plan", "README.md", "--model", "a model; rm -rf", "--dry-run")
+    assert_equal 2, status.exitstatus, out
+    assert_match(/not a model id/, out)
   end
 
   # The checks catch mistakes in a query file; they are not a sandbox (the database role is a superuser).

@@ -49,6 +49,13 @@ format, kills the whole process group on a timeout, and exits with a distinct co
 the caller reports "no review this time" instead of retrying. Each run is kept under `tmp/codex/<run>/`
 (the prompt, the transcript, the review), which git ignores.
 
+The wrapper also names the model and its reasoning effort on every call (`gpt-6.2-sol`, `high`), so a
+review is the same whatever the machine's own Codex config says and whoever runs it. `--model` and
+`--effort`, or `CODEX_REVIEW_MODEL` and `CODEX_REVIEW_EFFORT`, change them: a lower effort for a small
+diff, another model when the account's plan changes. A second opinion is worth the most from the
+strongest model the account allows, and a review is a few calls a day, so the default leans to quality
+over speed.
+
 ### Database evidence (`--sql`)
 
 Codex's read-only sandbox blocks every network connection, the PostgreSQL socket included, so on its own
