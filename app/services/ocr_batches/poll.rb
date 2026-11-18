@@ -8,7 +8,7 @@ module OcrBatches
   # with the same growing wait; one batch's failure never stops the others. An error of the ML service is
   # expected (the service is down, batch mode was switched off); anything else is a bug and is also reported.
   #
-  # A batch that cannot be followed for GIVE_UP_AFTER (the longest provider window is four days) is given up:
+  # A batch without a successful check for GIVE_UP_AFTER (the longest provider window is four days) is given up:
   # its waiting receipts are released, and it stays on the list only to be deleted upstream once that works.
   module Poll
     ERROR_WAIT = 5.minutes
@@ -38,7 +38,7 @@ module OcrBatches
       code = error.respond_to?(:code) ? error.code : "internal_error"
       message = error.is_a?(MlClient::Error) ? error.message : "An error in the app (reported)."
       batch.reload.update_columns(check_error_code: code, check_error_message: message.truncate(ReceiptOcrJob::MAX_MESSAGE_LENGTH),
-        last_checked_at: now, checks: batch.checks + 1,
+        checks: batch.checks + 1,
         next_check_at: now + [ Check.interval(batch.checks + 1), ERROR_WAIT ].max, updated_at: now)
       give_up(batch, message, now)
       LiveUpdate.changed(batch)
@@ -46,7 +46,8 @@ module OcrBatches
 
     def give_up(batch, message, now)
       return unless %w[running applying].include?(batch.state)
-      return if (batch.submitted_at || batch.created_at) > now - GIVE_UP_AFTER
+      # `last_checked_at` is the last check that worked (a failed one leaves it).
+      return if (batch.last_checked_at || batch.submitted_at || batch.created_at) > now - GIVE_UP_AFTER
 
       ApplyResults.follow_up(batch, now:)
       batch.release!("failed", "batch_abandoned", "The batch could not be followed for #{GIVE_UP_AFTER.inspect} " \

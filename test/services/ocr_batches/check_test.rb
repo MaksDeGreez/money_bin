@@ -374,7 +374,12 @@ class OcrBatches::CheckTest < ActiveSupport::TestCase
     OcrBatches::Poll.call
     assert @batch.reload.running?
 
-    @batch.update!(submitted_at: 6.days.ago, next_check_at: 1.minute.ago)
+    # An old batch whose last good check was recent is not given up on its first failure.
+    @batch.update!(submitted_at: 6.days.ago, last_checked_at: 1.day.ago, next_check_at: 1.minute.ago)
+    OcrBatches::Poll.call
+    assert @batch.reload.running?
+
+    @batch.update!(last_checked_at: 6.days.ago, next_check_at: 1.minute.ago)
     OcrBatches::Poll.call
 
     @batch.reload

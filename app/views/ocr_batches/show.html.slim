@@ -57,7 +57,7 @@ dl.data-table.mt-6
     dt Sent
     dd = receipt_time(@batch.submitted_at) || "—"
   .data-row
-    dt Last checked
+    dt Last successful check
     dd = receipt_time(@batch.last_checked_at) || "—"
   - if @batch.unfinished?
     .data-row
