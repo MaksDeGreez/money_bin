@@ -32,6 +32,10 @@ gem "sidekiq", "~> 8.1"
 # Password hashing for has_secure_password (the owner's sign-in)
 gem "bcrypt", "~> 3.1"
 
+# The Model Context Protocol server at /mcp, for AI assistants (official Ruby SDK)
+# [https://github.com/modelcontextprotocol/ruby-sdk]
+gem "mcp", "~> 1.10"
+
 # Load .env* files into ENV (.env.example lists the settings)
 gem "dotenv"
 
