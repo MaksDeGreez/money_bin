@@ -14,8 +14,9 @@ module Receipts
   #
   # A waiting OCR request is withdrawn (`ocr_requested_at` cleared) under the same row lock that
   # ReceiptOcrJob takes when it starts, so a queued job later finds an `extracted` receipt with no request and
-  # leaves it alone: the person's typing is never replaced by a late read. A receipt being read
-  # (`processing`) is refused, and so is every other status.
+  # leaves it alone: the person's typing is never replaced by a late read. A receipt waiting in an OCR batch
+  # leaves it the same way (`ocr_batch_id` cleared): the batch's result for it is then not used
+  # (OcrBatches::ApplyResults). A receipt being read (`processing`) is refused, and so is every other status.
   class EnterByHand
     STATUSES = %w[uploaded failed].freeze
 
@@ -28,7 +29,7 @@ module Receipts
         end
 
         started = { "started_at" => Time.current.iso8601, "previous_error" => receipt.ocr_error }.compact
-        receipt.update!(status: :extracted, ocr_requested_at: nil, ocr_raw: { "entered_by_hand" => started })
+        receipt.update!(status: :extracted, ocr_requested_at: nil, ocr_batch_id: nil, ocr_raw: { "entered_by_hand" => started })
       end
       LiveUpdate.changed(receipt)
       receipt

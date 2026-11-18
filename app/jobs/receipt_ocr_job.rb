@@ -61,6 +61,21 @@ class ReceiptOcrJob < ApplicationJob
   retry_on(MlClient::ConnectionError, MlClient::TimeoutError, MlClient::ServerError,
     attempts: ATTEMPTS, wait: :polynomially_longer) { |job, error| job.mark_failed(error) }
 
+  # The photos in upload order, read into memory (at most three phone photos), as the ML service takes them.
+  # OcrBatches::Submit sends a batch's photos the same way.
+  def self.images_of(receipt)
+    attachments = receipt.images_attachments.includes(:blob).order(:id).to_a
+    raise Unprocessable.new("no_images", "the receipt has no photos") if attachments.empty?
+
+    attachments.map do |attachment|
+      blob = attachment.blob
+      MlClient::Image.new(io: StringIO.new(blob.download), filename: blob.filename.to_s,
+        content_type: SERVICE_CONTENT_TYPES.fetch(blob.content_type, blob.content_type))
+    end
+  rescue ActiveStorage::FileNotFoundError
+    raise Unprocessable.new("image_missing", "a photo of the receipt is missing from storage")
+  end
+
   def perform(receipt)
     return unless start(receipt)
 
@@ -115,22 +130,15 @@ class ReceiptOcrJob < ApplicationJob
     # (Receipts::RequestOcr), never by a stray duplicate job: a failed receipt stays failed, and a read result
     # is not replaced unasked. A request older than a day counts as lost, as the page shows it: a job that
     # runs after that leaves the receipt alone, and the person can ask again.
+    # A receipt waiting in an OCR batch is left to the batch (a stray job from a request that counted as lost).
     def startable?(receipt)
+      return false if receipt.in_ocr_batch?
+
       STARTABLE_STATUSES.include?(receipt.status) ||
         (REQUESTED_STATUSES.include?(receipt.status) && receipt.ocr_request_waiting?)
     end
 
-    # The photos in upload order, read into memory (at most three phone photos).
     def images_of(receipt)
-      attachments = receipt.images_attachments.includes(:blob).order(:id).to_a
-      raise Unprocessable.new("no_images", "the receipt has no photos") if attachments.empty?
-
-      attachments.map do |attachment|
-        blob = attachment.blob
-        MlClient::Image.new(io: StringIO.new(blob.download), filename: blob.filename.to_s,
-          content_type: SERVICE_CONTENT_TYPES.fetch(blob.content_type, blob.content_type))
-      end
-    rescue ActiveStorage::FileNotFoundError
-      raise Unprocessable.new("image_missing", "a photo of the receipt is missing from storage")
+      self.class.images_of(receipt)
     end
 end

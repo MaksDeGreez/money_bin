@@ -1,5 +1,6 @@
-# The receipts list filter: batch, status, kind, tax QR, "incomplete", ground truth and the check of a
-# tax-service record, kept in the URL as GET parameters, so a filtered list can be bookmarked, reloaded, and
+# The receipts list filter: batch, status, kind, tax QR, "incomplete", ground truth, the check of a
+# tax-service record and the OCR batch (`ocr_batch`: the receipts sent in one, linked from the batches page),
+# kept in the URL as GET parameters, so a filtered list can be bookmarked, reloaded, and
 # returned to from a receipt.
 #
 #   filter = Receipt::Filter.new(params.permit(*Receipt::Filter::KEYS))
@@ -19,7 +20,7 @@ class Receipt::Filter
   include ActiveModel::Model
   include ActiveModel::Attributes
 
-  KEYS = %i[batch status kind qr incomplete truth check].freeze
+  KEYS = %i[batch status kind qr incomplete truth check ocr_batch].freeze
   KINDS = { "fiscal" => "Fiscal receipt", "card_slip" => "Card slip", "unknown" => "Not known yet" }.freeze
   QR_CHOICES = { "with" => "Has tax-service QR data", "without" => "No tax-service QR data" }.freeze
   # Ground truth: `manual` and `unlabelled` split the list by a person's record (what is left to label);
@@ -38,6 +39,7 @@ class Receipt::Filter
   attribute :incomplete, :boolean
   attribute :truth, :string
   attribute :check, :string
+  attribute :ocr_batch, :integer
 
   def initialize(attributes = {})
     super(attributes.to_h.symbolize_keys.slice(*KEYS))
@@ -48,6 +50,7 @@ class Receipt::Filter
     self.incomplete = nil unless incomplete
     self.truth = nil unless TRUTH_CHOICES.key?(truth)
     self.check = nil unless CHECK_CHOICES.key?(check)
+    self.ocr_batch = nil unless ocr_batch.to_i.positive?
   end
 
   # The matching receipts, newest first.
@@ -68,6 +71,7 @@ class Receipt::Filter
     relation = relation.with_tax_qr if qr == "with"
     relation = relation.without_tax_qr if qr == "without"
     relation = relation.incomplete_only if incomplete
+    relation = relation.where(id: OcrBatchEntry.where(ocr_batch_id: ocr_batch).select(:receipt_id)) if ocr_batch
     relation = truth_scope(relation) unless keys.include?(:truth)
     relation = check_scope(relation) unless keys.include?(:check)
     relation = relation.where(status:) if status && !keys.include?(:status)
@@ -82,7 +86,7 @@ class Receipt::Filter
 
   # The filter as URL parameters, only the values that are set.
   def to_params
-    { batch:, status:, kind:, qr:, incomplete: (incomplete ? "1" : nil), truth:, check: }.compact
+    { batch:, status:, kind:, qr:, incomplete: (incomplete ? "1" : nil), truth:, check:, ocr_batch: }.compact
   end
 
   # The same filter with some values changed (nil removes one).

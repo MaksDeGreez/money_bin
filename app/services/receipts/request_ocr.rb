@@ -9,7 +9,8 @@ module Receipts
   #                                              # `failed` ones that have no items to lose
   #
   # Each returns the ids it queued (empty when there was nothing to do). A `reviewed` receipt is never
-  # queued: a person accepted it into the ledger, and a new OCR result must not change it.
+  # queued: a person accepted it into the ledger, and a new OCR result must not change it. Neither is a receipt
+  # waiting in an OCR batch (`ocr_batch_id`), so opening its page does not start a read one at a time.
   #
   # Once only: the receipts are claimed by setting `ocr_requested_at`, under a row lock, only where it is
   # nil, and the job clears it when it starts. A second request while the first one waits finds it set and
@@ -59,7 +60,10 @@ module Receipts
             .or(relation.where(status: "failed").where.not(id: ReceiptItem.select(:receipt_id)))
         else raise ArgumentError, "unknown request #{kind.inspect}"
         end
-      candidates.where("receipts.ocr_requested_at IS NULL OR receipts.ocr_requested_at < ?", now - STALE_AFTER)
+      # A receipt waiting in an OCR batch is not also read one at a time (docs/domain.md, "OCR in a batch"); the
+      # batch claim writes `ocr_batch_id` under the same row lock as this claim, so the two never both take it.
+      candidates.where(ocr_batch_id: nil)
+        .where("receipts.ocr_requested_at IS NULL OR receipts.ocr_requested_at < ?", now - STALE_AFTER)
     end
 
     def initialize(relation, kind)
