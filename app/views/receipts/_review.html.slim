@@ -13,7 +13,7 @@ ruby:
   slip = form_receipt.card_slip?
   items = form_receipt.association(:items).loaded? ? form_receipt.items.to_a : form_receipt.items.includes(:suggested_category).to_a
   items = [ form_receipt.items.build(discount: 0) ] if items.empty? && !slip && editable && !review
-  account = review&.account || Account.default_for(form_receipt.currency)
+  account = review&.account || local_assigns[:chosen_account] || Account.default_for(form_receipt.currency)
   qr = review_qr_fields(form_receipt)
   currency = form_receipt.currency
   field_errors = form_receipt.errors.attribute_names.excluding(:base).any? || items.any? { |item| item.errors.any? }

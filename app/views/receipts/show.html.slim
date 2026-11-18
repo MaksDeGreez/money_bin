@@ -38,6 +38,6 @@ div data-controller="live-refresh" data-live-refresh-pending-value=receipt_ocr_i
   .review-photos
     = render "receipts/photos", receipt: @receipt
   - if @review || @receipt.reviewable?
-    = render "receipts/review", receipt: @receipt, review: @review, filter: @filter
+    = render "receipts/review", receipt: @receipt, review: @review, filter: @filter, chosen_account: @chosen_account
   - else
     = render "receipts/data", receipt: @receipt

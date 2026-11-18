@@ -8,5 +8,7 @@
       =< receipt_qr_value(qr.field, qr.value, currency)
     = receipt_qr_mark(qr.state) if qr.state == :match || qr.state == :mismatch
     - unless qr.state == :match
+      / Plain data attributes, not Stimulus action params: those go through JSON.parse, which would turn
+      / "150.00" into the number 150 and round a long fiscal number.
       = ui_button "Use the QR value", variant: :link, size: :sm,
-        data: { action: "receipt-review#copyQr", receipt_review_value_param: qr.copy, receipt_review_field_param: target }
+        data: { action: "receipt-review#copyQr", qr_value: qr.copy, qr_field: target }

@@ -18,11 +18,13 @@ export default class extends Controller {
     this.dispatch("kind")
   }
 
-  copyQr({ params: { value, field } }) {
-    const input = document.getElementById(field)
-    if (!input) return
+  // The value is read as text from data-qr-value: a Stimulus param would be JSON-parsed into a Number.
+  copyQr(event) {
+    const { qrValue, qrField } = event.currentTarget.dataset
+    const input = document.getElementById(qrField)
+    if (!input || qrValue === undefined) return
 
-    input.value = value
+    input.value = qrValue
     input.dispatchEvent(new Event("input", { bubbles: true }))
     input.focus()
   }

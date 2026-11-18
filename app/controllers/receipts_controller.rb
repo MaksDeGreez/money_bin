@@ -28,6 +28,8 @@ class ReceiptsController < ApplicationController
     request_first_read unless prefetch? || request.head?
     flash.now[:alert] = @queue_unavailable if @queue_unavailable
     @previous_id, @next_id = @filter.neighbours(@receipt)
+    # The account chosen before a Save (the redirect carries it), so a later Accept books where the person said.
+    @chosen_account = Account.active.find_by(id: params[:account]) if params[:account].present?
   end
 
   # Saves the review form ("Save"), or saves and books it ("Accept", "Accept again": intent=accept). A refusal
@@ -39,7 +41,8 @@ class ReceiptsController < ApplicationController
         redirect_to transaction_path(@review.transaction, @filter.to_params.merge(accepted: 1)), status: :see_other,
           notice: "Accepted into the ledger."
       else
-        redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other, notice: "Saved."
+        redirect_to receipt_path(@receipt, @filter.to_params.merge(account: @review.account&.id).compact), status: :see_other,
+          notice: "Saved."
       end
     else
       @previous_id, @next_id = @filter.neighbours(@receipt)

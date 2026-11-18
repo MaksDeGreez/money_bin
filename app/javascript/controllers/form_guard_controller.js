@@ -11,7 +11,9 @@ import { Controller } from "@hotwired/stimulus"
 // - While dirty, a live refresh of the page (Receipts::LiveUpdate, a Turbo "refresh" stream) is skipped
 //   rather than morphing the form back to the stored values; the notice says the page has news. The live
 //   refresh controller asks for no refresh either (it reads the data-unsaved-changes flag on <html>). The
-//   server still refuses a save from a stale page (the form's lock_version).
+//   server still refuses a save from a stale page (the form's lock_version). The form's own submission is
+//   never held back: a refused save's response (422, 409) must render, with its errors and the typed values.
+// - While a submission is on its way the form is inert, so nothing typed then can be lost to the response.
 // - Leaving the page while dirty asks first (a Turbo visit, and closing or reloading the tab).
 // - Enter never submits the form by accident; Ctrl+S (Cmd+S) clicks Save and Ctrl+Enter (Cmd+Enter) clicks
 //   Accept, when the form has them and they are enabled.
@@ -28,7 +30,7 @@ export default class extends Controller {
       [document, "turbo:before-visit", (event) => this.beforeVisit(event)],
       [window, "beforeunload", (event) => this.beforeUnload(event)],
       [document, "turbo:before-stream-render", (event) => this.beforeStreamRender(event)],
-      [document, "turbo:before-morph-element", (event) => this.beforeMorph(event)],
+      [document, "turbo:submit-start", (event) => this.submitStart(event)],
       [document, "turbo:submit-end", (event) => this.submitEnd(event)],
       [document, "keydown", (event) => this.shortcut(event)],
       [this.element, "input", () => this.markDirty()],
@@ -76,13 +78,14 @@ export default class extends Controller {
     }
   }
 
-  beforeMorph(event) {
-    if (this.dirtyValue && event.target === this.element) event.preventDefault()
+  submitStart(event) {
+    if (event.target === this.element) this.element.inert = true
   }
 
   submitEnd(event) {
     if (event.target !== this.element) return
     this.submitting = false
+    this.element.inert = false
     if (event.detail.success) this.dirtyValue = false
   }
 

@@ -212,7 +212,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_select "[data-money-totals-target=difference]", "0.00 UAH"
     assert_select ".field", text: /Total.*QR code:\s*150.00 UAH.*Mismatch.*Use the QR value/m do
-      assert_select "button[data-receipt-review-value-param=?][data-receipt-review-field-param=?]", "150.00", "receipt_total"
+      assert_select "button[data-qr-value=?][data-qr-field=?]", "150.00", "receipt_total"
     end
     assert_select ".field", text: /Date and time.*QR code:\s*2026-10-08 12:05.*Match/m
     assert_select ".field", text: /Fiscal number.*QR code/m, count: 0
@@ -531,9 +531,13 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
   test "Save stores the corrections and comes back to the receipt with the filter" do
     receipt = receipts(:corner_receipt)
 
-    patch receipt_path(receipt, status: "extracted"), params: { intent: "save", receipt: review_params(receipt, merchant_name: "Corner Shop 2") }
+    patch receipt_path(receipt, status: "extracted"),
+      params: { intent: "save", receipt: review_params(receipt, merchant_name: "Corner Shop 2", account_id: accounts(:cash_uah).id) }
 
-    assert_redirected_to receipt_path(receipt, status: "extracted")
+    assert_redirected_to receipt_path(receipt, status: "extracted", account: accounts(:cash_uah).id)
+    follow_redirect!
+    # The account chosen before the save stays chosen.
+    assert_select "select#receipt_account_id option[selected][value=?]", accounts(:cash_uah).id.to_s
     assert_equal "Saved.", flash[:notice]
     assert_equal "Corner Shop 2", receipt.reload.merchant_name
     assert receipt.extracted?

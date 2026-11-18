@@ -588,7 +588,7 @@ to review" (the next `extracted` receipt of the list's filter after this one, wr
 focus. A `reviewed` receipt changes only through "Accept again" (save and rebook together), never by a plain
 save that would leave items and lines apart. The account a form starts on is the last one used by hand or
 from a receipt (`Account.default_for`, read from the ledger), among the active accounts in the receipt's
-currency.
+currency; an account chosen before a Save stays chosen on the page the save returns to.
 
 **Card slips.** A slip has no items and one category for its total. Switching a receipt with items to
 "Card slip" shows a confirmation in the form; the items are removed only by a save with it checked, and a
@@ -623,9 +623,12 @@ read-only instead of the form.
 **Live refreshes and unsaved work.** A live refresh (see "Live updates") refetches the whole page and morphs
 it, which would put the stored values back into a form a person is typing in. So `form_guard_controller.js`
 marks the form dirty on any change (and a form re-rendered after a refused save starts dirty), and while it
-is dirty it skips Turbo "refresh" stream actions, refuses to morph the form, and stops
-`live_refresh_controller.js` from asking for a refresh; a notice says the page has news. Leaving the page
-while dirty asks first. The server is still the authority: a stale save is refused as above.
+is dirty it skips Turbo "refresh" stream actions and stops `live_refresh_controller.js` from asking for a
+refresh; a notice says the page has news. The form's own submission is never held back: the response of a
+refused save (422, 409) renders with its errors and the typed values. While a submission is on its way the
+form is inert, so nothing typed then is lost to the response. Leaving the page while dirty asks first. The
+server is still the authority: a stale save is refused as above. What the forms post (`receipt[...]`,
+`manual_expense[...]`) is filtered out of the request log.
 
 **Keyboard.** Tab follows the reading order (the header fields, then each item row left to right). Enter
 never submits the form: in the last item row it adds a row (focus on its name), in another row it moves to
