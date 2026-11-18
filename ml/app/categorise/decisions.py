@@ -195,6 +195,11 @@ class _Work:
     questions: int = 0
 
     def key(self, index: int) -> str:
+        """The question key of an item: unique in the receipt, never shown to the model."""
+        return f"line_{index + 1}"
+
+    def state_field(self, index: int) -> str:
+        """The state field that holds the item's name, as the instructions name it."""
         return f"line_{index + 1}" if self.receipt_context else "item"
 
     def has_examples(self, index: int) -> bool:
@@ -202,7 +207,7 @@ class _Work:
         return bool(examples) and any(slug in self.options.labels for _, slug in examples[index])
 
     def instructions(self, index: int, ask: str) -> str:
-        parts = [f"`{self.key(index)}` {ITEM_INTRO}"]
+        parts = [f"`{self.state_field(index)}` {ITEM_INTRO}"]
         if self.receipt_context:
             parts.append(RECEIPT_NOTE)
         if self.has_examples(index):
@@ -363,9 +368,9 @@ class DecisionsCategoriser(Categoriser):
     def _flat(self, work: _Work) -> list[list[Candidate]]:
         criteria = work.options.flat_criteria()
         asks = [
-            _Ask(i, work.key(i), Choice(work.instructions(i, FLAT_ASK.format(key=key)), criteria))
+            _Ask(i, work.key(i), Choice(work.instructions(i, FLAT_ASK.format(key=name)), criteria))
             for i in range(len(work.request.texts))
-            for key in [work.key(i)]
+            for name in [work.state_field(i)]
         ]
         answers = self._ask(work, asks)
         result = []
@@ -383,9 +388,13 @@ class DecisionsCategoriser(Categoriser):
         group_criteria = options.group_criteria()
         texts = work.request.texts
         first = [
-            _Ask(i, key, Choice(work.instructions(i, GROUP_ASK.format(key=key)), group_criteria))
+            _Ask(
+                i,
+                work.key(i),
+                Choice(work.instructions(i, GROUP_ASK.format(key=name)), group_criteria),
+            )
             for i in range(len(texts))
-            for key in [work.key(i)]
+            for name in [work.state_field(i)]
         ]
         answers = self._ask(work, first)
         scores: list[dict[str, float]] = [{} for _ in texts]
@@ -413,7 +422,7 @@ class DecisionsCategoriser(Categoriser):
                 elif name in to_open:
                     key = f"{work.key(ask.item)}_g{ranked.index(name) + 1}"
                     instructions = work.instructions(
-                        ask.item, WITHIN_ASK.format(key=work.key(ask.item), group=name)
+                        ask.item, WITHIN_ASK.format(key=work.state_field(ask.item), group=name)
                     )
                     second.append(
                         _Ask(ask.item, key, Choice(instructions, options.within_criteria(name)))
@@ -462,7 +471,7 @@ class DecisionsCategoriser(Categoriser):
                     category = next(c for c in options.categories if c.slug == slug)
                     key = f"{work.key(index)}_c{rank + 1}"
                     ask = VERIFY_ASK.format(
-                        key=work.key(index),
+                        key=work.state_field(index),
                         label=options.labels[slug],
                         description=options.text(category),
                     )

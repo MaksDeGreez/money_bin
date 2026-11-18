@@ -207,9 +207,27 @@ def test_without_receipt_context_each_item_goes_alone() -> None:
         {"item": TEXTS[0]},
         {"item": TEXTS[1]},
     ]
-    question = transport.posts[0]["body"]["questions"]["item"]
+    question = transport.posts[0]["body"]["questions"]["line_1"]
     assert RECEIPT_NOTE not in question["instructions"]
-    assert "`item`" in question["instructions"]
+    assert "`item`" in question["instructions"] and "line_" not in question["instructions"]
+
+
+def test_without_receipt_context_each_item_keeps_its_own_answer() -> None:
+    choices = {"line_1": "Groceries", "line_2": "Health / Health & pharmacy"}
+    categoriser, _ = make(pick(choices), decisions_receipt_context=False)
+
+    result = categoriser.categorise(CategoriseInput(OPTIONS, TEXTS[:2]))
+
+    assert [item[0].slug for item in result.candidates] == [
+        "groceries/groceries",
+        "health/health-pharmacy",
+    ]
+    two_stage, _ = make(
+        pick({"line_1": "Health"}), decisions_receipt_context=False, decisions_strategy="two-stage"
+    )
+    result = two_stage.categorise(CategoriseInput(OPTIONS, TEXTS[:2]))
+    assert result.candidates[0][0].slug == "health/health-pharmacy"
+    assert result.candidates[1][0].slug == "groceries/groceries"
 
 
 def test_requests_are_cut_by_question_count_and_keep_the_whole_receipt_as_context() -> None:
