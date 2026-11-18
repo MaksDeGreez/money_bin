@@ -34,6 +34,11 @@ Each job has its own backend setting: `OCR_BACKEND` for OCR and
 
 So OCR can run locally while categorisation is hosted, or the other way round.
 
+With `OCR_BACKEND=openrouter` the service can also read many receipts in one
+provider **batch**, at about half the price and with a wait of minutes to a
+day. A batch is not zero-retention, so it is off unless explicitly allowed
+(`OPENROUTER_BATCH_ALLOW_RETENTION`, see "Batch mode").
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)
@@ -111,6 +116,9 @@ model (`python -m evaluation.item_sanity`, below).
 | `OPENROUTER_MAX_TOKENS`        | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer, as `MLX_OCR_MAX_TOKENS`. |
 | `OPENROUTER_OCR_IMAGE_MAX_SIDE` | `2048`                                     | 256 to 4096                 | As `MLX_OCR_IMAGE_MAX_SIDE`, for the photos sent to the hosted model. |
 | `OPENROUTER_STRUCTURED_OUTPUT` | `true`                                      | `true`, `false`             | Ask for the answer's JSON schema when the endpoints support it (see "The openrouter backend"). |
+| `OPENROUTER_BATCH_ALLOW_RETENTION` | `false`                                 | `true`, `false`             | Allow batch mode, which is not zero-retention (see "Batch mode"). Off: every batch endpoint answers 501. |
+| `OPENROUTER_BATCH_MODEL`       | none                                        | a model id with a `:batch` variant | The model batches read receipts with. |
+| `OPENROUTER_BATCH_PROVIDERS`   | none                                        | endpoint slugs, comma-separated | The providers a batch may run on (`provider.only`, no fallbacks). |
 
 An unknown `OCR_BACKEND` or `CATEGORISE_BACKEND` value stops the service at
 startup. The error message lists the valid names. The other `OPENROUTER_*`
@@ -391,6 +399,7 @@ Every error has the same shape:
 | 502    | `openrouter_upstream_error`, `openrouter_unreachable`, `openrouter_bad_response` | `openrouter` only: the hosted service failed (HTTP 408 or 5xx, an error in the answer), cannot be reached, or answered in an unexpected shape. Transient. |
 | 503    | `openrouter_rate_limited`, `openrouter_catalogue_unavailable` | `openrouter` only: rate limited (HTTP 429), or the list of zero-retention endpoints cannot be read (nothing is sent then). Transient. |
 | 504    | `openrouter_timeout`      | `openrouter` only: no answer within the receipt's `OPENROUTER_TIMEOUT`. Transient. |
+| 404, 409, 413, 422, 424, 501, 504 | `batch_*`, `openrouter_batch_*` | Batch mode only: see "Batch mode". |
 | 500    | `internal_error`          | An unexpected error. Details go to the log.    |
 
 The Rails job retries a 5xx other than 501 and treats a 4xx or 501 as
@@ -553,6 +562,158 @@ not charged. Each call records its
 latency, tokens, cost, the provider that served it, the model it ran
 (`model`) and whether structured output was used; the evaluation scripts sum
 them (below).
+
+## Batch mode
+
+`app/batch/`. Off unless explicitly allowed. The reasons are in
+`docs/decisions/0017-ocr-batch-mode.md`.
+
+A hosted provider's batch mode reads many receipts in one submission,
+whenever it has capacity (usually minutes, at most about a day), at about half
+the price of the same requests one at a time. It is for the day thousands of
+receipt photos have to be read and cost matters more than waiting. Only the
+`openrouter` backend has it; every other backend answers 501
+`backend_not_implemented`.
+
+### What it gives up
+
+**A batch is not zero-retention.** OpenRouter keeps a batch's requests (the
+photos and the prompt) and its results for 30 days unless the batch is deleted
+earlier, and the provider holds them while it works. OpenRouter states that
+batch endpoints do not train on the data, that a batch cannot run when the
+account's privacy settings require zero data retention for the provider, and
+none of the `:batch` endpoints is on its zero-retention list. So batch mode
+cannot meet the rule of the synchronous path, and it is a separate opt-in:
+
+- `OPENROUTER_BATCH_ALLOW_RETENTION=true` turns it on. Without it every batch
+  endpoint refuses with 501 `openrouter_batch_not_allowed`, whose message says
+  why, and `/ocr/batches/capability` reports the same as "not available". No
+  setting of the synchronous path turns it on, and nothing here changes the
+  synchronous path: `/ocr` still sends only to strict zero-retention endpoints.
+- The Rails app deletes each batch at OpenRouter as soon as its results are
+  stored (or as soon as it fails or expires). OpenRouter then also deletes the
+  provider's copy where the provider supports it (Anthropic, Fireworks, Google
+  AI Studio, Google Vertex and Mistral); the deletion answer says which
+  (`upstream_status`: `deleted`, `unsupported` or `not_applicable`), and the
+  app records it.
+- A halt of the synchronous path (an answer from a provider outside the
+  zero-retention list) stops batches too, until the service restarts.
+
+**What the owner must arrange in the OpenRouter account** (this code cannot
+and never does change account settings):
+
+1. **Privacy settings.** An account whose privacy settings require zero data
+   retention for the batch provider refuses every batch. Verified on
+   2026-11-18: the submission answered HTTP 422 "Batch and other async APIs
+   retain submitted data regardless of the provider's advertised retention
+   policy, so this endpoint cannot be used with your Zero Data Retention
+   settings" (the service reports it as 424 `openrouter_batch_zdr_required`).
+   Relaxing it for the batch provider also stops the account from enforcing
+   zero retention for anything else sent to that provider; the synchronous
+   path's own enforcement (the request's `zdr` flag and the endpoint list)
+   does not depend on the account setting.
+2. **Inline images.** By default a batch takes only public image URLs. Inline
+   base64 images are "allowlist-only": the account must be on OpenRouter's
+   allowlist, and the provider must be one that reads them (Anthropic up to
+   5 MiB per image, OpenAI 20 MiB, DeepInfra, Mistral, xAI, Google Vertex,
+   Alibaba, Sail Research). **Receipt photos are never put on a public URL**,
+   by any code path: when inline images are refused, the batch fails with
+   `openrouter_batch_inline_images_refused` and the receipts are read one at a
+   time instead. Inline images in a batch are unverified until the account is
+   on the allowlist.
+
+### Settings
+
+- `OPENROUTER_BATCH_ALLOW_RETENTION` (`false`): the opt-in above.
+- `OPENROUTER_BATCH_MODEL` (no default): the model, as its plain slug; it must
+  have a `:batch` variant that takes images on openrouter.ai/models
+  (`?variant=batch`), or batches are refused (`openrouter_batch_model_unsupported`).
+- `OPENROUTER_BATCH_PROVIDERS` (no default): the endpoint slugs a batch may run
+  on, separated by commas (for example `anthropic`). Each must be a provider
+  known to read inline images in a batch (the list above), and at least one of
+  them must serve the model's batch variant.
+- `OPENROUTER_API_KEY`, and the request settings shared with the synchronous
+  path: `OPENROUTER_MAX_TOKENS`, `OPENROUTER_OCR_IMAGE_MAX_SIDE`,
+  `OPENROUTER_STRUCTURED_OUTPUT`.
+
+### What is sent
+
+One provider batch per create request: `{"endpoint": "/v1/chat/completions",
+"model": ..., "provider": {"only": [OPENROUTER_BATCH_PROVIDERS that serve it],
+"allow_fallbacks": false}, "completion_window": "24h", "requests": [...]}`,
+with `requests` last (OpenRouter reads the body as a stream). Each request is
+`{"custom_id": <the caller's key>, "body": <the synchronous request body>}`:
+the same prompt, photos (decoded, turned upright, scaled, re-encoded as new
+JPEGs from their pixels, as inline data URLs), temperature, max tokens and
+answer schema as `/ocr` sends (`receipt_request_body`), without the
+synchronous `provider` preferences, which a batch ignores inside a request
+body. No file name, no app id, no ledger data, no `user`, `metadata` or
+attribution header; the HTTP client is the synchronous path's (no proxy
+settings, no `.netrc`, no redirects, no cookies).
+
+**Keys.** The caller gives every receipt an opaque key of 16 to 64 URL-safe
+characters; the Rails app uses 24 random characters per receipt
+(`OcrBatchEntry.new_custom_id`) and keeps the mapping to the receipt in its own
+database. The service keeps no state between calls: the key travels as the
+`custom_id` and comes back with the result, and everything else is re-read
+from OpenRouter.
+
+### The answers
+
+Each result is read exactly as `/ocr` reads an answer (`parse_answer`, then
+`postprocess`), so the same answer gives the same receipt. The repair pass
+cannot run inside a batch: an answer that does not parse is reported as
+`ocr_parse_failed` with `retry_sync: true`, so a read one at a time (which
+has the repair pass) can try. The provider that ran the batch, and the one each
+answer names, must be one of the allowed providers; any other answer is not
+used (`openrouter_batch_provider_unverified`).
+
+### Limits
+
+- At most 100 receipts per batch (422 `batch_too_many_receipts`), 1 to 3
+  photos each, each photo checked as for `/ocr`; at most 300 MB of photos per
+  create request (413 `batch_upload_too_large`).
+- The provider batch body at most 190 MB (413 `batch_too_large`, checked
+  before anything is sent); OpenRouter's own 200 MB limit and its cap on
+  requests per batch (reported only in its 413) also map to 413
+  `batch_too_large`. The Rails app splits such a batch in two and sends both.
+- Each re-encoded photo must fit the strictest allowed provider's inline limit
+  (422 `batch_image_too_large`; lower `OPENROUTER_OCR_IMAGE_MAX_SIDE`).
+
+### Cost
+
+`POST /ocr/batches/estimate` (and the `estimated_cost_usd` of a submission)
+estimates the cost before anything is sent, from the model's batch price (the
+highest among the allowed endpoints) and predicted tokens: the fixed prompt at
+3 characters per token, 1,600 tokens per photo, and 1,200 answer tokens per
+receipt (`cost_usd`) or `OPENROUTER_MAX_TOKENS` (`cost_usd_max`). It is rough:
+within a factor of two either way, since the image tokens depend on the
+provider and each photo's size. The batch's status then carries OpenRouter's
+`usage.cost` (what was charged so far, the total once completed) and each
+result its own cost where reported, all as exact decimal strings.
+
+### Endpoints
+
+| Method and path | What it does |
+| --- | --- |
+| `GET /ocr/batches/capability` | `available` and, if not, `code` and `message`; the model, its dated slug, the allowed providers, `max_receipts`, `max_upload_bytes`, `retention_days` (30) and the batch prices. Reads only OpenRouter's public model lists, without the key. Always 200. |
+| `POST /ocr/batches/estimate` | JSON `{"receipts": N, "images": M}` (M between N and 3N): the estimate above. |
+| `POST /ocr/batches` | multipart: `manifest` (JSON `[{"key": ..., "images": 1..3}]`, one per receipt) and the `images` parts, receipt by receipt. Builds and submits one batch; 202 with its status. |
+| `GET /ocr/batches/{id}` | the status: `state` (the service's own: `running`, `completed`, `failed`, `expired`, `cancelled`; `completed` only once results are attached), `provider_status` (OpenRouter's), `provider`, `model_name`, `requests` (`total`, `completed`, `failed`; an estimate while running), `cost_usd`, `created_at`, `expires_at`, `finished_at`, `error` (the service's own words for a failed, expired or cancelled batch). |
+| `GET /ocr/batches/{id}/results` | 409 `batch_not_finished` until completed; then `batch` (the status), `results` (per key: `status` `ok` with `ocr`, the `/ocr` answer's shape plus `mode: "batch"`, `batch_id`, `provider`, `cost_usd`, `prompt_tokens`, `completion_tokens`, `finish_reason` (`repaired` false, `elapsed_seconds` null); or `status` `error` with `error: {code, message, retry_sync}`) and `counts` (`ok`, `parse_failed`, `failed`, `ignored`: results whose key is not a valid key or repeats one). |
+| `DELETE /ocr/batches/{id}` | deletes a finished batch at OpenRouter: `{"id", "deleted": true, "openrouter", "upstream_provider", "upstream_status"}`. 409 `batch_running` while it runs (there is no cancel). |
+
+A batch id is checked (1 to 128 letters, digits, `-`, `_`) before it goes into
+a URL. An unknown batch, or one older than 30 days, is 404 `batch_not_found`.
+
+Submitting has one ambiguous case: the photos were sent and the answer was
+lost (a timeout after sending, a cut connection, an OpenRouter 5xx after the
+upload, a 2xx whose batch id cannot be read). OpenRouter may have stored the
+batch, and sending it again could pay for it twice, so the service answers 504
+`openrouter_batch_submit_unknown`; the Rails app then releases the receipts
+and tells the owner to look for the batch in OpenRouter's logs. A connection
+that never opened is 502 `openrouter_unreachable` (nothing was sent; safe to
+retry), a rate limit 503 `openrouter_rate_limited`.
 
 ## Item categorisation
 
@@ -1295,6 +1456,11 @@ app/
     stub.py, mlx.py, openrouter.py, off.py  the categorisers (off: switched off)
     decisions.py   the decision-model categoriser: flat, two-stage, verify
     mlx_token_model.py  the real token model (mlx-vlm); Apple silicon only
+  batch/           batch mode (off unless OPENROUTER_BATCH_ALLOW_RETENTION=true)
+    base.py        the OcrBatches interface and its value types
+    openrouter.py  OpenRouter's Batch API: catalogue, submit, status, results, delete
+    routes.py      the /ocr/batches endpoints
+    schemas.py     their request and response models
   ocr/
     prompt.py      the prompt, the answer schema, PROMPT_VERSION
     parsing.py     the model's text to a raw receipt, with one repair pass
@@ -1339,16 +1505,18 @@ tests/
    does not support yet, and `BackendError` (a status, a code, a short message
    of your own) for a failure the client must tell apart: a 5xx other than
    501 is retried by the Rails job, a 4xx or 501 is not.
-3. If it needs to load something, do it in `start()` (called once when the
+3. Batch mode (`batches()`) is optional: the base class answers 501. A
+   backend that has it returns an `app.batch.base.OcrBatches`.
+4. If it needs to load something, do it in `start()` (called once when the
    service starts) and release it in `stop()`.
-4. Add the class to `BACKENDS` in `app/backends/__init__.py`. It can now be
+5. Add the class to `BACKENDS` in `app/backends/__init__.py`. It can now be
    selected with `OCR_BACKEND`. A categoriser is the same in `app/categorise/`:
    a `Categoriser` with `categorise(request)` returning a `Categorisation`,
    registered in `CATEGORISERS`, selected with `CATEGORISE_BACKEND`; it answers
    with the request's slugs only and uses `prompt.py`.
-5. Read any new settings (model path, API key) in `app/config.py`. Never
+6. Read any new settings (model path, API key) in `app/config.py`. Never
    commit keys or model weights.
-6. Add tests. The tests must not need network access or real model weights.
+7. Add tests. The tests must not need network access or real model weights.
 
 The methods are synchronous. The API runs them in a worker thread, so a slow
 model does not block the server.

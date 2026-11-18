@@ -222,6 +222,15 @@ def _error(status: int, code: str, message: str) -> BackendError:
     return BackendError(status, code, message)
 
 
+def _submit_unknown() -> BackendError:
+    return _error(
+        504,
+        "openrouter_batch_submit_unknown",
+        "The batch was sent but its answer was lost or unreadable: OpenRouter may have accepted "
+        "it. Check the Batches tab of OpenRouter's logs and delete it there if it exists.",
+    )
+
+
 def _not_found() -> BackendError:
     return _error(
         404,
@@ -649,15 +658,19 @@ class OpenRouterBatches(OcrBatches):
                 502, "openrouter_unreachable", "OpenRouter could not be reached."
             ) from None
         except httpx.HTTPError:
-            raise _error(
-                504,
-                "openrouter_batch_submit_unknown",
-                "The batch was sent but its answer was lost: OpenRouter may have accepted it. "
-                "Check the Batches tab of OpenRouter's logs and delete it there if it exists.",
-            ) from None
+            raise _submit_unknown() from None
+        if response.status_code >= 500:
+            # A gateway or server error after the upload may come after the batch was stored:
+            # sending it again could pay for it twice, so the outcome is unknown.
+            raise _submit_unknown()
         if response.status_code not in (200, 202):
             raise batch_upstream_error(response.status_code, response.text)
-        status = self._status_of(self._document(response.text), catalogue)
+        try:
+            document = self._document(response.text)
+        except BackendError:
+            # Accepted (2xx), but the batch id cannot be read.
+            raise _submit_unknown() from None
+        status = self._status_of(document, catalogue)
         return BatchStatus(**{**status.__dict__, "estimated_cost_usd": estimate.cost_usd})
 
     # Status, results, delete ------------------------------------------------------------
