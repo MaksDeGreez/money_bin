@@ -1,0 +1,98 @@
+- content_for :title, "Transaction ##{@transaction.id} · Money Bin"
+- currency = @transaction.account.currency
+- reasons = transaction_review_reasons(@transaction)
+
+= render "ui/page_header", title: "Transaction ##{@transaction.id}",
+  description: [ @transaction.payee&.name || @transaction.merchant, l(@transaction.occurred_on) ].compact.join(" · ") do
+  - if @receipt
+    / No link prefetch: opening a receipt page queues OCR for an unread receipt.
+    nav.flex.flex-wrap.items-center.gap-2 aria-label="Receipts" data-turbo-prefetch="false"
+      = ui_link_button receipt_path(@receipt, @filter.to_params), variant: :ghost, size: :sm do
+        = ui_icon "receipt"
+        span = "Back to #{receipt_label(@receipt)}"
+      - if @next_receipt_id
+        / After "Accept" the focus waits here, so Enter opens the next receipt to review.
+        = ui_link_button receipt_path(@next_receipt_id, @filter.to_params), variant: :primary, size: :sm, autofocus: @accepted, id: "next-receipt" do
+          span Next receipt to review
+          = ui_icon "chevron-right"
+      - elsif @accepted
+        span.text-sm.text-ink-muted No receipt in this list waits for review.
+
+- if @transaction.needs_review?
+  .mt-6
+    = render "ui/callout", tone: :signal do
+      .text-sm
+        p
+          strong Needs review:
+          =< reasons.any? ? reasons.to_sentence : "marked for a person to look at."
+        - if @receipt
+          p.mt-1.text-ink-muted It is booked and counted; correct the receipt and accept it again to clear this.
+- elsif @transaction.draft?
+  .mt-6
+    = render "ui/callout" do
+      p.text-sm A draft: not counted in balances or reports until it is accepted.
+
+dl.data-table.mt-8
+  .data-row
+    dt.data-row-title Amount
+    dd.data-row-value.tabular-nums = receipt_money(@transaction.amount, currency)
+  .data-row
+    dt.data-row-title Status
+    dd.data-row-value = ui_badge(@transaction.status.humanize, tone: { "confirmed" => :accent, "needs_review" => :signal, "draft" => :muted }.fetch(@transaction.status))
+  .data-row
+    dt.data-row-title Account
+    dd.data-row-value = "#{@transaction.account.name} (#{currency})"
+  .data-row
+    dt.data-row-title Date
+    dd.data-row-value
+      = l(@transaction.occurred_on)
+      - if @transaction.occurred_at
+        =< "· #{l(@transaction.occurred_at.in_time_zone, format: '%H:%M')}"
+  .data-row
+    dt.data-row-title Payee
+    dd.data-row-value = @transaction.payee&.name || tag.span("—", class: "text-ink-muted")
+  - if @transaction.merchant.present?
+    .data-row
+      dt.data-row-title Merchant
+      dd.data-row-value = @transaction.merchant
+  - if @transaction.original_amount
+    .data-row
+      dt.data-row-title Original amount
+      dd.data-row-value.tabular-nums = receipt_money(@transaction.original_amount, @transaction.original_currency)
+  - if @transaction.comment.present?
+    .data-row
+      dt.data-row-title Comment
+      dd.data-row-value = @transaction.comment
+  .data-row
+    dt.data-row-title Source
+    dd.data-row-value = @transaction.source.humanize
+  .data-row
+    dt.data-row-title Receipt
+    dd.data-row-value
+      - if @receipt
+        = link_to receipt_label(@receipt), receipt_path(@receipt, @filter.to_params), data: { turbo_prefetch: false }
+      - else
+        span.text-ink-muted —
+
+section.mt-8 aria-labelledby="lines-heading"
+  h2.text-base#lines-heading Lines
+  - if @transaction.transfer_leg?
+    p.mt-2.text-sm.text-ink-muted A transfer leg: it has no lines.
+  - else
+    .data-grid-wrapper.mt-3
+      table.data-grid
+        thead
+          tr
+            th Category
+            th.data-grid-num Amount
+        tbody
+          - @transaction.lines.each do |line|
+            tr
+              td
+                - if line.category
+                  = line.category.full_name
+                - else
+                  span.text-ink-muted No category
+                - if line.legacy_category_path
+                  .text-xs.text-ink-muted = "Before: #{line.legacy_category_path}"
+              td.data-grid-num = receipt_money(line.amount, currency)

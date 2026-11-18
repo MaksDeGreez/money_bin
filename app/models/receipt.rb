@@ -16,6 +16,18 @@
 # nil until OCR reads it, and a person corrects it at review. `incomplete` marks a torn or cut-off receipt
 # whose total or date cannot be read. `card_last4` is the card's last four digits on a slip.
 #
+# A card slip has no items: it is booked as one line, its `total` in its own `category`, which a person
+# chooses at review (Receipts::Accept). `suggested_category` and `suggested_category_confidence` are room for
+# the categoriser's guess for a slip; nothing fills them yet. Both must be categories, not groups.
+#
+# Review (docs/domain.md, "Review"): a person corrects the receipt and its items in the review form
+# (Receipts::Review), which writes the items as nested attributes. `lock_version` turns on Active Record's
+# optimistic locking: the form carries it, so a save from a page rendered before OCR read the receipt again
+# or another tab saved it is refused. Every writer of the reviewable data writes the receipt row, so the
+# version moves: Receipts::ApplyOcr, Receipts::Review, Receipts::EnterByHand, Receipts::Accept, and the
+# unlink when its transaction is destroyed. Rails' `update_all` moves it too (Receipts::RequestOcr's claim),
+# and attaching photos touches the row; `update_columns` (the OCR job's status changes) does not.
+#
 # QR ground truth: `qr_issued_at`, `qr_total`, `qr_fiscal_number` and `qr_receipt_number` are what the
 # tax-service QR code on a fiscal receipt says. They are kept apart from the OCR columns of the same names
 # (without `qr_`), which they are compared with, and only the receipt load writes them (ReceiptLoad); OCR
@@ -55,6 +67,9 @@ class Receipt < ApplicationRecord
   # A receipt `processing` for longer than this counts as stuck (Sidekiq killed mid-job lost the job): "Read
   # again" is offered. One read takes minutes at most, retries included.
   OCR_STUCK_AFTER = 1.hour
+  # The statuses a person reviews in the form: read and waiting (`extracted`), or accepted and changed again
+  # (`reviewed`, booked once more by "Accept again").
+  REVIEWABLE_STATUSES = %w[extracted reviewed].freeze
 
   enum :status, { uploaded: "uploaded", processing: "processing", extracted: "extracted", reviewed: "reviewed", failed: "failed" },
     validate: true
@@ -78,6 +93,9 @@ class Receipt < ApplicationRecord
   has_many :items, -> { order(:position) }, class_name: "ReceiptItem", inverse_of: :receipt, dependent: :destroy
   # What the receipt really says, per source (ReceiptGroundTruth). Only the ground-truth writers change it.
   has_many :ground_truths, class_name: "ReceiptGroundTruth", inverse_of: :receipt, dependent: :delete_all
+  belongs_to :category, optional: true
+  belongs_to :suggested_category, class_name: "Category", optional: true
+  accepts_nested_attributes_for :items, allow_destroy: true
   # Resized copies for the pages, made once by Active Storage and kept (active_storage_variant_records).
   # Always JPEG, so a HEIC photo shows in every browser; metadata stripped. Served by
   # Receipts::PhotosController, never through Rails' own Active Storage routes (they are not drawn).
@@ -106,6 +124,11 @@ class Receipt < ApplicationRecord
   validates :transaction_id, uniqueness: { message: "already has a receipt" }, allow_nil: true
   validate :ledger_transaction_exists, if: -> { transaction_id.present? && will_save_change_to_transaction_id? }
   validate :images_are_photos
+  validates :suggested_category_confidence, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 1 }, allow_nil: true
+  validate { category_is_a_leaf(:category) if category_id.present? && will_save_change_to_category_id? }
+  validate do
+    category_is_a_leaf(:suggested_category) if suggested_category_id.present? && will_save_change_to_suggested_category_id?
+  end
 
   # The fingerprint of `sources`, in any order. Each source is an uploaded file
   # (ActionDispatch::Http::UploadedFile, Rack::Test::UploadedFile), an IO-like object (File, StringIO), an
@@ -182,6 +205,33 @@ class Receipt < ApplicationRecord
     processing? && updated_at < OCR_STUCK_AFTER.ago
   end
 
+  # OCR is queued or running: its result is about to replace the receipt's fields and items, so nobody edits it.
+  def ocr_in_flight?
+    processing? || ocr_request_waiting?
+  end
+
+  # A person may correct it in the review form now: it was read (or started by hand) or accepted, and no OCR
+  # is queued or running.
+  def reviewable?
+    REVIEWABLE_STATUSES.include?(status) && !ocr_in_flight?
+  end
+
+  # What accepting books, as a BigDecimal: the total of a card slip (one line), the items' sum otherwise. nil
+  # for a slip without a total.
+  def booking_total
+    card_slip? ? total : items_total
+  end
+
+  # The items in memory that the next save keeps (the review form marks removed rows for destruction).
+  def kept_items
+    items.reject(&:marked_for_destruction?)
+  end
+
+  # A person started the receipt by hand (Receipts::EnterByHand) instead of an OCR read.
+  def entered_by_hand?
+    ocr_raw.is_a?(Hash) && ocr_raw.key?("entered_by_hand")
+  end
+
   # The reason of the last OCR failure, { "code" => ..., "message" => ... }, or nil.
   def ocr_error
     error = ocr_raw["error"] if ocr_raw.is_a?(Hash)
@@ -194,9 +244,9 @@ class Receipt < ApplicationRecord
     uploaded? && transaction_id.nil? && !items.exists? && !ground_truths.exists?
   end
 
-  # The sum of the item amounts, as a BigDecimal.
+  # The sum of the item amounts, as a BigDecimal (items the review form marked for removal left out).
   def items_total
-    items.sum(BigDecimal("0")) { |item| item.amount || 0 }
+    kept_items.sum(BigDecimal("0")) { |item| item.amount || 0 }
   end
 
   # The printed total minus the items' sum, as a BigDecimal: positive when items are missing (OCR skipped an
@@ -219,6 +269,15 @@ class Receipt < ApplicationRecord
 
     def ledger_transaction_exists
       errors.add(:ledger_transaction, "does not exist") if ledger_transaction.nil?
+    end
+
+    def category_is_a_leaf(name)
+      category = public_send(name)
+      if category.nil?
+        errors.add(name, "does not exist")
+      elsif category.group?
+        errors.add(name, "must be a category, not a group")
+      end
     end
 
     def images_are_photos

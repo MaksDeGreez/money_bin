@@ -1,0 +1,6 @@
+- content_for :title, "Add an expense · Money Bin"
+
+= render "ui/page_header", title: "Add an expense",
+  description: "An expense without a receipt: what was bought, for how much, in which categories. Incomes and transfers are not entered here."
+
+= render "transactions/expense_form", expense: @expense

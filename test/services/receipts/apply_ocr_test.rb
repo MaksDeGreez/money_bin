@@ -88,16 +88,26 @@ class Receipts::ApplyOcrTest < ActiveSupport::TestCase
     assert_not ReceiptItem.exists?(id: old_ids)
   end
 
+  test "a result always moves the receipt's version, so a review form rendered before it cannot save over it" do
+    receipt = receipts(:new_receipt)
+    apply(receipt, ml_ocr_result)
+    version = receipt.reload.lock_version
+
+    apply(receipt, ml_ocr_result)
+
+    assert_equal version + 1, receipt.reload.lock_version
+  end
+
   test "applying the same answer twice gives the same rows" do
     receipt = receipts(:new_receipt)
     apply(receipt, ml_ocr_result)
-    first = [ receipt.reload.attributes.except("updated_at"), item_rows(receipt) ]
+    first = [ receipt.reload.attributes.except("updated_at", "lock_version"), item_rows(receipt) ]
 
     assert_no_difference -> { ReceiptItem.count } do
       apply(receipt, ml_ocr_result)
     end
 
-    assert_equal first, [ receipt.reload.attributes.except("updated_at"), item_rows(receipt) ]
+    assert_equal first, [ receipt.reload.attributes.except("updated_at", "lock_version"), item_rows(receipt) ]
   end
 
   test "works on a failed receipt and on one stuck in processing" do

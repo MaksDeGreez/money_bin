@@ -12,7 +12,8 @@ import { Controller } from "@hotwired/stimulus"
 // - the stream (re)connected while the page shows OCR as queued or running: whatever was broadcast before
 //   the subscription (a fast job right after an upload, a cable that dropped while the laptop slept, a
 //   page restored from Turbo's cache by the back button) was missed.
-// At worst that is one extra request; the page then shows what the database holds.
+// At worst that is one extra request; the page then shows what the database holds. A page whose form has
+// unsaved changes is not refreshed (form_guard_controller.js).
 //
 // The timestamps live in the module, not in the controller: a morph may reconnect the controller in the
 // middle of the visit it has to watch, and a reconnect refresh is asked at most every few seconds, so a
@@ -25,8 +26,12 @@ let listening = false
 const RECONNECT_REFRESH_GAP_MS = 5000
 
 function refresh() {
-  // turbo:load fires before Turbo forgets the finished visit; ask after it has.
-  setTimeout(() => window.Turbo?.session.refresh(document.baseURI, { method: "morph", scroll: "preserve" }), 0)
+  // turbo:load fires before Turbo forgets the finished visit; ask after it has. Never over a form with unsaved
+  // changes (form_guard_controller.js sets the flag): the refresh would morph the typed values away.
+  setTimeout(() => {
+    if (document.documentElement.dataset.unsavedChanges) return
+    window.Turbo?.session.refresh(document.baseURI, { method: "morph", scroll: "preserve" })
+  }, 0)
 }
 
 function listen() {

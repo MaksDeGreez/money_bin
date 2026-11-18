@@ -76,4 +76,50 @@ class UiFormBuilderTest < ActionView::TestCase
   test "hint renders helper text" do
     assert_dom_equal %(<p class="field-hint">Shown in lists.</p>), builder.hint("Shown in lists.")
   end
+
+  test "money_field shows a stored decimal exactly, and the typed text after a refusal" do
+    item = receipt_items(:market_cheese)
+    html = UiFormBuilder.new(:item, item, self, {}).money_field(:amount, "aria-label": "Amount")
+
+    assert_match(/value="960.00"/, html)
+    assert_match(/inputmode="decimal"/, html)
+    assert_match(/class="form-control form-control-num"/, html)
+    assert_match(/value="1"/, UiFormBuilder.new(:item, item, self, {}).money_field(:quantity, places: 3))
+
+    item.amount = "960.004"
+    item.valid?
+    html = UiFormBuilder.new(:item, item, self, {}).money_field(:amount)
+    assert_match(/value="960.004"/, html, "a refused value whose cast equals the stored one is still shown as typed")
+    assert_match(/aria-invalid="true"/, html)
+  end
+
+  test "category_select is a combobox over a hidden grouped select that submits the category" do
+    item = receipt_items(:corner_sandwich)
+    groups = [ [ "Eating out", [ [ "Cafes", 1 ], [ "Takeaway", item.suggested_category_id ] ] ] ]
+    item.category_id = item.suggested_category_id
+
+    html = UiFormBuilder.new(:item, item, self, {}).category_select(:category_id, groups, "aria-label": "Category", suggestion: item.suggested_category)
+
+    assert_dom_equal_fragment = Nokogiri::HTML5.fragment(html)
+    root = assert_dom_equal_fragment.at_css(".combobox[data-controller=combobox]")
+    assert_equal item.suggested_category_id.to_s, root["data-combobox-suggestion-value"]
+    input = root.at_css("input[role=combobox]")
+    assert_equal "Takeaway", input["value"]
+    assert_nil input["name"], "the text field is never submitted"
+    assert_equal "item_category_id_listbox", input["aria-controls"]
+    select = root.at_css("select[name='item[category_id]'][hidden]")
+    assert_equal "-1", select["tabindex"]
+    assert_equal [ "", "1", item.suggested_category_id.to_s ], select.css("option").map { |option| option["value"] }
+    assert_equal item.suggested_category_id.to_s, select.at_css("option[selected]")["value"]
+    assert root.at_css("ul[role=listbox][hidden]#item_category_id_listbox")
+  end
+
+  test "category_select keeps a category that is not among the choices" do
+    item = receipt_items(:market_soap)
+    html = UiFormBuilder.new(:item, item, self, {}).category_select(:category_id, [ [ "Groceries", [ [ "Groceries", 1 ] ] ] ])
+
+    fragment = Nokogiri::HTML5.fragment(html)
+    assert_equal item.category_id.to_s, fragment.at_css("select option[selected]")["value"]
+    assert_equal "Household supplies", fragment.at_css("input[role=combobox]")["value"]
+  end
 end

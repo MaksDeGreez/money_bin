@@ -307,4 +307,65 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
       assert_operator error, :<, Receipts::Accept::Error
     end
   end
+
+  # --- Card slips -------------------------------------------------------------------------------------------
+
+  def slip(category: nil, total: "640.00")
+    receipt = receipts(:corner_receipt)
+    receipt.items.delete_all
+    receipt.update!(kind: :card_slip, card_last4: "4242", total:, category:)
+    receipt.reload
+  end
+
+  test "a card slip is booked as one line: its total in its category" do
+    transaction = accept(slip(category: categories(:cafes)), account: accounts(:card_uah))
+
+    assert_equal BigDecimal("-640.00"), transaction.amount
+    assert_equal [ [ "eating-out/cafes-bars-restaurants", BigDecimal("-640.00") ] ], line_summary(transaction)
+    assert transaction.confirmed?
+    assert receipts(:corner_receipt).reload.reviewed?
+  end
+
+  test "a card slip without a category is booked with an uncategorised line and needs review" do
+    receipt = slip
+    transaction = accept(receipt, account: accounts(:card_uah))
+
+    assert_equal [ [ nil, BigDecimal("-640.00") ] ], line_summary(transaction)
+    assert transaction.needs_review?
+    assert_equal [ "a line has no category" ], Receipts::Accept.review_reasons(receipt, transaction.lines.map { |line| { category_id: line.category_id } })
+  end
+
+  test "a card slip with items is refused and books nothing" do
+    receipt = receipts(:corner_receipt)
+    receipt.update!(kind: :card_slip)
+
+    assert_no_difference -> { Transaction.count } do
+      error = assert_raises(Receipts::Accept::NotAcceptable) { accept(receipt, account: accounts(:card_uah)) }
+      assert_equal "a card slip is booked from its total, but this one has 3 item(s): remove them or make it a fiscal receipt", error.message
+    end
+    assert receipt.reload.extracted?
+  end
+
+  test "a card slip without a total, or with a total of zero or less, is refused" do
+    assert_raises(Receipts::Accept::NotAcceptable) { accept(slip(total: nil), account: accounts(:card_uah)) }
+    error = assert_raises(Receipts::Accept::NothingToBook) { accept(slip(total: "0"), account: accounts(:card_uah)) }
+    assert_equal "the slip's total is 0.0, so there is no expense to book", error.message
+  end
+
+  test "a card slip accepted again keeps its amount and takes a new category" do
+    receipt = slip(category: categories(:cafes))
+    transaction = accept(receipt, account: accounts(:card_uah))
+    receipt.update!(category: categories(:takeaway))
+
+    assert_equal transaction, accept(receipt.reload)
+    assert_equal [ [ "eating-out/takeaway-fast-food", BigDecimal("-640.00") ] ], line_summary(transaction)
+
+    receipt.update!(total: "650.00")
+    error = assert_raises(Receipts::Accept::TotalMismatch) { accept(receipt.reload) }
+    assert_equal "the slip's total is 650.0 but the transaction amount is -640.0", error.message
+  end
+
+  test "a printed total is not compared with items for a slip" do
+    assert_empty Receipts::Accept.review_reasons(slip(category: categories(:cafes)), [ { category_id: 1 } ])
+  end
 end

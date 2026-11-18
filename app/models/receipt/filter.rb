@@ -6,6 +6,7 @@
 #   filter.to_params          # { status: "failed", batch: "october" }, only the values that are set
 #   filter.status_counts      # { "uploaded" => 12, ... } with every filter but the status applied
 #   filter.neighbours(receipt) # [previous, next] receipt ids inside the filter, nil at either end
+#   filter.next_to_review(receipt) # the next receipt of the filter still waiting for review, or nil
 #
 # A value that is not one of the choices is ignored (the list shows everything for that filter), so an
 # old or edited URL never fails.
@@ -76,6 +77,19 @@ class Receipt::Filter
     return [ nil, nil ] unless index
 
     [ (ids[index - 1] if index.positive?), ids[index + 1] ]
+  end
+
+  # The id of the next receipt after `receipt`, in the filtered order, that still waits for a person
+  # (`extracted`), wrapping around to the start; nil when there is none. `receipt` itself may have left the
+  # filter (it was just accepted, so a status filter no longer matches it): its place is found in the list
+  # without the status filter.
+  def next_to_review(receipt)
+    return nil if status && status != "extracted"
+
+    rows = without_status.pluck(:id, :status)
+    index = rows.index { |id, _| id == receipt.id }
+    rows = rows[(index + 1)..] + rows[0...index] if index
+    rows.find { |id, row_status| row_status == "extracted" && id != receipt.id }&.first
   end
 
   # The batches that exist, for the batch select.

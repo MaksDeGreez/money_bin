@@ -1,0 +1,58 @@
+/ Manual entry (ManualExpense): the review form's rows, footer and keyboard, without photos or QR codes.
+/ The rows are not stored: saving books one transaction whose lines are the row amounts summed per category.
+- rows = expense.rows.presence || [ ManualExpense::Row.new ]
+- invalid_rows = rows.any? { |row| row.errors.any? }
+= form_with model: expense, scope: :manual_expense, url: transactions_path, class: "review-form mt-8 max-w-4xl", novalidate: true,
+  data: { controller: "form-guard money-totals", form_guard_dirty_value: expense.errors.any?, form_guard_errors_value: expense.errors.any?,
+    action: "input->money-totals#update line-items:changed->money-totals#update" } do |f|
+  - if expense.errors[:base].any? || invalid_rows || expense.errors.attribute_names.excluding(:base).any?
+    = render "ui/callout", tone: :danger do
+      .space-y-2.text-sm role="alert"
+        - expense.errors[:base].each do |message|
+          p = message
+        - if invalid_rows || expense.errors.attribute_names.excluding(:base).any?
+          p Some fields need a fix: they are marked below. Nothing was saved.
+
+  fieldset.review-section
+    legend.sr-only Expense
+    .review-fields
+      .field
+        = f.label :booking_account_id, "Account"
+        = f.select :booking_account_id, account_choices(nil, Account.find_by(id: expense.booking_account_id)), { include_blank: "Choose an account" }
+        = f.error_for :booking_account_id
+      .field
+        = f.label :payee_name, "Merchant or payee (optional)"
+        = f.text_field :payee_name, autocomplete: "off"
+        = f.error_for :payee_name
+      .field
+        = f.label :occurred_on, "Date"
+        = f.date_field :occurred_on
+        = f.error_for :occurred_on
+      .field
+        = f.label :occurred_time, "Time (optional, Kyiv)"
+        = f.time_field :occurred_time
+        = f.error_for :occurred_time
+
+  section.review-section data-controller="line-items" data-action="keydown->line-items#keydown" aria-labelledby="expense-rows-heading"
+    h2.text-base#expense-rows-heading What was bought
+    p.text-sm.text-ink-muted Rows in one category become one line of the transaction; the rows themselves are not kept.
+    .line-editor.mt-3
+      .line-editor-head.line-row-simple aria-hidden="true"
+        span Name (optional)
+        span.text-right Amount
+        span Category
+        span
+      div data-line-items-target="body"
+        - rows.each_with_index do |row, index|
+          = render "transactions/expense_row", f:, row:, index:, label: "row #{index + 1}"
+      template data-line-items-target="template"
+        = render "transactions/expense_row", f:, row: ManualExpense::Row.new, index: "NEW_ROW", label: "new row"
+    = ui_button variant: :ghost, size: :sm, class: "mt-2", data: { action: "line-items#add", line_items_target: "addButton" } do
+      = ui_icon "plus"
+      span Add a row
+
+  = render "ui/totals_footer", figures: [ { label: "Expense", value: receipt_money(expense.rows.select(&:valid?).sum(BigDecimal("0"), &:decimal_amount)), target: "sum" } ],
+    note: "Enter in the last row adds a row. ⌘ works for Ctrl." do
+    = f.button nil, name: "intent", value: "save", variant: :primary, data: { form_guard_target: "save", turbo_submits_with: "Saving…" } do
+      span Save expense
+      = ui_kbd "Ctrl", "S", class: "hidden sm:inline-flex"

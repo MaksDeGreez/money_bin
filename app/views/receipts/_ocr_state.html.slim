@@ -1,5 +1,6 @@
 / Where the receipt is in OCR, and "Read again" where it is allowed (docs/domain.md, "Who enqueues OCR").
 / A request older than a day counts as lost, so the button comes back (Receipt#ocr_request_waiting?).
+/ "Enter by hand" (Receipts::EnterByHand) opens the review form on an unread or failed receipt.
 - waiting = receipt.ocr_request_waiting?
 - if receipt.processing? && !receipt.ocr_stuck?
   = render "ui/callout", tone: :signal do
@@ -23,13 +24,16 @@
           span Read again
 - elsif receipt.uploaded?
   = render "ui/callout" do
-    p.text-sm
-      - if waiting
-        | Queued for OCR at
-        =< receipt_time(receipt.ocr_requested_at)
-        | . The OCR queue reads one receipt at a time; this page updates when it starts.
-      - else
-        | Not read yet, and not queued. Reload this page to queue it.
+    .space-y-3
+      p.text-sm
+        - if waiting
+          | Queued for OCR at
+          =< receipt_time(receipt.ocr_requested_at)
+          | . The OCR queue reads one receipt at a time; this page updates when it starts.
+        - else
+          | Not read yet, and not queued. Reload this page to queue it.
+      = render "receipts/enter_by_hand_button", receipt:,
+        confirm: (waiting ? "Enter this receipt by hand? The waiting OCR request is withdrawn." : nil)
 - elsif receipt.failed?
   = render "ui/callout", tone: :danger do
     .space-y-3
@@ -53,6 +57,8 @@
         = ui_button_to read_receipt_path(receipt), variant: :secondary, size: :sm do
           = ui_icon "refresh-cw"
           span Read again
+      - unless waiting
+        = render "receipts/enter_by_hand_button", receipt:, confirm: nil
 - elsif receipt.extracted?
   - if waiting
     = render "ui/callout" do
@@ -62,7 +68,7 @@
         | . The items will be replaced by the new result.
   - else
     .flex.flex-wrap.items-center.justify-between.gap-3
-      p.text-sm.text-ink-muted Read by OCR; waiting for review.
+      p.text-sm.text-ink-muted = receipt.entered_by_hand? ? "Entered by hand; waiting for review." : "Read by OCR; waiting for review."
       = ui_button_to read_receipt_path(receipt), variant: :ghost, size: :sm,
         form: { data: { turbo_confirm: "Read this receipt again? Its items are replaced by the new OCR result." } } do
         = ui_icon "refresh-cw"

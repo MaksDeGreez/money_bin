@@ -311,6 +311,7 @@ class ReceiptTest < ActiveSupport::TestCase
   end
 
   test "index filters by kind and by tax QR" do
+    receipts(:corner_receipt).update_columns(kind: "card_slip")
     assert_equal [ receipts(:market_receipt) ], Receipt.fiscal.to_a
     assert_equal [ receipts(:corner_receipt) ], Receipt.card_slip.to_a
     assert_equal [ receipts(:new_receipt), receipts(:failed_receipt) ].sort_by(&:id), Receipt.kind_unknown.order(:id).to_a
@@ -384,6 +385,55 @@ class ReceiptTest < ActiveSupport::TestCase
     assert receipt.extracted?
     assert_equal 3, receipt.items.count
     assert Receipts::Accept.call(receipt, account: accounts(:card_uah)).persisted?
+  end
+
+  test "destroying the transaction moves the receipt's version, so a form rendered while it was booked is stale" do
+    receipt = receipts(:market_receipt)
+
+    transactions(:market_split).destroy!
+
+    assert_equal 1, receipt.reload.lock_version
+  end
+
+  test "a card slip's category and its suggestion must be categories, not groups; the confidence is 0..1" do
+    receipt = receipts(:corner_receipt)
+
+    receipt.category = categories(:groceries_group)
+    receipt.suggested_category = categories(:eating_out)
+    receipt.suggested_category_confidence = 1.5
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:category], "must be a category, not a group"
+    assert_includes receipt.errors[:suggested_category], "must be a category, not a group"
+    assert receipt.errors[:suggested_category_confidence].any?
+
+    receipt.assign_attributes(category: categories(:cafes), suggested_category: categories(:takeaway), suggested_category_confidence: 0.4)
+    assert receipt.valid?
+    receipt.category_id = Category.maximum(:id) + 1
+    assert_not receipt.valid?
+    assert_includes receipt.errors[:category], "does not exist"
+  end
+
+  test "the database checks the suggested category's confidence" do
+    assert_violates("receipts_suggested_category_confidence_range") { receipts(:new_receipt).update_column(:suggested_category_confidence, 1.01) }
+  end
+
+  test "a receipt is reviewable when read or accepted and no OCR is queued or running" do
+    assert receipts(:corner_receipt).reviewable?
+    assert receipts(:market_receipt).reviewable?
+    assert_not receipts(:new_receipt).reviewable?
+    assert_not receipts(:failed_receipt).reviewable?
+
+    receipts(:corner_receipt).update_columns(ocr_requested_at: 1.minute.ago)
+    assert_not receipts(:corner_receipt).reviewable?
+  end
+
+  test "what accepting books: the items' sum, or a slip's total" do
+    receipt = receipts(:corner_receipt)
+    assert_equal BigDecimal("152.50"), receipt.booking_total
+
+    receipt.kind = :card_slip
+    receipt.total = BigDecimal("99.90")
+    assert_equal BigDecimal("99.90"), receipt.booking_total
   end
 
   test "a receipt on a destroyed transfer leg goes back to review, also through the other leg" do

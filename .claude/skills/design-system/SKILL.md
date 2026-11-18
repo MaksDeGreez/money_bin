@@ -14,11 +14,11 @@ The system is already in place. This skill is for **extending** it (a new primit
 | Piece | Path |
 |---|---|
 | Tokens, dark mode, base element styles, component classes | `app/assets/tailwind/design-system.css` (imported by `app/assets/tailwind/application.css`) |
-| Helpers | `app/helpers/ui_helper.rb`: `ui_button`, `ui_link_button`, `ui_button_to`, `ui_button_classes`, `ui_badge`, `ui_icon`, `ui_flash_tone`, `ui_classes`; variant maps `BUTTON_VARIANTS`, `BUTTON_SIZES`, `BADGE_TONES`, `CALLOUT_TONES`, `ICON_SIZES` |
-| Partials | `app/views/ui/_page_header`, `_callout`, `_flash`, `_theme_toggle`, `_pagination`, `_count_tabs` |
-| Forms | `app/form_builders/ui_form_builder.rb`, the default builder of `form_with` (set in `ApplicationController`) |
-| Behaviour | `app/javascript/controllers/theme_controller.js`, `clipboard_controller.js` |
-| CSS-only components | `.filter-bar` (a GET filter form above a list), `.photo-thumb` / `.photo-frame` (photos), `.listing` / `.listing-item`, `.data-table` / `.data-row` (definition list), `.data-grid-wrapper > table.data-grid` with `.data-grid-num`, `.data-grid-link`, `.data-grid-actions`, `.data-grid-group`, `.data-grid-sub`, `.body-content` (long prose) |
+| Helpers | `app/helpers/ui_helper.rb`: `ui_button`, `ui_link_button`, `ui_button_to`, `ui_button_classes`, `ui_badge`, `ui_icon`, `ui_kbd`, `ui_flash_tone`, `ui_classes`; variant maps `BUTTON_VARIANTS`, `BUTTON_SIZES`, `BADGE_TONES`, `CALLOUT_TONES`, `ICON_SIZES` |
+| Partials | `app/views/ui/_page_header`, `_callout`, `_flash`, `_theme_toggle`, `_pagination`, `_count_tabs`, `_totals_footer` |
+| Forms | `app/form_builders/ui_form_builder.rb`, the default builder of `form_with` (set in `ApplicationController`); `money_field`, `category_select` (combobox) |
+| Behaviour | `app/javascript/controllers/theme_controller.js`, `clipboard_controller.js`, `combobox_controller.js`, `line_items_controller.js`, `money_totals_controller.js`, `form_guard_controller.js` |
+| CSS-only components | `.filter-bar` (a GET filter form above a list), `.photo-thumb` / `.photo-frame` (photos), `.listing` / `.listing-item`, `.data-table` / `.data-row` (definition list), `.data-grid-wrapper > table.data-grid` with `.data-grid-num`, `.data-grid-link`, `.data-grid-actions`, `.data-grid-group`, `.data-grid-sub`, `.body-content` (long prose), `.kbd`, `.form-control-compact` / `.form-control-num`, `.combobox*`, `.review-layout` / `.review-photos` / `.review-section` / `.review-fields` / `.field-qr`, `.line-editor` / `.line-row-receipt` / `.line-row-simple` (container queries), `.totals-footer` |
 | Fonts and the theme boot script | `app/views/layouts/_head.html.slim` |
 | Logo and favicons | `design/favicon/source.png`, `bin/favicon`, `app/assets/images/logo.png` (see `README.md`, "Logo and favicons") |
 | Rules for agents | `CLAUDE.md`, the "Views" and "Tailwind utilities" bullets under "Conventions"; `.claude/agents/implementer.md` and `reviewer.md` repeat the short form |

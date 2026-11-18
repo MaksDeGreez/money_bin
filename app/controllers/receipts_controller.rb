@@ -1,5 +1,6 @@
-# The receipts: the list with its filter, one receipt with its photos and stored data (read-only for now),
-# the upload, and OCR requests (docs/domain.md, "Who enqueues OCR").
+# The receipts: the list with its filter, one receipt with its photos and its review form, the upload, OCR
+# requests (docs/domain.md, "Who enqueues OCR"), saving and accepting a review (Receipts::Review), and
+# "Enter by hand" (Receipts::EnterByHand).
 #
 # The list filter lives in the URL (Receipt::Filter). A receipt page carries the same parameters, so its
 # previous / next links walk the filtered list and "Back" returns to it.
@@ -11,8 +12,8 @@ class ReceiptsController < ApplicationController
   PREFETCH_HEADERS = %w[HTTP_SEC_PURPOSE HTTP_X_SEC_PURPOSE HTTP_PURPOSE].freeze
   QUEUE_UNAVAILABLE = "OCR could not be queued: the job queue (Redis) cannot be reached. Try again later."
 
-  before_action :set_filter, only: %i[ index show read_all ]
-  before_action :set_receipt, only: %i[ show read ]
+  before_action :set_filter, only: %i[ index show read_all update enter_by_hand ]
+  before_action :set_receipt, only: %i[ show read update enter_by_hand ]
 
   def index
     @pagination = Pagination.new(@filter.scope, page: params[:page])
@@ -27,6 +28,34 @@ class ReceiptsController < ApplicationController
     request_first_read unless prefetch? || request.head?
     flash.now[:alert] = @queue_unavailable if @queue_unavailable
     @previous_id, @next_id = @filter.neighbours(@receipt)
+    # The account chosen before a Save (the redirect carries it), so a later Accept books where the person said.
+    @chosen_account = Account.active.find_by(id: params[:account]) if params[:account].present?
+  end
+
+  # Saves the review form ("Save"), or saves and books it ("Accept", "Accept again": intent=accept). A refusal
+  # renders the page again with the person's values and the reasons, never a blank form.
+  def update
+    @review = Receipts::Review.new(@receipt, review_params, intent: params[:intent])
+    if @review.call
+      if @review.transaction
+        redirect_to transaction_path(@review.transaction, @filter.to_params.merge(accepted: 1)), status: :see_other,
+          notice: "Accepted into the ledger."
+      else
+        redirect_to receipt_path(@receipt, @filter.to_params.merge(account: @review.account&.id).compact), status: :see_other,
+          notice: "Saved."
+      end
+    else
+      @previous_id, @next_id = @filter.neighbours(@receipt)
+      render :show, status: (@review.conflict? ? :conflict : :unprocessable_content)
+    end
+  end
+
+  # "Enter by hand": a failed or unread receipt opens in the review form, empty, for a person to type.
+  def enter_by_hand
+    Receipts::EnterByHand.call(@receipt)
+    redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other, notice: "Type the receipt in below."
+  rescue Receipts::EnterByHand::NotAllowed => error
+    redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other, alert: "Not entered by hand: #{error.message}."
   end
 
   def new
@@ -92,6 +121,10 @@ class ReceiptsController < ApplicationController
 
     def receipt_params
       params.fetch(:receipt, {}).permit(:batch, images: [])
+    end
+
+    def review_params
+      params.fetch(:receipt, {}).permit(*Receipts::Review.permitted_params)
     end
 
     def request_first_read

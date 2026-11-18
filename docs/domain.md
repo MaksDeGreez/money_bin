@@ -16,7 +16,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
 | `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
-| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at` |
+| `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
 | `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `accepted_by_user` |
 
@@ -91,6 +91,10 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   stable number the receipt ingest tool gave the receipt (`rcpt_000123`, see "Receipt load"); nil for a
   receipt uploaded in the app. `sha256` is the photo fingerprint. `ocr_requested_at` is when OCR was last
   queued for the receipt, nil when no request waits (see "Who enqueues OCR").
+  `category` is a card slip's one category: a slip has no items and is booked as one line, its `total` in
+  this category; a person chooses it at review, and only a `card_slip` keeps one. `suggested_category` and
+  `suggested_category_confidence` (0..1) are room for the categoriser's guess for a slip; nothing fills them
+  yet. `lock_version` is the receipt's version, which the review form carries (see "Review").
 - **Receipt item.** `amount` is what was paid for the item after its `discount`. It is normally positive,
   but it can be negative (a bottle deposit returned) or zero (a free item). `suggested_category` and
   `confidence` (0..1) are the categoriser's guess. `category` is the accepted category, and
@@ -137,6 +141,10 @@ listed, the model gives a readable error and the database is the safety net for 
 | A receipt's `card_last4` is exactly four digits when present | Model + DB (`receipts_card_last4_format`) |
 | A receipt's `ingest_id` is `rcpt_` and six or more digits, and unique when present | Model + DB (`receipts_ingest_id_format`, partial unique index) |
 | A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
+| A receipt's `category` and `suggested_category` are categories, not groups; `suggested_category_confidence` is in 0..1 | Model; DB for the range (`receipts_suggested_category_confidence_range`) |
+| A card slip is booked from its total and its one category; a slip with items, or without a total, is refused | Model only (`Receipts::Accept`) |
+| A review save never writes `ocr_raw`, `ocr_model_*`, the QR ground truth, `ingest_id`, `batch`, the photos or `status` | Model only (`Receipts::Review` assigns only the form's fields) |
+| A review form rendered from an older version of the receipt (or of its booked transaction) saves nothing | Model only (`Receipts::Review` compares `lock_version` under a row lock) |
 | OCR never writes the QR ground truth (`qr_*`, `qr_payload`), `ingest_id`, `batch` or `incomplete` | Model only (`Receipts::ApplyOcr` assigns only its own fields) |
 | A receipt is queued for OCR at most once while a request waits, and a `reviewed` one never | Model only (`Receipts::RequestOcr`, under a row lock; `ReceiptOcrJob` checks again when it starts) |
 | A ground-truth document has exactly the OCR receipt's keys, money as two-place and quantities as three-place decimal strings (never JSON numbers) | Model only (`ReceiptGroundTruth::Document`); DB checks that it is an object with an `items` list (`receipt_ground_truths_document_shape`) |
@@ -199,6 +207,8 @@ read, and only the person or the client can decide what to do with their change.
 
 - a browser form reloads the transaction and shows "changed somewhere else, check and save again"; the form
   carries `lock_version` as a hidden field, so a page that was open for an hour also conflicts;
+- the receipt review form carries the receipt's `lock_version` and, for an accepted receipt, its
+  transaction's; a mismatch saves nothing and keeps the typed values on the page (see "Review");
 - the API (when it writes transactions) answers `409 Conflict` with the code `stale_transaction`, and the
   client reads the row again;
 - a service that reads and writes in one go (`Receipts::Accept`) takes the row lock first
@@ -298,6 +308,7 @@ Who moves the status:
 | `failed`, `extracted` | `processing` | `ReceiptOcrJob`, when it starts on a request to read it again (`ocr_requested_at` set) |
 | `processing` | `extracted` | `Receipts::ApplyOcr`, with the result |
 | `processing` | `failed` | `ReceiptOcrJob`, on a permanent failure or when the retries run out |
+| `uploaded`, `failed` | `extracted` | `Receipts::EnterByHand` ("Enter by hand": a person types it) |
 | `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
 | `reviewed` | `extracted` | destroying its transaction (the receipt is unlinked, keeps its items and can be accepted again) |
 
@@ -356,8 +367,9 @@ this takes hours. The confirmation and the notice say so.
   number. The filter (`Receipt::Filter`: batch, status, kind, tax QR, incomplete) is a GET form; its state
   is the URL, carried by every link (rows, pages, counts, receipt pages and back). A value that is not a
   choice is ignored. The counts per status apply every filter but the status.
-- `/receipts/:id`: the photos in upload order next to the data, read-only for now (the review form comes
-  later). Previous / next walk the filtered list (the ids of the whole filter, plucked: cheap at this
+- `/receipts/:id`: the photos in upload order next to the review form (see "Review") while the receipt is
+  reviewable (`extracted` or `reviewed`, no OCR queued or running), and next to the stored data, read-only,
+  otherwise. Previous / next walk the filtered list (the ids of the whole filter, plucked: cheap at this
   size). A `failed` receipt shows the stored failure code and message.
 - `/receipts/new`: one to three photos and an optional batch, sent with the form (no direct upload: Rails'
   Active Storage routes are not drawn). The model's rules are the form's errors; a photo set that was
@@ -396,7 +408,8 @@ leave "Reading" on the page. Turbo drops a refresh that arrives while a visit is
 after an upload, a cable that dropped while the laptop slept, a page restored by the back button). So the
 pages carry a small Stimulus controller (`live_refresh_controller.js`) that asks for one more refresh once
 such a visit is done, and whenever the stream (re)connects while the page shows OCR queued or running. A failed broadcast is logged and
-reported, never raised into the job.
+reported, never raised into the job. A refresh never lands on a review form with unsaved changes (see
+"Review").
 
 Only a signed-in browser opens the WebSocket (`ApplicationCable::Connection` reads the same signed
 session cookie as the pages), and a stream is joined only through a name the app signed. The connection
@@ -496,16 +509,21 @@ read stays nil (the others are still stored), and a receipt whose photos carry t
 ### Acceptance
 
 When a receipt is accepted, the transaction's lines are the item amounts summed per category.
-`Receipts::Accept.call(receipt, account: nil)` does this and returns the transaction:
+`Receipts::Accept.call(receipt, account: nil)` does this and returns the transaction. The grouping is
+`CategoryLines` (`app/services/category_lines.rb`), the same code manual entry books with:
 
 - items are grouped by `category`; items with no category form one line with no category. A suggestion is
   used only once it was copied to `category`. A category whose items sum to zero (a free item) adds no
   line, and a category whose items sum below zero (a deposit returned) gives a line of the opposite sign;
-- a receipt that already has a transaction: the items must sum to the absolute value of its amount, or
+- a card slip (`kind` `card_slip`) has no items: it is booked as one line, its `total` in the receipt's
+  own `category` (no category gives a line with none). A slip that still has items is refused
+  (`NotAcceptable`: remove them or make it a fiscal receipt), and so is one without a total. "The booked
+  total" below is the items' sum, or a slip's total (`Receipt#booking_total`);
+- a receipt that already has a transaction: the booked total must be the absolute value of its amount, or
   the service raises `TotalMismatch` (it carries both figures). The lines are replaced, not added, and carry
   the transaction's sign. An `account:` argument, if given, must be that transaction's account;
 - a receipt with no transaction: `account:` is required. The service creates an expense: amount = minus
-  the items' sum, `source: receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
+  the booked total, `source: receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
   `occurred_at` = `issued_at`, `merchant` = `merchant_name`. When the receipt currency is known, it must be
   the account currency;
 - the payee is the one named by `merchant_name`, through `Payee.find_or_create_by_name!`: the payee
@@ -514,7 +532,9 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
   payee is filled. A blank merchant name sets no payee. The payee is written in the service's database
   transaction, so a failed acceptance leaves no new payee, and accepting again finds the same one;
 - the transaction becomes `needs_review` when a line has no category, or when the receipt's printed
-  `total` is known and the items do not sum to it (OCR may have skipped an unreadable line). The items are
+  `total` is known and the items do not sum to it (OCR may have skipped an unreadable line; never for a
+  slip, whose line is its total). `Receipts::Accept.review_reasons` says why in words, for the
+  transaction page. The items are
   still booked: the person may have changed them on purpose. `receipt.total_difference` (the total minus
   the items' sum, nil when the total is unknown) and `receipt.items_match_total?` let a screen show the gap.
   Otherwise the transaction becomes `confirmed`;
@@ -527,9 +547,115 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
 - it runs in one database transaction with the receipt row locked, so a failure changes nothing and two
   parallel calls cannot book one receipt twice. Calling it twice gives the same result.
 
-Every refusal raises a subclass of `Receipts::Accept::Error`: `NotAcceptable` (status, no items, or linked
-to a transfer leg), `AccountRequired`, `CurrencyMismatch`, `NothingToBook` (the items sum to zero or less,
-so there is no expense) and `TotalMismatch`.
+Every refusal raises a subclass of `Receipts::Accept::Error`: `NotAcceptable` (status, no items, a slip
+with items or without a total, or linked to a transfer leg), `AccountRequired`, `CurrencyMismatch`,
+`NothingToBook` (the booked total is zero or less, so there is no expense) and `TotalMismatch`.
+
+## Review
+
+A person corrects a receipt in the review form on its page and books it from there. The form is
+`receipts/_review`; `Receipts::Review` (`app/services/receipts/review.rb`) stores it.
+
+**What a save does.** "Save" overwrites the receipt's columns (kind, merchant, `issued_at` in Kyiv time,
+total, currency, fiscal and receipt numbers, card digits, incomplete, a slip's category) and its items with
+what the person typed; the receipt stays `extracted`. It never writes `ocr_raw` (the model's original
+answer, which the OCR evaluation reads), `ocr_model_*`, the QR ground truth (`qr_*`, `qr_payload`),
+`ingest_id`, `batch`, the photos or `status`: they are not form fields. In detail:
+
+- money and quantities are read by `MoneyInput`: a comma is accepted as the decimal separator, spaces
+  between thousands are dropped, and anything but a plain decimal (an exponent, two separators) is an error
+  next to the field. The value reaches the model as text, so more places than the column keeps is an error
+  ("never rounded"), and every kept item is validated even when its cast value did not change (`60.004`
+  casts to a stored `60.00`, so Rails would see no change);
+- an item whose category a person set or changed gets `accepted_by_user` (cleared when the category is
+  cleared); an untouched item keeps its flag. "Use" next to a suggestion, Enter in an empty category field
+  and "Accept suggestions from N %" take suggestions the same way: they choose the category, the save marks
+  it;
+- a row added by a person gets a position after every stored item and after every item of the OCR answer,
+  so position N still names item N of `ocr_raw`; a removed row's item is deleted and its position stays
+  free; a new row left blank is ignored;
+- validation errors appear next to the field or on the row that caused them, and the typed values stay on
+  the form. Nothing is saved while any of them stands.
+
+**What an acceptance does.** "Accept" saves and then runs `Receipts::Accept` with the chosen account, in
+one database transaction: a refusal (no account, `CurrencyMismatch`, `NothingToBook`, `TotalMismatch`, a
+slip with items) leaves nothing saved and shows the reason on the form, with the typed values (a row
+marked for removal stays marked). A successful save or acceptance refreshes the receipt's other open pages and
+the list (`Receipts::LiveUpdate`); a form there with unsaved changes is not refreshed, and its save is refused
+as stale. The page then
+opens the transaction (`/transactions/:id`): its lines, its status, why it needs review, and "Next receipt
+to review" (the next `extracted` receipt of the list's filter after this one, wrapping around), which has the
+focus. A `reviewed` receipt changes only through "Accept again" (save and rebook together), never by a plain
+save that would leave items and lines apart. The account a form starts on is the last one used by hand or
+from a receipt (`Account.default_for`, read from the ledger), among the active accounts in the receipt's
+currency; an account chosen before a Save stays chosen on the page the save returns to.
+
+**Card slips.** A slip has no items and one category for its total. Switching a receipt with items to
+"Card slip" shows a confirmation in the form; the items are removed only by a save with it checked, and a
+save without it is refused next to the kind. Switching to another kind clears a slip's category.
+
+**Entering by hand.** `Receipts::EnterByHand` ("Enter by hand" on an `uploaded` or `failed` receipt) makes
+the receipt `extracted`, so the form opens on it. It invents nothing: an unread receipt starts with no
+items, and a failed one keeps the items of an earlier successful read, if it has any. `ocr_raw` becomes
+`{"entered_by_hand": {"started_at": ..., "previous_error": ...}}` (the failure it replaces, if any);
+`ocr_model_name` and `ocr_model_version` stay as they were (nil for a receipt no model read, the model of the
+kept items for a failed one): none is invented. A waiting OCR request
+is withdrawn under the row lock the OCR job also takes, so a job queued earlier later finds an `extracted`
+receipt with no request and leaves it alone. A receipt being read is refused.
+
+**The duplicate warning.** A fiscal receipt and its card slip are often two photographed receipts of one
+purchase. Before "Accept", the form warns (`Receipt::DuplicateCheck`) about a transaction on the chosen
+account with the same Kyiv date and the same amount as accepting would book, and about another receipt
+not booked yet with the same Kyiv date of `issued_at` and the same total, with links. It is a warning, not a
+block: two equal purchases on one day happen. It reflects the values as last saved.
+
+**Changed somewhere else.** The receipt has a `lock_version` (Active Record's optimistic locking). The form
+carries the version it was rendered from, and for a reviewed receipt also its transaction's
+`lock_version`. Every writer of the reviewable data moves it: `Receipts::ApplyOcr` (always, since it
+replaces the items), a review save, `Receipts::EnterByHand`, `Receipts::Accept`, the unlink when the
+transaction is destroyed, and `Receipts::RequestOcr`'s claim (Rails' `update_all` moves the lock column).
+Under the receipt's row lock the save compares them: a form rendered before OCR read the receipt again or
+before another tab saved it saves nothing and says "changed somewhere else"; the typed values stay on the
+page (on a detached copy of the receipt, so items that no longer exist do not matter), with a link to the
+current version. While OCR is queued or running nothing is saved either, and the page shows the stored data
+read-only instead of the form.
+
+**Live refreshes and unsaved work.** A live refresh (see "Live updates") refetches the whole page and morphs
+it, which would put the stored values back into a form a person is typing in. So `form_guard_controller.js`
+marks the form dirty on any change (and a form re-rendered after a refused save starts dirty), and while it
+is dirty it skips Turbo "refresh" stream actions, stops `live_refresh_controller.js` from asking for a
+refresh, and refuses to morph the form (a refresh already on its way when the typing started); a notice says
+the page has news. The form's own submission is never held back: the response of a refused save (422, 409)
+renders with its errors and the typed values, and focus goes to the first field marked invalid. While a submission is on its way the
+form is inert, so nothing typed then is lost to the response. Leaving the page while dirty asks first. The
+server is still the authority: a stale save is refused as above. What the forms post (`receipt[...]`,
+`manual_expense[...]`) is filtered out of the request log.
+
+**Keyboard.** Tab follows the reading order (the header fields, then each item row left to right). Enter
+never submits the form: in the last item row it adds a row (focus on its name), in another row it moves to
+the same field of the next row. In the category picker, typing filters the categories and groups, Enter or
+Tab takes the highlighted one, and Escape puts the chosen one back; only a category from the list can be
+sent. Ctrl+S (Cmd+S) saves and Ctrl+Enter (Cmd+Enter) accepts. Focus moves to the row that takes a removed
+row's place, and after a refused save to the first field marked invalid.
+
+**The live totals** in the form's footer (items, total, difference, QR total) are recalculated in the
+browser as the person types, on integer hundredths (`BigInt`), never floating point, with the rules of
+`MoneyInput`. They are a preview: the figures rendered with the page are the server's.
+
+**One document per receipt.** Everything the form edits lives on the receipt row and its items, so a later
+"save as gold" can snapshot the corrected receipt as one document without touching `ocr_raw`.
+
+## Manual entry
+
+`/transactions/new` is the same form without a receipt: an account, a payee (optional), a date, an
+optional time (Kyiv time) and rows of name, amount and category, with the same live footer and keyboard.
+`ManualExpense` (`app/models/manual_expense.rb`) books one expense transaction with `source: manual`: amount =
+minus the rows' sum, lines = the row amounts summed per category through `CategoryLines`, `needs_review` when
+a line has no category. The rows themselves are not stored: without a receipt there are no items to keep
+them on, so only the lines remain. Amounts follow the same rules as the review form (a comma is accepted,
+nothing is rounded); rows may be negative, but they must sum above zero. The payee and the transaction are
+written in one database transaction, so a failure leaves neither. Incomes and transfers are not entered
+here.
 
 ## Receipt load
 
@@ -860,10 +986,14 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   receipts; `docs/openapi.yaml`, `docs/decisions/0007-read-api.md`) and the read-only MCP server at `/mcp`,
   whose tools call the same query objects (`docs/decisions/0008-mcp-server.md`).
 - A call to `/categorise` that fills `suggested_category` and `confidence` on the items.
-- The receipt review form (correcting OCR, choosing categories, accepting into the ledger) and a labelling
-  mode for the OCR evaluation set: "save as gold" (a `manual` ground-truth record with `prefilled_by`) and
-  the screen for checking an imported record against the print. The item-level metrics over the exported
-  ground truth.
+- Saving a reviewed receipt as OCR ground truth ("save as gold": a `manual` ground-truth record with
+  `prefilled_by`), the screen for checking an imported record against the print, and the item-level metrics
+  over the exported ground truth. The review form keeps everything it edits on the receipt and its items,
+  `ocr_raw` untouched, so the corrected receipt is one document to snapshot.
+- A transactions list, editing a booked transaction in the app (its amount, date or account), and
+  entering an income or a transfer by hand.
+- A slip's category and suggestion in the read API and the MCP tools (the booked line already carries the
+  category).
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view.

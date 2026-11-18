@@ -1,0 +1,14 @@
+/ Under a review field: what the tax QR code says for it (ground truth), whether the saved value matches,
+/ and a button that copies the QR value into the field (receipt_review_controller.js). Nothing when the QR
+/ code says nothing about the field. The QR columns themselves are never written by the form.
+- if qr
+  p.field-qr
+    span
+      | QR code:
+      =< receipt_qr_value(qr.field, qr.value, currency)
+    = receipt_qr_mark(qr.state) if qr.state == :match || qr.state == :mismatch
+    - unless qr.state == :match
+      / Plain data attributes, not Stimulus action params: those go through JSON.parse, which would turn
+      / "150.00" into the number 150 and round a long fiscal number.
+      = ui_button "Use the QR value", variant: :link, size: :sm,
+        data: { action: "receipt-review#copyQr", qr_value: qr.copy, qr_field: target }

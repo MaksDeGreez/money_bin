@@ -70,6 +70,65 @@ class UiFormBuilder < ActionView::Helpers::FormBuilder
     super(value, options, &block)
   end
 
+  # A text field for money (or, with `places: 3`, a quantity), typed as text so a comma can be the decimal
+  # separator (MoneyInput reads it). It shows what the person typed while the value is unsaved (after a
+  # refused save), and the stored decimal otherwise, written exactly: "40.40", or "0.335" for a quantity
+  # (trailing zeros dropped). Never through a Float.
+  #
+  #   = f.money_field :amount, "aria-label": "Amount"
+  def money_field(method, options = {})
+    options = options.dup
+    places = options.delete(:places) || Transaction::MONEY_DECIMAL_PLACES
+    options[:value] = decimal_text(method, places) unless options.key?(:value)
+    options[:inputmode] ||= "decimal"
+    options[:autocomplete] ||= "off"
+    options[:class] = @template.ui_classes("form-control-num", options[:class])
+    text_field(method, options)
+  end
+
+  # A category picker for a `category_id`: a native select of the categories under their groups, which is
+  # what the form submits (so only a category, never free text, can be sent), driven by a type-to-filter
+  # combobox (combobox_controller.js; the `.combobox` classes in design-system.css). The select is hidden
+  # and out of the tab order; the text field in front of it is what a person types into.
+  #
+  #   = f.category_select :category_id, groups, "aria-label": "Category of item 3", suggestion: item.suggested_category
+  #
+  # `groups` is [[group name, [[category name, id], ...]], ...] (ReceiptsHelper#category_choices).
+  # `suggestion` (a Category) is offered first and taken with Enter in an empty field.
+  def category_select(method, groups, options = {})
+    options = options.dup
+    suggestion = options.delete(:suggestion)
+    label = options.delete(:"aria-label") || options.delete(:aria_label)
+    selected = object.public_send(method)
+    selected_name = groups.flat_map(&:last).find { |_, id| id.to_s == selected.to_s }&.first if selected.present?
+    # A category that is not among the choices (the import's "Uncategorised", say) stays chosen, never cleared
+    # by a save that did not touch it.
+    if selected.present? && selected_name.nil? && (current = Category.includes(:parent).find_by(id: selected))
+      selected_name = current.name
+      groups += [ [ current.parent&.name || "Other", [ [ current.name, current.id ] ] ] ]
+    end
+    select_id = options[:id] || field_id(method)
+    invalid = errors_for(method).any?
+
+    @template.tag.div(class: @template.ui_classes("combobox", options.delete(:class)), data: {
+      controller: "combobox", combobox_suggestion_value: suggestion&.id, combobox_suggestion_label_value: suggestion&.name
+    }) do
+      choices = @template.grouped_options_for_select(groups, selected)
+      @template.safe_join([
+        @template.tag.input(type: "text", value: selected_name, class: "form-control combobox-input",
+          role: "combobox", autocomplete: "off", spellcheck: "false", placeholder: "Type to choose",
+          aria: { label:, autocomplete: "list", expanded: "false", controls: "#{select_id}_listbox", invalid: (invalid || nil) },
+          data: { combobox_target: "input", action: "focus->combobox#focus input->combobox#filter keydown->combobox#keydown blur->combobox#blur" }),
+        @template.tag.ul(id: "#{select_id}_listbox", role: "listbox", class: "combobox-listbox", hidden: true,
+          aria: { label: }, data: { combobox_target: "listbox" }),
+        ActionView::Helpers::FormBuilder.instance_method(:select).bind_call(self, method,
+          @template.tag.option("No category", value: "") + choices, {},
+          { id: select_id, hidden: true, tabindex: -1, aria: { hidden: true },
+            data: { combobox_target: "select", action: "change->combobox#sync" } })
+      ])
+    end
+  end
+
   # Helper text under a field.
   def hint(text)
     @template.tag.p(text, class: "field-hint")
@@ -94,6 +153,25 @@ class UiFormBuilder < ActionView::Helpers::FormBuilder
     return [] unless object.respond_to?(:errors)
 
     object.errors.full_messages_for(method)
+  end
+
+  # The value of a decimal attribute as text for a field: the typed text while it is unsaved, else the
+  # stored decimal, written exactly. A refused value counts as typed even when its cast equals the stored
+  # one ("60.004" casts to the column's 60.00, so the record sees no change).
+  def decimal_text(method, places)
+    if object.respond_to?(:read_attribute_before_type_cast)
+      raw = object.read_attribute_before_type_cast(method.to_s)
+      typed = object.attribute_changed?(method) || object.errors.include?(method)
+      return raw if raw.is_a?(String) && typed
+
+      value = object.public_send(method)
+      return "" if value.nil?
+      return JsonFormat.money(value) if places == Transaction::MONEY_DECIMAL_PLACES
+
+      @template.number_with_precision(value, precision: places, strip_insignificant_zeros: true)
+    else
+      object.public_send(method).to_s
+    end
   end
 
   def wrap_select(select_html)

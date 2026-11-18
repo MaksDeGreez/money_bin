@@ -1,0 +1,4 @@
+/ "Enter by hand": the receipt opens in the review form, for a person to type (Receipts::EnterByHand).
+= ui_button_to enter_by_hand_receipt_path(receipt), variant: :secondary, size: :sm, form: { data: { turbo_confirm: confirm } } do
+  = ui_icon "keyboard"
+  span Enter by hand

@@ -1,0 +1,15 @@
+/ One row of manual entry: name (a note for the person), amount, category. `index` is the row's key in
+/ rows[] ("NEW_ROW" in the template).
+= f.fields_for :rows, row, index: index do |r|
+  .line-row.line-row-simple data-line-items-target="row"
+    .line-cell.line-cell-name
+      = r.text_field :name, "aria-label": "Name, #{label}", placeholder: "Name", autocomplete: "off", class: "form-control-compact"
+    .line-cell.line-cell-num
+      = r.money_field :amount, "aria-label": "Amount, #{label}", placeholder: "Amount", class: "form-control-compact", data: { money_totals_amount: true }
+    .line-cell.line-cell-category
+      = r.category_select :category_id, category_choices, "aria-label": "Category, #{label}", class: "combobox-compact"
+    .line-cell.line-cell-remove
+      = ui_button variant: :ghost, size: :icon, class: "h-9 w-9", "aria-label": "Remove #{label}", data: { action: "line-items#remove" } do
+        = ui_icon "x"
+    - if row.errors.any?
+      p.line-row-errors = row.errors.full_messages.to_sentence

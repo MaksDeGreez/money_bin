@@ -25,11 +25,11 @@ market_receipt:
   batch: october-shopping
   sha256: 0ee3d325089dc00907ec6937d2418c6e4bfa5d21ff915120588ff1ec24a09fa8
 
-# Read by OCR, waiting for a person: one item has only a suggested category. A card slip, no QR code.
+# Read by OCR, waiting for a person: one item has only a suggested category. A fiscal receipt whose QR
+# code was not read.
 corner_receipt:
   status: extracted
-  kind: card_slip
-  card_last4: "4242"
+  kind: fiscal
   ocr_model_name: stub-ocr
   ocr_model_version: "0.1.0"
   issued_at: 2026-10-08T12:05:00+03:00
@@ -55,3 +55,4 @@ failed_receipt:
   # Loaded before the others: no time on it, so lists by time put it last.
   created_at: 2026-10-01 09:00:00
   updated_at: 2026-10-01 09:00:00
+

@@ -188,6 +188,19 @@ class CategoryTest < ActiveSupport::TestCase
     assert_includes category.errors[:parent], "does not exist"
   end
 
+  test "a category a card slip uses cannot be destroyed or become a group; a suggestion goes with it" do
+    category = Category.create!(parent: categories(:eating_out), name: "Picnics")
+    receipts(:corner_receipt).update_columns(category_id: category.id)
+
+    assert_not category.destroy
+    assert_not category.update(parent: nil, slug: nil)
+    assert_includes category.errors[:parent], "cannot change: a category cannot become a group while it has receipts"
+
+    receipts(:corner_receipt).update_columns(category_id: nil, suggested_category_id: category.id)
+    assert category.reload.destroy
+    assert_nil receipts(:corner_receipt).reload.suggested_category_id
+  end
+
   test "a group with categories cannot be destroyed" do
     assert_not categories(:eating_out).destroy
     assert Category.exists?(categories(:eating_out).id)

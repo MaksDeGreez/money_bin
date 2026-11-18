@@ -61,4 +61,25 @@ class UiPartialsTest < ActionView::TestCase
     assert_select "a[href='/r']", text: /All\s*1 200/
     assert_select "a[aria-current=page][href='/r?status=failed']", text: /Failed\s*3/
   end
+
+  test "a callout can start hidden and carry data attributes" do
+    render("ui/callout", tone: :signal, hidden: true, data: { form_guard_target: "notice" }) { "Changed elsewhere." }
+
+    assert_select ".callout.callout-signal[hidden][data-form-guard-target=notice]", "Changed elsewhere."
+  end
+
+  test "the totals footer shows its figures with their targets, a status line, the note and the buttons" do
+    figures = [ { label: "Items", value: "152.50 UAH", target: "sum" },
+                { label: "Difference", value: "0.00 UAH", target: "difference", hidden: true, data: { receipt_review_target: "itemsOnly" } } ]
+    render("ui/totals_footer", figures:, note: "Enter adds a row.") { "Save" }
+
+    assert_select ".totals-footer" do
+      assert_select ".totals-figure dt", "Items"
+      assert_select ".totals-figure dd[data-money-totals-target=sum]", "152.50 UAH"
+      assert_select ".totals-figure[hidden][data-receipt-review-target=itemsOnly] dd[data-money-totals-target=difference]"
+      assert_select "p.totals-status[role=status][data-money-totals-target=status]"
+      assert_select ".totals-actions", /Save/
+      assert_select "p.totals-note", "Enter adds a row."
+    end
+  end
 end

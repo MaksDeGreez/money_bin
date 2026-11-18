@@ -6,9 +6,9 @@
 #
 # A category cannot be placed under another category. A category cannot become a group (lose its parent), and
 # a group cannot become a category (get a parent), while anything points at it: child categories, transaction
-# lines, or receipt items (accepted or suggested). Otherwise lines would point at a group, or a group's
-# categories would end up three levels deep. Moving a category to another group keeps its level and is
-# allowed.
+# lines, receipt items (accepted or suggested), or receipts (a card slip's own category, accepted or
+# suggested). Otherwise lines would point at a group, or a group's categories would end up three levels deep.
+# Moving a category to another group keeps its level and is allowed.
 #
 # `slug` is the stable, globally unique key that the ML service and the API use. A group's slug is its
 # parameterized name ("eating-out"); a category's slug is "<group slug>/<own part>"
@@ -30,6 +30,10 @@ class Category < ApplicationRecord
   has_many :receipt_items, dependent: :restrict_with_error
   # Suggestions are only guesses; they go when the category goes.
   has_many :suggested_receipt_items, class_name: "ReceiptItem", foreign_key: :suggested_category_id, inverse_of: :suggested_category,
+    dependent: :nullify
+  # A card slip's one category (Receipt#category) and the categoriser's guess for it.
+  has_many :receipts, dependent: :restrict_with_error
+  has_many :suggested_receipts, class_name: "Receipt", foreign_key: :suggested_category_id, inverse_of: :suggested_category,
     dependent: :nullify
 
   scope :groups, -> { where(parent_id: nil) }
@@ -106,7 +110,8 @@ class Category < ApplicationRecord
 
       uses = {
         "child categories" => children, "transaction lines" => transaction_lines,
-        "receipt items" => receipt_items, "suggested receipt items" => suggested_receipt_items
+        "receipt items" => receipt_items, "suggested receipt items" => suggested_receipt_items,
+        "receipts" => receipts, "suggested receipts" => suggested_receipts
       }.filter_map { |name, relation| name if relation.exists? }
       return if uses.empty?
 
