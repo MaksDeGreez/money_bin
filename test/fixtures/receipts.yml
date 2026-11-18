@@ -52,3 +52,6 @@ failed_receipt:
   qr_total: 88.00
   ocr_raw: { "error": { "code": "unsupported_media_type", "message": "The file is not a supported image." } }
   sha256: 5d41402abc4b2a76b9719d911017c592ae2a4cdd0b1d8f3b0e3c6c2a3c8d9e0f
+  # Loaded before the others: no time on it, so lists by time put it last.
+  created_at: 2026-10-01 09:00:00
+  updated_at: 2026-10-01 09:00:00

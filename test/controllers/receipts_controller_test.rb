@@ -386,7 +386,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "'Read again' does not queue a receipt that is being read or not read yet" do
-    receipts(:failed_receipt).update_columns(status: "processing")
+    receipts(:failed_receipt).update_columns(status: "processing", updated_at: Time.current)
 
     post read_receipt_path(receipts(:failed_receipt))
     post read_receipt_path(receipts(:new_receipt))

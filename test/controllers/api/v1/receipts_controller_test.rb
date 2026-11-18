@@ -11,13 +11,14 @@ module Api
 
         assert_response :success
         assert_api_conform(200)
-        assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:market_receipt) ].map(&:id), json["receipts"].pluck("id")
+        assert_equal [ receipts(:new_receipt), receipts(:corner_receipt), receipts(:market_receipt), receipts(:failed_receipt) ].map(&:id),
+          json["receipts"].pluck("id")
         assert_equal({
           "id" => receipts(:market_receipt).id, "status" => "reviewed", "kind" => "fiscal", "incomplete" => false,
           "merchant" => "Example Market",
           "issued_at" => "2026-10-03T18:40:00+03:00", "issued_on" => "2026-10-03", "total" => "1250.40", "currency" => "UAH",
           "transaction_id" => transactions(:market_split).id, "items_count" => 3
-        }, json["receipts"].last)
+        }, json["receipts"].find { |receipt| receipt["id"] == receipts(:market_receipt).id })
         assert_nil json["next_cursor"]
       end
 
@@ -32,7 +33,7 @@ module Api
 
         api_get api_v1_receipts_path, params: { limit: 2, cursor: json["next_cursor"] }
         assert_api_conform(200)
-        assert_equal [ receipts(:market_receipt).id ], json["receipts"].pluck("id")
+        assert_equal [ receipts(:market_receipt).id, receipts(:failed_receipt).id ], json["receipts"].pluck("id")
         assert_nil json["next_cursor"]
       end
 
