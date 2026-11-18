@@ -1,6 +1,7 @@
 # 0006. Transaction categoriser: a local text model, rule baselines and a time split
 
-Status: accepted. Training and evaluation only; serving the model and using it in the app come later.
+Status: accepted, extended by "Improving the model" below. Training and evaluation only; serving the
+model and using it in the app come later.
 
 ## Context
 
@@ -68,7 +69,7 @@ The rows are ordered by date after the drops above. The last 20% are the **test 
 day lies entirely on one side, so no day is split between training and test. The end of the training
 period (15% of its rows, whole days again) is a **validation slice**: the regularisation strength of the
 model is chosen on it, and so is the "best baseline" that the model is compared with. The test set is
-used once, for the final numbers. Every fitted part (vocabularies, IDF weights, the payee and MCC tables,
+used once, for the final numbers (see "Improving the model" for how that is enforced). Every fitted part (vocabularies, IDF weights, the payee and MCC tables,
 the model) sees training rows only.
 
 A random split would put transactions of the same payee from the same week on both sides and measure
@@ -116,6 +117,100 @@ so every number names the data and the code it came from.
 - The console prints counts and metrics only; errors name a file, a line number and a key, never a value.
 - The tests generate a small synthetic export with invented names and amounts.
 
+## Improving the model
+
+The first version beat the best rule baseline clearly on macro-F1, but its top-3 accuracy stayed below
+the aim of 0.95; on test rows whose payee was seen in training the payee rule was more accurate than the
+model, while the model won on rows with a new or missing payee; and the history changes character over
+time (few training rows carry bank fields, most test rows do, and many test payees are new). **That test
+result had been seen before the improvements below were designed.** Everything after it follows one
+protocol, so that the final number is still an honest estimate.
+
+### The protocol
+
+- Every choice (which candidate, every hyper-parameter, every threshold and weight) is made on the
+  validation slice only, with every part fitted on the rows before it (the fitting rows).
+- The selection rule was written down before any candidate was scored, and is recorded in the selection
+  JSON: eligible are the candidates whose validation top-3 accuracy is at least the lower end of the
+  day-resampled 95% interval of the best validation top-3; among them the best validation macro-F1
+  wins; candidates within 0.005 macro-F1 of it count as tied, and a tie goes to the simpler candidate
+  (first: needs no neural encoder; then: the fewest parts beyond the first version). Inside a
+  candidate, each setting is chosen by validation macro-F1, ties to the simpler setting.
+- The test set is then scored **once**, for the single chosen configuration, together with the first
+  version and the baselines refitted the same way, and the write-up says that the first version's test
+  result had been seen.
+- Nothing else looks at the test set. The code enforces it: the split keeps the test rows in a
+  `SealedTest`, whose rows refuse to be read until the final step unseals them; the selection command
+  (`categoriser.selection`) never unseals, writes no test metric (only the test set's size and first
+  day, which the split defines) and is tested to be unchanged when every test label is shuffled. The
+  scoring command (`categoriser.score`) is a separate, explicit step: it reads the selection file, checks
+  that the export, the taxonomy and the split are the same, records which configuration it scored, from
+  which selection file (with its SHA-256) and when, and refuses to score the same export a second time
+  unless a reason is given, which it records.
+
+### Refit on training + validation
+
+The first version already did this: `C` and the best baseline were chosen with models fitted on the
+fitting rows, and the final model was fitted on the whole training period, validation included. It stays
+the rule for every candidate, because the validation period is the end of the history, the part most
+like what comes next; leaving it out of the final fit would throw away the most relevant rows.
+
+Values tuned on validation are kept **as numbers** in the refit, and each is defined so that it means
+the same with more rows: `C` (the usual practice; with more rows the same `C` regularises slightly
+less), the recency half-life in days counted back from the last training day, the class-weight power,
+and the hybrid's parameters, which are in counts and shares of the payee's history. The hybrid's payee
+and MCC tables are refitted on the whole training period together with the model, so at test time they
+know the validation period's payees, exactly as the model's vocabulary does. What cannot be checked on
+validation is the effect of the refit itself; it is a protocol choice, not a tuned one.
+
+### The candidates, and why
+
+- **Hybrid with the payee rule.** The first version's two regimes (rule better on known payees, model
+  better on new ones) suggest combining them. `mix` blends the model's class probabilities with the
+  payee's category shares, with a weight that grows with the number of times the payee was seen and with
+  the purity of its history, and falls back to the MCC's shares for an unknown payee; `switch` lets the
+  payee's history decide when it was seen often enough and consistently enough. Top-3 comes from the
+  combined distribution. The rule tables come from the rows the model is fitted on, never from the rows
+  it is scored on.
+- **Recency.** The training history is mostly hand-entered and the recent history mostly bank feeds;
+  weighting recent rows up (an exponential decay with a tuned half-life) lets the model follow the
+  current kind of data without throwing the old rows away. A hard training window is the limit case of a
+  short half-life and was not tried separately.
+- **Sentence embeddings.** The texts mix Ukrainian, Russian and English, with transliterations and
+  truncated bank strings; a multilingual sentence encoder may relate texts that share no n-gram (a new
+  payee whose name says what it sells). Two local encoders were tried, `jinaai/jina-embeddings-v3`
+  (with its classification adapter) and `intfloat/multilingual-e5-base`, each alone with the one-hot
+  fields and next to the TF-IDF features, under a logistic regression. They run on the Apple GPU with
+  PyTorch from the local Hugging Face cache (`local_files_only`, pinned revisions): transaction text is
+  never sent to a hosted model. The vectors are cached outside the repository, keyed by the encoder and
+  the text's hash. torch and transformers are an optional dependency group installed only on Apple
+  silicon, so CI and the tests (which use a fake encoder) never need them; jina-v3's remote code needs
+  transformers 4.x, hence the pin below 5.
+- **Class-weight strength.** An error analysis of the first version on the validation slice (aggregates
+  only) showed its balanced class weights pulling frequent payees with a mixed history, and rows with no
+  text at all, towards rare categories. The weights are therefore also tried at a lower strength
+  (`(n / (K * n_c)) ** power`, power 1 being "balanced"), and together with recency. The same analysis
+  found that a finer amount bucket barely separated the categories of a payee, so the amount encoding
+  was left as it is.
+
+Each candidate is reported on validation with macro-F1, weighted F1, accuracy, top-3 accuracy and
+precision by coverage, each with intervals by rows and by days, and its difference from the first
+version; the selection JSON holds the whole table and every tuning grid.
+
+### Limits of the improvement
+
+- The test set is not virgin: its first-version result shaped which candidates were built. The
+  candidates and the rule were fixed without any further look at it, and only the final configuration
+  is scored, but the final number is one step removed from a fully blind estimate; the write-up says so.
+- Many candidates and tuning grids are compared on one validation slice (15% of the training rows). The
+  chosen candidate's validation score is therefore optimistic; the test score is the estimate to quote,
+  and the gap between the two is itself informative.
+- The validation slice is the end of the training period, not the test period: a candidate that suits
+  the shift up to the cut may suit the test period less well.
+- The comparison with the first version on the test set is paired (the same rows, the same resamples,
+  McNemar's test on the same rows), but both share the data's dependence between rows; the day-resampled
+  intervals remain the ones to quote.
+
 ## Limitations
 
 - **Some recent labels were assigned by rules, not by hand.** Part of the recent history was categorised
@@ -135,7 +230,10 @@ so every number names the data and the code it came from.
 ## Consequences
 
 - `ml/` gains scikit-learn, SciPy, joblib, PyYAML and their dependencies (NumPy among them); the HTTP
-  service does not import them yet.
+  service does not import them yet. The `embeddings` group (torch, transformers below 5, einops) installs
+  on macOS on Apple silicon only, through platform markers, so Linux CI resolves and installs without it.
 - A trained model is a file on the owner's machine, named by the export's manifest hash and the time of
-  the run. Serving it over HTTP and showing suggestions in the app are separate changes; they read the
+  the run. The first version's one-step command (`categoriser.train`, which fitted and scored in one go)
+  is replaced by the two steps above; its configuration is the `tfidf` candidate, and the final step
+  reproduces its test numbers exactly for the same seed. Serving it over HTTP and showing suggestions in the app are separate changes; they read the
   model file from the same private folder.

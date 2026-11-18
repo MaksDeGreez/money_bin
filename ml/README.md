@@ -547,19 +547,30 @@ model does not block the server.
 `categoriser/` trains and evaluates a model that suggests a ledger category for a
 transaction from its text and bank fields. It is not part of the HTTP service
 yet. It runs only on this machine: transaction data is never sent anywhere.
-The reasons behind the design are in
+The reasons behind the design, and the evaluation protocol, are in
 `docs/decisions/0006-transaction-categoriser.md`.
 
+Two commands, so that the test set is scored once:
+
 ```sh
-uv run python -m categoriser.train ~/path/to/export          # writes to ~/Documents/money_bin_data/models/
-uv run python -m categoriser.train ~/path/to/export --out ~/elsewhere --seed 42
+# 1. Choose the configuration on the validation slice (the test set stays sealed).
+uv run python -m categoriser.selection ~/path/to/export      # writes <run>.selection.json to ~/Documents/money_bin_data/models/
+# 2. Score the test set once, for the chosen configuration.
+uv run python -m categoriser.score ~/path/to/export --selection ~/Documents/money_bin_data/models/<run>.selection.json
 ```
 
-The input is a history export (`docs/import-contract.md`). The command checks
-the manifest's file hashes before it reads anything. Options: `--out DIR`,
-`--seed N` (42), `--test-fraction` (0.2), `--validation-fraction` (0.15),
-`--c-grid` (0.1 0.3 1 3 10), `--resamples` (1000 bootstrap resamples),
-`--min-df` (2), `--taxonomy` (`../db/seeds/taxonomy.yml`).
+The input is a history export (`docs/import-contract.md`). Both commands check
+the manifest's file hashes before they read anything.
+
+`selection` options: `--out DIR`, `--seed N` (42), `--test-fraction` (0.2),
+`--validation-fraction` (0.15), `--c-grid` (0.1 0.3 1 3 10), `--resamples`
+(1000 bootstrap resamples), `--min-df` (2), `--encoders` (`jina-v3 e5-base`;
+none for TF-IDF only), `--embedding-cache DIR`
+(`~/Documents/money_bin_data/cache/embeddings/`), `--taxonomy`
+(`../db/seeds/taxonomy.yml`). `score` options: `--selection FILE` (required),
+`--out DIR`, `--resamples`, `--embedding-cache DIR`, `--taxonomy`,
+`--rescore-reason TEXT`. The seed, the fractions and every tuned value come
+from the selection file.
 
 **Rows.** One per transaction that is not a transfer leg. A split transaction
 is represented by its largest line by absolute amount (the first line on a
@@ -570,46 +581,89 @@ label: the row is dropped and counted (as the importer sends such a line to
 Uncategorised). The counts of split and tied transactions cover every
 transaction that is not a transfer leg, before these drops.
 
-**Features.** Payee, merchant, bank description and comment (TF-IDF over word
-1-2-grams and character 2-5-grams), plus one-hot MCC, amount sign, amount size
-bucket (a power of ten, per currency), account kind and payee. The model is a
-logistic regression with balanced class weights.
-
 **Split.** Rows are ordered by date; the last 20% are the test set, and a
 calendar day is never split between the sides. The last 15% of the training
-rows are a validation slice: the regularisation strength `C` and the best
-baseline are chosen there. Then everything is fitted again on the whole
-training period and evaluated once on the test set. Nothing is fitted on test
-rows.
+rows are the validation slice; the rest are the fitting rows. The test set is
+a `SealedTest`: its rows refuse to be read until `categoriser.score` unseals
+them, so a selection run cannot use a test label or write a test metric.
+
+**Candidates** (all fitted on the fitting rows, scored on the validation slice):
+
+| Part | What it is | Tuned on validation |
+| --- | --- | --- |
+| `tfidf` | the first version: TF-IDF over the joined payee, merchant, bank description and comment (word 1-2-grams, character 2-5-grams) plus one-hot MCC, amount sign, amount size bucket (a power of ten, per currency), account kind and payee, into a logistic regression with balanced class weights | `C` |
+| `emb:<encoder>` | a local sentence embedding of the same text plus the one-hot fields | `C` |
+| `tfidf+emb:<encoder>` | both | `C` |
+| `+recency` | sample weights `0.5 ** (age in days / half-life)`, mean 1 | the half-life (`C` kept) |
+| `+classweight` | class weights `(n / (K * n_c)) ** power` (1 is "balanced") | the power (`C` kept) |
+| `+recency+classweight` | both, with the tuned half-life and power | `C` again |
+| `+mix` | the hybrid: `w * q + (1 - w) * p_model`, `q` the payee's category shares in the fitting rows, `w = n / (n + k) * purity ** beta`; for an unknown payee, the MCC's shares with weight `alpha_mcc * ...` | `k`, `beta`, `alpha_mcc` |
+| `+switch` | the payee's history decides when it was seen at least `min_count` times with a purity of at least `min_purity`; the model otherwise | `min_count`, `min_purity` |
+
+The encoders: `jina-v3` (`jinaai/jina-embeddings-v3`, its classification
+adapter) and `e5-base` (`intfloat/multilingual-e5-base`, "query: " prefix),
+each at a pinned revision, loaded with `local_files_only` from the local
+Hugging Face cache and run with PyTorch on the Apple GPU. Download the weights
+once (no transaction data is involved):
+`uv run hf download intfloat/multilingual-e5-base --revision <revision in categoriser/embeddings.py>`.
+torch and transformers are in the `embeddings` dependency group, which a plain
+`uv sync` installs on macOS on Apple silicon only; elsewhere, and in the tests
+(which use a fake encoder), they are not needed. The vectors are cached in a
+SQLite file keyed by the SHA-256 of the encoder (model, revision, prefix or
+task, maximum length) and the text, so each distinct text is encoded once.
+
+**Selection rule** (fixed before any candidate was scored, recorded in the
+JSON): eligible are the candidates whose validation top-3 accuracy is at least
+the lower end of the day-resampled 95% interval of the best validation top-3;
+among them, the best validation macro-F1; ties (within 0.005) go to the
+simpler candidate (no neural encoder first, then the fewest parts beyond the
+first version).
+
+**Final score.** `score` reads the selection file, refuses another export,
+taxonomy or split, refits the chosen configuration on the whole training
+period (fitting rows + validation slice) with every tuned value kept, refits
+the first version and the baselines the same way, and scores them all on the
+test set. It refuses to score an export whose final score is already in the
+output folder unless `--rescore-reason` says why (the reason is recorded).
 
 **Baselines.** `majority` (always the most frequent category) and `payee_mcc`
-(the payee's most frequent category, else the MCC's, else the majority).
+(the payee's most frequent category, else the MCC's, else the majority); the
+best of the two on validation macro-F1 is the one the model is compared with.
 
-**Metrics** (one JSON per run, next to the model file; `metrics_version` 2):
+**Selection JSON** (`<run>.selection.json`): the split (for the test set only
+its size and first day), the profile of the fitting rows and the validation
+slice, the baselines, and per candidate: its configuration and complexity,
+macro-F1, weighted F1, accuracy and top-3 accuracy with 95% intervals by rows
+and by days, the interval of its difference from the first version (days),
+precision by coverage level and confidence threshold, and the headline
+metrics per segment; the tuning grids with their validation scores; the rule,
+its trace and the chosen configuration. No test metric.
+
+**Final metrics JSON** (`<run>.final.json`; `metrics_version` 3):
 
 | Key | Meaning |
 | --- | --- |
-| `test.systems.<name>` | macro-F1 (the main metric), weighted F1, accuracy and top-3 accuracy, each with a 95% bootstrap interval over test rows (`ci95`); `coverage`: precision when only the most confident rows are kept, by coverage level and by confidence threshold |
-| `test_ci95_resampling_days` | the same intervals, resampling whole days instead of rows: rows of one day (and one payee) are not independent, so the row intervals are probably too narrow |
-| `model_minus_best_baseline_ci95`, `..._resampling_days` | the interval of the model's gain over the best baseline (paired resamples), by rows and by days |
-| `mcnemar_model_vs_best_baseline` | McNemar's test on top-1 correctness (so it compares accuracy): rows only the model got right, rows only the baseline got right, exact and corrected chi-square p-values; it assumes independent rows, so its p-value is probably too small |
-| `segments` | the same headline metrics for test rows with and without bank fields, and with a payee seen or not seen in training |
-| `profile` | the share of rows with bank fields, an MCC, a payee, a comment, for training and test: how the two periods differ |
-| `per_class` | per category: training and test support, F1 of each system (null where the category is neither true nor that system's prediction) |
-| `rows`, `split`, `labels`, `tuning` | row counts (transfers, splits, ties, drops), the split dates, categories missing from training, the validation scores |
-| `export`, `reproducibility` | the manifest SHA-256, the taxonomy's SHA-256, the seed, the git commit, Python and library versions, every parameter |
+| `final_scoring` | which configuration was scored, when, from which selection file (also `selection.sha256`), earlier scores of the export, a rescore reason, and the protocol statement |
+| `test.systems.<name>` | `majority`, `payee_mcc`, `first_version`, `final`: macro-F1 (the main metric), weighted F1, accuracy and top-3 accuracy, each with a 95% bootstrap interval over test rows; `coverage`: precision when only the most confident rows are kept |
+| `test_ci95_resampling_days` | the same intervals, resampling whole days: rows of one day (and one payee) are not independent, so the row intervals are probably too narrow |
+| `final_minus_best_baseline_ci95`, `final_minus_first_version_ci95` (and `..._resampling_days`) | paired intervals of the final model's gain, by rows and by days |
+| `mcnemar_final_vs_best_baseline`, `mcnemar_final_vs_first_version`, `mcnemar_first_version_vs_best_baseline` | McNemar's test on top-1 correctness: rows only one side got right, exact and corrected chi-square p-values; it assumes independent rows |
+| `segments` | the headline metrics for test rows with and without bank fields, and with a payee seen or not seen in training |
+| `profile`, `per_class`, `rows`, `split`, `labels` | how the periods differ, per-category support and F1, row counts, split dates, categories missing from training |
+| `export`, `reproducibility` | the manifest and taxonomy SHA-256, the seed, the git commit, Python, library and encoder versions, every parameter |
 
 Macro-F1 is scikit-learn's default: the mean F1 over every category that is a
 true label or a top-1 prediction in the evaluated rows. At a coverage level,
 rows whose confidence ties with the last kept row are all kept, and the
 coverage actually reached is reported next to the target: plot precision
-against `coverage`, not `target_coverage`. The test
-period differs from the training period (more bank feeds, new payees); read
-the `segments` and `profile` keys before quoting a headline number.
+against `coverage`, not `target_coverage`. The test period differs from the
+training period (more bank feeds, new payees); read the `segments` and
+`profile` keys before quoting a headline number.
 
-**Files.** The model file (`transaction-categoriser-<time>-<manifest>.joblib`)
-holds the training vocabulary, which includes payee names, so it never goes
-into git: the command refuses an output folder inside a git repository and
-writes both files with mode 600. The metrics JSON and the console hold
-category names and numbers only, never a payee, comment, description or
-amount. The tests build a small synthetic export with invented data.
+**Files.** The model file (`<run>.final.joblib`) holds the training
+vocabulary and, for a hybrid, the payee tables, which include payee names; the
+embedding cache holds vectors of transaction texts. None of them goes into git:
+the commands refuse an output or cache folder inside a git repository and
+write files with mode 600. The JSON files and the console hold category names
+and numbers only, never a payee, comment, description or amount. The tests
+build a small synthetic export with invented data and use a fake encoder.
