@@ -37,7 +37,7 @@ def test_normalisation_folds_case_punctuation_units_and_look_alikes() -> None:
 
 
 def test_merchant_normalisation_drops_legal_forms() -> None:
-    assert normalise_merchant('ТОВ "Сільпо-Фуд"') == normalise_merchant("Сільпо Фуд")
+    assert normalise_merchant('ТОВ "Квітка-Фуд"') == normalise_merchant("Квітка Фуд")
     assert normalise_merchant("ФОП Іваненко") == normalise_merchant("іваненко")
     assert normalise_merchant("Shop LLC") == "shop"
     assert normalise_merchant(None) == ""

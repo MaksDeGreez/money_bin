@@ -1313,7 +1313,7 @@ def test_undeclared_sources_become_other(category_inputs: dict[str, Path]) -> No
     folder = category_inputs["runs"] / "cats"
 
     def change(lines: list[dict]) -> None:
-        lines[1]["source"] = "silpo"
+        lines[1]["source"] = "zorblax"
         lines[2]["source"] = "rules"
 
     rewrite_lines(folder, change)
@@ -1322,7 +1322,7 @@ def test_undeclared_sources_become_other(category_inputs: dict[str, Path]) -> No
     (folder / "run.json").write_text(json.dumps(meta))
     run_harness(category_inputs)
     assert sorted(result(category_inputs, "cats")["by_source"]) == ["memory", "other", "rules"]
-    assert "silpo" not in all_text(category_inputs["out"])
+    assert "zorblax" not in all_text(category_inputs["out"])
 
 
 def test_scores_outside_zero_and_one_are_refused(tmp_path: Path) -> None:
