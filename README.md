@@ -14,7 +14,8 @@ owner's machine, and the data and photos stay there.
                      │             │
                      └─> Sidekiq ──┴─> ML service :8100 (FastAPI, ml/)
                                          OCR + categorisation; backend: stub, or a
-                                         local Qwen VL model (MLX); OpenRouter later
+                                         local Qwen VL model (MLX), or a hosted
+                                         model through OpenRouter (zero retention)
 ```
 
 The decisions behind this stack are in [`docs/decisions/0001-stack.md`](docs/decisions/0001-stack.md), and
@@ -22,7 +23,9 @@ the ones behind sign-in and API tokens in
 [`docs/decisions/0002-authentication-and-api-tokens.md`](docs/decisions/0002-authentication-and-api-tokens.md).
 How coding agents share the work is in
 [`docs/decisions/0003-agent-tooling.md`](docs/decisions/0003-agent-tooling.md), and how the local OCR model
-runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-ocr-backend.md).
+runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-ocr-backend.md), and how a
+hosted model reads receipts under a zero-data-retention rule in
+[`docs/decisions/0012-hosted-ocr-backend.md`](docs/decisions/0012-hosted-ocr-backend.md).
 
 ## Status
 
@@ -30,7 +33,8 @@ Phase 1: the skeleton and the data model. The Rails app boots with a home page a
 owner signs in, sees the receipts, uploads new ones and has them read by OCR, corrects them in a review form and
 accepts them into the ledger, enters an expense by hand, AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
-with a local vision model (`OCR_BACKEND=mlx`, Apple silicon), and CI checks both. The domain model is described in
+with a local vision model (`OCR_BACKEND=mlx`, Apple silicon) or a hosted one through OpenRouter
+(`OCR_BACKEND=openrouter`, zero-data-retention endpoints only), and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
 
 ## Requirements
@@ -450,6 +454,7 @@ for development can never point the tests at development data; a real environmen
 | `ML_SERVICE_URL` | `http://127.0.0.1:8100`         | where Rails finds the ML service |
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
 | `MLX_OCR_MODEL`  | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
+| `OPENROUTER_API_KEY`, `OPENROUTER_OCR_MODEL` | (unset) | the `openrouter` backend's key (a secret, only in `.env`) and model (no default: the service does not start without it); `OPENROUTER_TIMEOUT`, `OPENROUTER_MAX_TOKENS`, `OPENROUTER_OCR_IMAGE_MAX_SIDE` and `OPENROUTER_STRUCTURED_OUTPUT` tune it. Receipt photos then leave the machine, to zero-retention endpoints only (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
 | `APP_HOST`       | (unset)                         | one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1`: for pages in production only, for the MCP server in every environment |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |

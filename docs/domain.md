@@ -436,7 +436,8 @@ What is stored where:
 - on failure, `ocr_raw` is `{"error": {"code": ..., "message": ...}}` and nothing else: no stack trace and
   no response body. `code` is the service's own code (`validation_error`, `too_many_images`,
   `image_too_large`, `unsupported_media_type`, `image_unreadable`, `ocr_parse_failed`,
-  `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
+  `backend_not_implemented`, `internal_error`, and with the hosted backend `openrouter_*` codes such as
+  `openrouter_rate_limited` or `openrouter_no_zdr_endpoint`, listed in `ml/README.md`), or `ml_unreachable`,
   `ml_timeout`, `invalid_response`, `no_images` or `image_missing`. `message` is one line of at most 300
   characters. There is no separate column for the reason: `ocr_raw` already means "what the OCR step
   left".
@@ -464,8 +465,9 @@ Retries and timeouts:
   file whose first bytes are not a JPEG, PNG, WebP or HEIC image; 422 `image_unreadable`, a file that
   cannot be decoded; or 422 `ocr_parse_failed`, the model's answer was not valid receipt JSON even after
   one repair pass: the model is deterministic, so the same photos would fail the same way, and the
-  receipt waits for a retry by hand or manual entry), 501 (the backend is only a
-  placeholder), an answer that is not JSON or misses a required key, no photos attached, a photo file
+  receipt waits for a retry by hand or manual entry; 424, the hosted model's service refused the
+  request, for example for lack of credits), 501 (the backend cannot do it, or a setting is missing), an
+  answer that is not JSON or misses a required key, no photos attached, a photo file
   missing from storage;
 - any other exception (a bug, the database gone) is raised: Sidekiq's own retries apply and the receipt
   stays `processing` until a run succeeds;
