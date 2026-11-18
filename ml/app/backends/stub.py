@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from app.backends.base import Backend, ImageInput
+from app.backends.base import Backend, Extraction, ImageInput
 from app.schemas import (
     CANDIDATES_PER_TEXT,
     CategoriseResult,
@@ -53,12 +53,14 @@ _STUB_ITEMS: tuple[ReceiptItem, ...] = (
 def stub_receipt() -> Receipt:
     """Return the fixed example receipt. The item amounts add up to the total."""
     return Receipt(
+        kind="fiscal",
         merchant="Example Market",
         fiscal_number="0000000000",
         receipt_number="000123",
         issued_at=datetime(2026, 1, 15, 12, 34, tzinfo=timezone(timedelta(hours=2))),
         total=Decimal("123.45"),
         currency="UAH",
+        sum_matches_total=True,
         items=[item.model_copy() for item in _STUB_ITEMS],
     )
 
@@ -95,8 +97,8 @@ class StubBackend(Backend):
     model_version = "0.1.0"
     categoriser_model_name = "stub-categoriser"
 
-    def extract_receipt(self, images: Sequence[ImageInput]) -> Receipt:
-        return stub_receipt()
+    def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
+        return Extraction(receipt=stub_receipt())
 
     def categorise(self, texts: Sequence[str]) -> list[CategoriseResult]:
         return [CategoriseResult(text=text, candidates=stub_candidates(text)) for text in texts]

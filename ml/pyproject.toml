@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.163.1",
+    "pillow>=13.0.0",
+    "pillow-heif>=1.8.1",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.3",
     "python-multipart>=0.0.34",
@@ -26,20 +28,29 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.17.5",
 ]
+# The local OCR backend (OCR_BACKEND=mlx). MLX runs only on Apple silicon, so the markers keep this
+# group empty on any other machine, CI included. Pinned exactly: its API changes between releases.
+mlx = [
+    "mlx-vlm==0.8.0 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 
 [tool.uv]
 # This is an application, not a library: uv installs the dependencies only.
 package = false
-default-groups = ["dev", "categoriser"]
+# A plain `uv sync` installs these groups; on Linux the mlx group installs nothing.
+default-groups = ["dev", "categoriser", "mlx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--cov=app --cov=categoriser --cov-report=term-missing --cov-fail-under=70"
+addopts = "--cov=app --cov=categoriser --cov=evaluation --cov-report=term-missing --cov-fail-under=70"
 filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true
+# The real mlx-vlm model call needs Apple silicon and model weights; the tests use
+# a fake generator instead. It was checked by hand with both models.
+omit = ["app/backends/mlx_vlm_generator.py"]
 
 [tool.ruff]
 line-length = 100
@@ -57,3 +68,9 @@ select = [
     "N",   # pep8 naming
     "RUF", # ruff-specific rules
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Receipts are printed in Ukrainian: the Cyrillic letters in these files are meant.
+"app/ocr/*.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_ocr_*.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_mlx_backend.py" = ["RUF001"]

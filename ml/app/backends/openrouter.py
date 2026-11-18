@@ -8,8 +8,8 @@ no keys, and every method raises `BackendNotImplementedError`.
 
 from collections.abc import Sequence
 
-from app.backends.base import Backend, BackendNotImplementedError, ImageInput
-from app.schemas import CategoriseResult, Receipt
+from app.backends.base import Backend, BackendNotImplementedError, Extraction, ImageInput
+from app.schemas import CategoriseResult
 
 
 class OpenRouterBackend(Backend):
@@ -18,7 +18,7 @@ class OpenRouterBackend(Backend):
     categoriser_model_name = "openrouter-placeholder"
     model_version = "0.0.0"
 
-    def extract_receipt(self, images: Sequence[ImageInput]) -> Receipt:
+    def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
         raise BackendNotImplementedError("The openrouter backend cannot read receipts yet.")
 
     def categorise(self, texts: Sequence[str]) -> list[CategoriseResult]:

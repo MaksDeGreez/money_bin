@@ -3,6 +3,10 @@
 Run it with `uv run uvicorn app.main:app --host 127.0.0.1 --port 8100`.
 """
 
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Request, UploadFile
@@ -122,16 +126,36 @@ async def _read_images(uploads: list[UploadFile], max_bytes: int) -> list[ImageI
     return images
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the app. An unknown backend name fails here, before the server starts."""
+def elapsed_since(started: float) -> Decimal:
+    """Seconds since `started` (a `time.perf_counter()` value), to the millisecond."""
+    return Decimal(f"{time.perf_counter() - started:.3f}")
+
+
+def create_app(settings: Settings | None = None, backend: Backend | None = None) -> FastAPI:
+    """Build the app. An unknown backend name fails here, before the server starts.
+
+    `backend` replaces the one named by `settings.ocr_backend` (the tests pass
+    a backend with a fake model). The backend's `start()` runs when the server
+    starts (a model is loaded then, so the first request is not slow and a
+    broken setup stops the service at once) and `stop()` when it shuts down.
+    """
     settings = settings or Settings()
-    backend = create_backend(settings.ocr_backend)
+    backend = backend or create_backend(settings.ocr_backend, settings)
     max_image_bytes = settings.ml_max_image_bytes
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await run_in_threadpool(backend.start)
+        try:
+            yield
+        finally:
+            await run_in_threadpool(backend.stop)
 
     app = FastAPI(
         title="money_bin ML service",
         version="0.1.0",
         summary="Receipt OCR and item categorisation.",
+        lifespan=lifespan,
     )
     app.state.backend = backend
     register_error_handlers(app)
@@ -152,9 +176,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     ) -> OcrResponse:
         inputs = await _read_images(images, max_image_bytes)
-        receipt = await run_in_threadpool(backend.extract_receipt, inputs)
+        started = time.perf_counter()
+        extraction = await run_in_threadpool(backend.extract_receipt, inputs)
         return OcrResponse(
-            receipt=receipt,
+            receipt=extraction.receipt,
+            prompt_version=extraction.prompt_version,
+            repaired=extraction.repaired,
+            elapsed_seconds=elapsed_since(started),
             backend=backend.name,
             model_name=backend.model_name,
             model_version=backend.model_version,

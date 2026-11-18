@@ -36,14 +36,49 @@ def test_receipt_allows_missing_optional_fields_and_no_items() -> None:
     receipt = Receipt(total=Decimal("0.00"), currency="EUR")
 
     assert receipt.model_dump(mode="json") == {
+        "kind": None,
         "merchant": None,
         "fiscal_number": None,
         "receipt_number": None,
         "issued_at": None,
         "total": "0.00",
         "currency": "EUR",
+        "card_last4": None,
+        "sum_matches_total": None,
         "items": [],
     }
+
+
+def test_every_receipt_key_is_present_even_when_everything_is_null() -> None:
+    dumped = Receipt().model_dump(mode="json")
+
+    assert dumped["total"] is None
+    assert dumped["currency"] is None
+    assert {"total", "currency", "items"} <= dumped.keys()
+
+
+def test_item_quantity_and_unit_price_may_be_null_but_are_always_written() -> None:
+    item = ReceiptItem(name="x", quantity=None, unit_price=None, amount=Decimal("1.00"))
+
+    assert item.model_dump(mode="json") == {
+        "name": "x",
+        "quantity": None,
+        "unit_price": None,
+        "amount": "1.00",
+        "discount": "0.00",
+    }
+
+
+@pytest.mark.parametrize("kind", ["receipt", "FISCAL", ""])
+def test_kind_is_fiscal_card_slip_or_null(kind: str) -> None:
+    with pytest.raises(ValidationError):
+        Receipt(kind=kind)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("last4", ["123", "12345", "12a4"])
+def test_card_last4_is_four_digits(last4: str) -> None:
+    with pytest.raises(ValidationError):
+        Receipt(card_last4=last4)
 
 
 @pytest.mark.parametrize("currency", ["uah", "UA", "UAHH", "", "U1H"])
