@@ -1,7 +1,9 @@
 - content_for :title, "#{receipt_label(@receipt)} · Receipts · Money Bin"
 / Live: Receipts::LiveUpdate asks this page to refresh (morph, scroll kept) when OCR is queued, starts,
 / finishes or fails, so the status badge and the data column follow it without a reload.
-= turbo_stream_from @receipt
+/ live-refresh asks again for a refresh that Turbo dropped during a visit (live_refresh_controller.js).
+div data-controller="live-refresh"
+  = turbo_stream_from @receipt
 
 = render "ui/page_header", title: receipt_label(@receipt) do
   / No link prefetch: opening a receipt page queues OCR for an unread receipt.

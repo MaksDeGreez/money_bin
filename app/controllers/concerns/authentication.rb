@@ -59,8 +59,8 @@ module Authentication
     end
 
     def terminate_session
-      Session.disconnect_sockets([ Current.session ])
       Current.session.destroy
+      Session.disconnect_sockets([ Current.session ])
       cookies.delete(Session::COOKIE_NAME)
       reset_session
     end

@@ -69,7 +69,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_select "nav.count-tabs a", text: /Not read yet\s*1/
     assert_select "nav.count-tabs a", text: /OCR failed\s*1/
     assert_select "nav.count-tabs a[aria-current=page]", text: /All\s*4/
-    assert_select "turbo-cable-stream-source"
+    assert_select "[data-controller=live-refresh] turbo-cable-stream-source"
     assert_select "[data-turbo-prefetch=false] a[href^='/receipts/']"
   end
 
@@ -183,17 +183,17 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
       assert_select ".badge", text: "Items match the total"
       assert_select ".badge", text: "Match", count: 4
     end
-    assert_select "turbo-cable-stream-source"
+    assert_select "[data-controller=live-refresh] turbo-cable-stream-source"
   end
 
-  test "a receipt page shows suggestions with their confidence, the gap to the total and QR mismatches" do
+  test "a receipt page shows suggestions with their confidence, the card digits and QR mismatches" do
     receipt = receipts(:corner_receipt)
     receipt.update_columns(qr_total: BigDecimal("150.00"), qr_issued_at: receipt.issued_at + 30.seconds)
 
     get receipt_path(receipt)
 
     assert_select "tbody tr", text: /Sandwich.*Suggested: Takeaway & fast food\s*\(62%\)/m
-    assert_select ".data-row", text: /Difference\s*0.00 UAH/, count: 0
+    assert_select ".badge", text: "Items match the total"
     assert_select ".data-row", text: /Card\s*•••• 4242/
     assert_select "tr", text: /Total\s*150.00\s*152.50\s*Mismatch/
     assert_select "tr", text: /Issued at\s*2026-10-08 12:05\s*2026-10-08 12:05\s*Match/
@@ -292,7 +292,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
   test "when the queue cannot be reached the page says so and the receipt is not marked queued" do
     receipt = receipts(:new_receipt)
 
-    with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue_all, ->(*) { raise RedisClient::CannotConnectError, "down" }) do
+    with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue, ->(*) { raise RedisClient::CannotConnectError, "down" }) do
       get receipt_path(receipt)
     end
 

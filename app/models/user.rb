@@ -35,7 +35,8 @@ class User < ApplicationRecord
     # is none, so every session ends.
     def end_other_sessions
       ending = sessions.where.not(id: Current.session&.id)
-      Session.disconnect_sockets(ending.includes(:user).to_a)
+      records = ending.includes(:user).to_a
       ending.delete_all
+      Session.disconnect_sockets(records)
     end
 end

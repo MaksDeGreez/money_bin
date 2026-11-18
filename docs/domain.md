@@ -318,8 +318,9 @@ it (`Receipts::ApplyOcr` refuses it too). A `processing` one is being read alrea
 locks the rows and takes only those where it is nil. The job clears it when it starts. So opening a page
 twice, clicking twice, or "Read all" over receipts that are already waiting queues nothing more; two
 requests at the same moment are serialised by the row lock, and the second sees the first one's value. The
-job is queued after the claim commits; when the queue (Redis) cannot be reached, the claim is taken back
-and the page says so, so the receipt never looks queued when it is not. A request older than a day counts
+job is queued after the claim commits, one push per job (Sidekiq's bulk push does not report which jobs it
+queued); when the queue (Redis) cannot be reached, the claims of the jobs not queued are taken back and the
+page says so, so a receipt never looks queued when it is not. A request older than a day counts
 as lost (the queue was emptied by hand) and may be made again. A duplicate job would be harmless anyway:
 the OCR queue runs one job at a time, and the second finds the receipt read and does nothing.
 
@@ -378,12 +379,15 @@ writes with `update_columns`: by `ReceiptOcrJob` when it starts and when it fail
 its own filter and morphs, so the status badge, the data column, the rows and the counts change and
 nothing else moves. A refresh rather than replacing parts with rendered partials, because Action Cable
 does not promise the order of messages: a job that fails within milliseconds of starting could otherwise
-leave "Reading" on the page. A failed broadcast is logged and reported, never raised into the job.
+leave "Reading" on the page. Turbo drops a refresh that arrives while a visit is still running (say the
+"Reading" refresh), so the pages carry a small Stimulus controller (`live_refresh_controller.js`) that
+notices this and asks for one more refresh once that visit is done. A failed broadcast is logged and
+reported, never raised into the job.
 
 Only a signed-in browser opens the WebSocket (`ApplicationCable::Connection` reads the same signed
 session cookie as the pages), and a stream is joined only through a name the app signed. The connection
 is identified by its session: signing out, and a new password (which ends every other session), close
-the ended sessions' sockets at once, and their reconnect is refused.
+the ended sessions' sockets once the deletion has committed, and their reconnect is refused.
 
 What is stored where:
 

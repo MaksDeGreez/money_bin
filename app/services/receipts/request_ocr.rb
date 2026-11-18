@@ -13,7 +13,8 @@ module Receipts
   # nil, and the job clears it when it starts. A second request while the first one waits finds it set and
   # queues nothing, also when both arrive at the same moment (the second waits for the lock, then sees the
   # first one's value). The job is queued after the claim is committed; if the queue cannot be reached
-  # the claim is taken back and QueueUnavailable is raised, so the receipt does not look queued.
+  # the claims of the jobs that were not queued are taken back and QueueUnavailable is raised, so a receipt
+  # never looks queued when it is not.
   #
   # A request older than STALE_AFTER counts as lost (the queue was emptied by hand, Redis lost its data)
   # and may be made again. A duplicate job is harmless: the OCR queue runs one job at a time, and the second
@@ -55,9 +56,12 @@ module Receipts
       ids = claim(now)
       return ids if ids.empty?
 
-      enqueue(ids, now)
-      LiveUpdate.requested(ids)
-      ids
+      queued, failed = enqueue(ids)
+      release(failed, now) if failed.any?
+      LiveUpdate.requested(queued) if queued.any?
+      raise QueueUnavailable, "#{failed.size} of #{ids.size} OCR job(s) could not be queued" if failed.any?
+
+      queued
     end
 
     private
@@ -69,18 +73,22 @@ module Receipts
         end
       end
 
-      # In the claimed order, so "Read all" works through a list in the order it is shown.
-      def enqueue(ids, now)
-        receipts = Receipt.where(id: ids).index_by(&:id).values_at(*ids)
-        jobs = receipts.map { |receipt| ReceiptOcrJob.new(receipt) }
-        ActiveJob.perform_all_later(jobs)
-        failed = jobs.count { |job| !job.successfully_enqueued? }
-        raise QueueUnavailable, "#{failed} of #{jobs.size} OCR job(s) could not be queued" if failed.positive?
-      rescue StandardError => error
-        release(ids, now)
-        raise if error.is_a?(QueueUnavailable)
+      # One push per job, in the claimed order, so "Read all" works through a list in the order it is shown.
+      # Not ActiveJob.perform_all_later: Sidekiq's bulk push does not mark its jobs as enqueued, so a
+      # successful push would look failed. Returns [queued ids, failed ids]; after the first error (Redis
+      # gone) the rest are not tried.
+      def enqueue(ids)
+        receipts = Receipt.where(id: ids).index_by(&:id).values_at(*ids).compact
+        queued = []
+        receipts.each do |receipt|
+          break unless ReceiptOcrJob.new(receipt).enqueue
 
-        raise QueueUnavailable, "the OCR queue cannot be reached (#{error.class})"
+          queued << receipt.id
+        rescue StandardError => error
+          Rails.logger.warn("Receipts::RequestOcr: the OCR queue cannot be reached (#{error.class})")
+          break
+        end
+        [ queued, receipts.map(&:id) - queued ]
       end
 
       # Takes the claim back, unless a job already started and cleared it.

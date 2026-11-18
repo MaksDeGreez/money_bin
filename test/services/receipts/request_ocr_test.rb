@@ -67,7 +67,7 @@ module Receipts
     test "when the queue cannot be reached the request is taken back" do
       receipt = receipts(:new_receipt)
 
-      with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue_all, ->(*) { raise RedisClient::CannotConnectError, "down" }) do
+      with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue, ->(*) { raise RedisClient::CannotConnectError, "down" }) do
         assert_raises(RequestOcr::QueueUnavailable) { RequestOcr.first_read(receipt) }
       end
 
@@ -75,15 +75,44 @@ module Receipts
       assert_equal [ receipt.id ], RequestOcr.first_read(receipt), "it can be requested again"
     end
 
-    test "a job the queue refused takes the request back too" do
-      receipt = receipts(:failed_receipt)
+    test "when the queue goes away half way, only the receipts that were queued stay claimed" do
+      receipts(:new_receipt).update_columns(created_at: 1.day.ago)
+      pushes = 0
+      flaky = lambda do |job|
+        pushes += 1
+        raise RedisClient::CannotConnectError, "down" if pushes > 1
 
-      refuse_all = ->(jobs) { jobs.each { |job| job.successfully_enqueued = false }.then { 0 } }
-      with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue_all, refuse_all) do
-        assert_raises(RequestOcr::QueueUnavailable) { RequestOcr.read_again(receipt) }
+        enqueued_jobs << { "job_class" => job.class.name, "arguments" => job.serialize["arguments"] }
       end
 
-      assert_nil receipt.reload.ocr_requested_at
+      with_singleton_method(ReceiptOcrJob.queue_adapter, :enqueue, flaky) do
+        assert_raises(RequestOcr::QueueUnavailable) { RequestOcr.read_all(Receipt.newest_first) }
+      end
+
+      assert receipts(:new_receipt).reload.ocr_pending?, "queued: still claimed"
+      assert_nil receipts(:failed_receipt).reload.ocr_requested_at, "not queued: claim taken back"
+      assert_equal 2, pushes, "after the first error the rest is not tried"
+    end
+
+    test "with the real Sidekiq adapter a successful push keeps the claim" do
+      pushed = []
+      fake_client = Class.new do
+        define_method(:initialize) { |**| }
+        define_method(:push) { |item| pushed << item; SecureRandom.hex(12) }
+      end
+      original_adapter = ReceiptOcrJob.queue_adapter
+      ReceiptOcrJob.queue_adapter = ActiveJob::QueueAdapters::SidekiqAdapter.new
+      Thread.current[:sidekiq_client_class] = fake_client
+
+      ids = RequestOcr.read_all(Receipt.newest_first)
+
+      assert_equal 2, ids.size
+      assert_equal ids.size, pushed.size
+      assert_equal [ "receipt_ocr" ], pushed.map { |item| item["queue"] }.uniq
+      assert Receipt.where(id: ids).all?(&:ocr_pending?), "a real push must not look like a failure"
+    ensure
+      Thread.current[:sidekiq_client_class] = nil
+      ReceiptOcrJob.queue_adapter = original_adapter
     end
 
     test "a request updates the receipt's open pages" do

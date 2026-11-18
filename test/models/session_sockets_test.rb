@@ -34,6 +34,28 @@ class SessionSocketsTest < ActionDispatch::IntegrationTest
     Current.reset
   end
 
+  test "the disconnect is sent only once the ended sessions are gone from the database" do
+    ended = users(:owner).sessions.create!
+    Current.session = users(:owner).sessions.create!
+    still_there = nil
+    original = ActionCable.server.method(:remote_connections)
+    watching = lambda do
+      still_there = Session.exists?(ended.id)
+      original.call
+    end
+
+    with_singleton_method(ActionCable.server, :remote_connections, watching) do
+      User.transaction(requires_new: true) do
+        users(:owner).update!(password: "a-new-long-password-for-tests")
+        assert_nil still_there, "nothing is sent inside the transaction"
+      end
+    end
+
+    assert_equal false, still_there
+  ensure
+    Current.reset
+  end
+
   test "a cable that cannot be reached does not stop the sign-out" do
     sign_in_as users(:owner)
 
