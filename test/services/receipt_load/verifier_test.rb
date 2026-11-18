@@ -92,7 +92,8 @@ module ReceiptLoad
         ingest_line(4).tap { |line| File.delete(File.join(ingest_dir, line["images"][0]["file"])) },
         ingest_line(5).tap { |line| line["images"][0]["bytes"] += 1 },
         ingest_line(6).tap { |line| File.binwrite(File.join(ingest_dir, line["images"][0]["file"]), png_bytes(red: 250)) },
-        ingest_line(7).tap { |line| line["images"][0]["file"] = "images" }
+        ingest_line(7).tap { |line| line["images"][0]["file"] = "images" },
+        ingest_line(8).tap { |line| line["images"][0]["file"] = "~nobody-at-all/photo.png" }
       ]
       write_ingest(lines)
 
@@ -103,7 +104,8 @@ module ReceiptLoad
         "rcpt_000004: image 1 is not a file inside the ingest folder",
         "rcpt_000005: image 1 has another size than recorded",
         "rcpt_000006: image 1 has another SHA-256 than recorded",
-        "rcpt_000007: image 1 is not a file inside the ingest folder"
+        "rcpt_000007: image 1 is not a file inside the ingest folder",
+        "rcpt_000008: image 1 is not a file inside the ingest folder"
       ], problems
     ensure
       FileUtils.remove_entry(File.dirname(outside)) if outside
@@ -169,7 +171,8 @@ module ReceiptLoad
         ingest_line(5, qr_fields: ingest_qr_fields(total: 12.3)),
         ingest_line(6, qr_fields: ingest_qr_fields(fiscal_number: "")),
         ingest_line(7, qr_fields: ingest_qr_fields.except("total")),
-        ingest_line(8).merge("qr_fields" => [])
+        ingest_line(8).merge("qr_fields" => []),
+        ingest_line(9, qr_fields: ingest_qr_fields(issued_at: "2026-09-14T10:20:00.1234567+03:00"))
       ])
 
       assert_equal [
@@ -180,8 +183,20 @@ module ReceiptLoad
         "rcpt_000005: qr_fields.total is not a text or null",
         "rcpt_000006: qr_fields.fiscal_number is empty",
         "rcpt_000007: qr_fields does not have exactly the keys issued_at, total, fiscal_number, receipt_number",
-        "rcpt_000008: qr_fields is not an object or null"
+        "rcpt_000008: qr_fields is not an object or null",
+        "rcpt_000009: qr_fields.issued_at is not an ISO 8601 time with an offset"
       ], problems
+    end
+
+    test "a QR total too large for the column is stored as nil with a warning, the load goes on" do
+      write_ingest([ ingest_line(1, qr_fields: ingest_qr_fields(total: "12345678901234.00")), ingest_line(2, qr_fields: ingest_qr_fields(total: "9999999999999.99")) ])
+
+      dataset = verify
+
+      assert_nil dataset.lines.first.qr[:qr_total]
+      assert_equal "4000000009", dataset.lines.first.qr[:qr_fiscal_number]
+      assert_equal BigDecimal("9999999999999.99"), dataset.lines.second.qr[:qr_total]
+      assert_equal [ "rcpt_000001: qr_fields.total is too large for the column, stored as nil" ], dataset.warnings
     end
 
     test "a qr_conflict line keeps no QR value" do

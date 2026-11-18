@@ -80,7 +80,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   read (nil when unknown).
   `kind` says what the paper is: `fiscal` (a cash register receipt, the kind with a tax QR code) or
   `card_slip` (a card terminal slip: a total and a card number, usually no items); nil means "not known
-  yet". OCR sets it and a person corrects it at review; nothing else does (see "QR ground truth" for why a
+  yet". OCR sets it (once the ML service's answer carries `kind`: no backend sends it yet, see
+  `ml/README.md`) and a person corrects it at review; nothing else does (see "QR ground truth" for why a
   QR code does not). `incomplete` marks a torn or cut-off receipt whose total or date cannot be read
   (false by default). `card_last4` is the last four digits of the card printed on a slip, as OCR read them.
   `qr_payload` is the text of the receipt's QR code, and `qr_issued_at`, `qr_total`, `qr_fiscal_number` and
@@ -429,8 +430,10 @@ Checks before any write (`ReceiptLoad::Verifier`); any problem stops the load an
   or more digits and unique; no two lines to load have the same photos;
 - every image file is a regular file inside DIR (no absolute path, no `..`, no symlink out of it), with
   the recorded size and SHA-256, and the line's `fingerprint` is `Receipt.fingerprint` of the images;
-- `qr_fields` values are null or parse: `issued_at` an ISO 8601 time with an offset, `total` a decimal with
-  two places (read with `BigDecimal`, never a float).
+- `qr_fields` values are null or parse: `issued_at` an ISO 8601 time with an offset (at most six
+  fractional digits, what the column keeps), `total` a decimal with two places (read with `BigDecimal`,
+  never a float). A total too large for `decimal(15, 2)` is stored as nil with a warning instead: one
+  misread QR code must not stop every receipt.
 
 Skipped and counted, not problems: a line without images; a line with more than three photos
 (`too_many_parts`: fix the grouping in the ingest tool's override file and run it again); a line flagged
@@ -458,10 +461,13 @@ one transaction over 1.4 GB of photos would still not make the files all or noth
 is safe on its own:
 
 - its photo files are uploaded first, then attached inside the receipt's database transaction, so a
-  committed receipt always has its files. When the transaction fails (or a regrouped receipt turns out not
-  to be pristine), the uploads are deleted again;
-- the bytes are checked once more after the upload (the MD5 Active Storage computes against the one from
-  the check), so a file that changed in between fails its receipt instead of being stored;
+  committed receipt always has its files. Each blob row is made before its upload, so when an upload
+  fails, the transaction fails, or a regrouped receipt turns out not to be pristine, every blob row and
+  file made for that receipt is deleted again;
+- the storage service compares the stored bytes with the MD5 from the check, so a file that changed in
+  between fails its receipt instead of being stored;
+- the match is made before the row lock, so it is checked again under the lock: a receipt that another
+  run regrouped in between is a conflict, not a receipt that gets the wrong QR values;
 - a receipt that fails is counted and named, the others go on, and the task exits with status 1;
 - a second run of the same folder writes nothing, so a load that stopped half way is simply run again. A
   run that was killed between an upload and its commit can leave unattached blobs
@@ -471,8 +477,9 @@ is safe on its own:
 back at the end. It uploads no file: it creates blob rows only (marked as identified, so attaching them does
 not read a file), which the rollback removes.
 
-The load never sets `kind` and never enqueues OCR. It prints counts per outcome (in total and per batch) and
-warnings with receipt ids, never a QR payload, a raw photo name, a total or a date; Active Record's SQL log
+The load never sets `kind` and never enqueues OCR. It prints counts per outcome (in total and per batch, by
+the batch folder name, as the ingest tool's own summary does) and warnings with receipt ids, never a QR
+payload, a raw photo name, a total or a date; Active Record's SQL log
 is silenced while it runs, for the same reason. A real run needs Redis: attaching a photo enqueues Active
 Storage's analysis job, and the task checks Redis before it writes.
 

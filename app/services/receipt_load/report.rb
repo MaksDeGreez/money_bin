@@ -1,6 +1,7 @@
 module ReceiptLoad
-  # What a receipt load did, as counts per outcome (in total and per batch) and warnings that name receipt
-  # ids only: never a QR payload, a raw photo name, a total or a date, so the report can be printed and kept.
+  # What a receipt load did, as counts per outcome (in total and per batch, by the batch folder name, which the
+  # ingest tool prints too) and warnings that name receipt ids only: never a QR payload, a raw photo name, a
+  # total or a date, so the report can be printed and kept.
   class Report
     # What happened to a line of receipts.jsonl, or to a loaded receipt whose line has left the file.
     OUTCOMES = {
@@ -18,6 +19,8 @@ module ReceiptLoad
       retired_kept: "kept (left the ingest, already worked on)"
     }.freeze
     SKIP_REASONS = %i[no_images too_many_parts files_unusable].freeze
+    # The label of a loaded receipt whose batch was cleared in the app.
+    NO_BATCH = "(no batch)"
 
     attr_reader :warnings, :lines
 
@@ -36,15 +39,11 @@ module ReceiptLoad
     def count(batch, outcome)
       @totals.fetch(outcome)
       @totals[outcome] += 1
-      @batches[batch.to_s][outcome] += 1
+      @batches[batch.presence || NO_BATCH][outcome] += 1
     end
 
     def [](outcome)
       @totals.fetch(outcome)
-    end
-
-    def batch(name)
-      @batches.key?(name) ? @batches[name].dup : OUTCOMES.keys.index_with { 0 }
     end
 
     def warn(text)

@@ -160,7 +160,7 @@ read). The task checks the whole `receipts.jsonl` and every image (inside the fo
 fingerprint) before it writes anything, then writes one receipt per database transaction. Run it again
 after each new ingest run: unchanged receipts are left alone, receipts the tool regrouped get their new
 photos while nobody has worked on them yet, and receipts that left the set are deleted while untouched
-(otherwise kept and reported). It enqueues no OCR. It prints counts and receipt ids only, never a QR
+(otherwise kept and reported). It enqueues no OCR. It prints counts (in total and per batch folder) and receipt ids only, never a QR
 value, a total, a date or a photo name, and exits with status 1 when the check fails or a receipt could
 not be written. A real run needs Redis (Active Storage analyses photos in background jobs). The rules are
 in [`docs/domain.md`](docs/domain.md), "Receipt load".

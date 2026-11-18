@@ -11,8 +11,9 @@ module ReceiptLoad
   # - every image file is a regular file inside the folder (no absolute path, no `..`, no symlink out of
   #   it), with the recorded size and SHA-256, and the recorded `fingerprint` is Receipt.fingerprint of the
   #   images;
-  # - the QR fields parse: `issued_at` an ISO 8601 time with an offset, `total` a decimal with two places;
-  #   each may be null.
+  # - the QR fields parse: `issued_at` an ISO 8601 time with an offset (at most microseconds, what the
+  #   column keeps), `total` a decimal with two places; each may be null. A total too large for the column
+  #   (decimal(15, 2)) is stored as nil with a warning: one misread QR code must not stop the whole load.
   #
   # Any problem raises Error with every problem found (ids and reasons only). Not problems, but counted as
   # skipped: a line without images, a line with more photos than a receipt may have (`too_many_parts`), and
@@ -28,8 +29,8 @@ module ReceiptLoad
       "fiscal_number" => :qr_fiscal_number, "receipt_number" => :qr_receipt_number
     }.freeze
     NO_QR = QR_FIELDS.values.index_with(nil).freeze
-    TIME = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})\z/
-    MONEY = /\A\d{1,13}\.\d{2}\z/
+    TIME = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})\z/
+    MONEY = /\A\d+\.\d{2}\z/
     # Flags that say the ingest tool may have left the line's files behind.
     UNSURE_FLAGS = %w[processing_failed raw_missing].freeze
     CHUNK_SIZE = 1.megabyte
@@ -138,7 +139,11 @@ module ReceiptLoad
         when "total"
           return problem("#{id}: qr_fields.total is not a decimal with two places") unless value.match?(MONEY)
 
-          BigDecimal(value)
+          total = BigDecimal(value)
+          return total if total < Transaction::AMOUNT_LIMIT
+
+          @warnings << "#{id}: qr_fields.total is too large for the column, stored as nil"
+          nil
         else
           value.presence || problem("#{id}: qr_fields.#{key} is empty")
         end
@@ -213,11 +218,11 @@ module ReceiptLoad
 
       # The real path of `file` when it is a regular file inside `root`, else nil.
       def inside(root, file)
-        return if file.empty? || file.include?("\0") || file.start_with?("/")
+        return if file.empty? || file.include?("\0") || file.start_with?("/", "~")
 
         path = File.realpath(File.expand_path(file, root))
         path if path.start_with?(root + File::SEPARATOR) && File.file?(path)
-      rescue SystemCallError
+      rescue SystemCallError, ArgumentError
         nil
       end
 

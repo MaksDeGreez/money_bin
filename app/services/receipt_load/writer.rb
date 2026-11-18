@@ -49,7 +49,7 @@ module ReceiptLoad
     # Loaded receipts whose `ingest_id` is not in `ingest_ids` (merged, excluded or regrouped by the ingest
     # tool): deleted while pristine, otherwise kept with a warning. Yields each receipt and its outcome.
     def retire(ingest_ids)
-      Receipt.where.not(ingest_id: nil).where.not(ingest_id: ingest_ids).order(:ingest_id).find_each do |receipt|
+      Receipt.where.not(ingest_id: nil).where.not(ingest_id: ingest_ids).order(:ingest_id).each do |receipt|
         batch = receipt.batch
         outcome = transaction do
           receipt.with_lock do
@@ -75,14 +75,23 @@ module ReceiptLoad
       def update(receipt, line)
         changed = transaction do
           receipt.with_lock do
+            # The match was made before the lock: another load may have regrouped the receipt since.
+            next :moved unless same_receipt?(receipt, line)
+
             attributes = ingest_attributes(line)
             attributes.delete(:ingest_id) if receipt.ingest_id.present?
             receipt.assign_attributes(attributes)
             receipt.changed?.tap { |changes| receipt.save! if changes }
           end
         end
+        return conflict(line, "receipt #{receipt.id} changed while it was being loaded") if changed == :moved
+
         repaired = repair_files(receipt, line)
         @report.count(line.batch, changed ? :updated : (repaired ? :repaired : :unchanged))
+      end
+
+      def same_receipt?(receipt, line)
+        receipt.sha256 == line.fingerprint && [ nil, line.ingest_id ].include?(receipt.ingest_id)
       end
 
       def regroup(receipt, line)
@@ -92,8 +101,8 @@ module ReceiptLoad
         written = with_uploads(line) do |blobs|
           transaction do
             receipt.with_lock do
-              # Checked again under the lock: OCR may have started since.
-              next false unless receipt.pristine?
+              # Checked again under the lock: OCR or another load may have got to it since.
+              next false unless receipt.pristine? && receipt.ingest_id == line.ingest_id
 
               receipt.images = blobs
               receipt.assign_attributes(sha256: line.fingerprint, **ingest_attributes(line))
@@ -112,37 +121,39 @@ module ReceiptLoad
           raise FileChanged, "no image of the line has the bytes of a stored photo" unless image
           next if @dry_run
 
-          File.open(image.path, "rb") { |io| blob.upload_without_unfurling(io) }
+          upload(blob, image)
         end
         missing.any?
       end
 
       # Yields the line's images as blobs, uploaded first (rows only in a dry run), and returns what the
-      # block returns. When the block raises or returns false, the uploads are deleted again, so no stray
-      # file is left behind.
+      # block returns. Each blob row is kept for clean-up before its file is uploaded, so when an upload
+      # fails, the block raises or the block returns false, every row and file made here is deleted again.
       def with_uploads(line)
         blobs = []
         kept = false
-        line.images.each { |image| blobs << blob_for(image) }
+        line.images.each do |image|
+          blobs << blob_row(image)
+          upload(blobs.last, image) unless @dry_run
+        end
         kept = yield(blobs)
       ensure
         purge(blobs) unless kept
       end
 
-      def blob_for(image)
-        if @dry_run
-          # A row only. Marked identified, as an upload would be, so attaching it does not read the file.
-          ActiveStorage::Blob.create!(filename: image.filename, byte_size: image.byte_size, checksum: image.checksum,
-            content_type: image.content_type, metadata: { identified: true })
-        else
-          blob = File.open(image.path, "rb") do |io|
-            ActiveStorage::Blob.create_and_upload!(io:, filename: image.filename, content_type: image.content_type, identify: false)
-          end
-          return blob if blob.checksum == image.checksum && blob.byte_size == image.byte_size
+      # The blob row with the size, checksum and content type from the check. Marked identified, as an
+      # upload with a known content type would be, so attaching it never reads the file.
+      def blob_row(image)
+        ActiveStorage::Blob.create!(filename: image.filename, byte_size: image.byte_size, checksum: image.checksum,
+          content_type: image.content_type, metadata: { identified: true })
+      end
 
-          blob.purge
-          raise FileChanged, "image #{image.part} changed after it was checked"
-        end
+      # The storage service compares the stored bytes with the blob's checksum and deletes the file when
+      # they differ, so a photo that changed after the check is never stored.
+      def upload(blob, image)
+        File.open(image.path, "rb") { |io| blob.upload_without_unfurling(io) }
+      rescue ActiveStorage::IntegrityError
+        raise FileChanged, "image #{image.part} changed after it was checked"
       end
 
       def purge(blobs)

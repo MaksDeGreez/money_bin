@@ -306,12 +306,19 @@ module ReceiptLoad
       line["fingerprint"] = text["sha256"]
       write_ingest([ line, ingest_line(2) ])
       blobs = ActiveStorage::Blob.count
+      service = ActiveStorage::Blob.service
+      upload = service.method(:upload)
+      keys = []
 
-      report = load_receipts
+      report = with_singleton_method(service, :upload, ->(key, io, **options) { keys << key; upload.call(key, io, **options) }) do
+        load_receipts
+      end
 
       assert report.failed?, @output.string
       assert_equal({ failed: 1, created: 1 }, counts(report, :failed, :created))
       assert_equal blobs + 1, ActiveStorage::Blob.count
+      assert_equal [ false, true ], keys.map { |key| ActiveStorage::Blob.exists?(key:) }
+      assert_equal [ false, true ], keys.map { |key| service.exist?(key) }, "the refused receipt's file is deleted"
       assert_includes @output.string, "rcpt_000001: failed, refused: images"
       assert_includes @output.string, "Done with failures"
     end
@@ -328,6 +335,48 @@ module ReceiptLoad
       assert_equal blobs, ActiveStorage::Blob.count
     end
 
+    test "a failed upload leaves no blob row and no file behind" do
+      write_ingest([ ingest_line(1, colours: [ 1, 2, 3 ]) ])
+      blobs = ActiveStorage::Blob.count
+      service = ActiveStorage::Blob.service
+      upload = service.method(:upload)
+      keys = []
+      calls = 0
+      failing = lambda do |key, io, **options|
+        calls += 1
+        keys << key
+        upload.call(key, io, **options)
+        raise Errno::ENOSPC if calls == 2
+      end
+
+      report = with_singleton_method(service, :upload, failing) { load_receipts }
+
+      assert_equal 1, report[:failed]
+      assert_includes @output.string, "rcpt_000001: failed, Errno::ENOSPC"
+      assert_equal blobs, ActiveStorage::Blob.count
+      assert_equal 2, calls
+      assert keys.none? { |key| service.exist?(key) }, "the uploaded files are deleted"
+      assert_not Receipt.exists?(ingest_id: ingest_id(1))
+    end
+
+    test "a receipt that another load moved between the match and the lock is left alone" do
+      line = ingest_line(1)
+      write_ingest([ line ])
+      load_receipts
+      stale = loaded(1)
+      other = Digest::SHA256.hexdigest("regrouped elsewhere")
+      stale.class.where(id: stale.id).update_all(sha256: other, qr_total: nil)
+
+      writer = Writer.new(report: report = Report.new)
+      with_singleton_method(Receipt, :find_by, ->(conditions) { conditions.key?(:ingest_id) ? stale : nil }) do
+        writer.call(Verifier.call(ingest_dir).lines.first.with(qr: Verifier::NO_QR.merge(qr_total: BigDecimal("9.99"))))
+      end
+
+      assert_equal 1, report[:conflict]
+      assert_match(/rcpt_000001: left alone, receipt \d+ changed while it was being loaded/, report.warnings.join)
+      assert_equal [ other, nil ], Receipt.where(id: stale.id).pick(:sha256, :qr_total)
+    end
+
     test "the output holds counts and ids, never a QR value, a raw photo name, a total or a date" do
       write_ingest([ ingest_line(1, qr_fields: ingest_qr_fields), ingest_line(2, qr_fields: ingest_qr_fields, flags: [ "qr_conflict" ]) ])
 
@@ -337,6 +386,24 @@ module ReceiptLoad
         assert_not_includes @output.string, secret
       end
       assert_includes @output.string, "Receipts: 2 created"
+    end
+
+    test "the SQL log is silenced while the load runs, so no QR value reaches the log file" do
+      write_ingest([ ingest_line(1, qr_fields: ingest_qr_fields) ])
+      log = StringIO.new
+      logger = ActiveSupport::Logger.new(log, level: :debug)
+      original = ActiveRecord::Base.logger
+      ActiveRecord::Base.logger = logger
+      begin
+        load_receipts
+        Receipt.where(qr_receipt_number: "900001").to_a
+      ensure
+        ActiveRecord::Base.logger = original
+      end
+
+      assert_includes log.string, "SELECT", "the logger works outside the load"
+      [ "cabinet", "4000000009", "123.4", "2026-09-14" ].each { |secret| assert_not_includes log.string.sub(/.*900001.*/, ""), secret }
+      assert_equal 1, log.string.scan("900001").size, "only the query made after the load is logged"
     end
 
     test "an unexpected error is reported by class and place only" do
