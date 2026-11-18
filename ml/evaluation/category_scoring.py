@@ -15,7 +15,9 @@ known) and, for a combined run, `combined_from` (`[{"run_id", "backend", "model_
 `ground_truth_source` (`dps_xml` or `manual`; when absent, the record the harness chooses); a card
 slip's line has `position: null` and predicts the receipt's own category. `candidates`: up to
 three, best first. `source`: an open set of short lower-case words (`memory`, `model`,
-`decision`, `combined`, ...). `seconds` a number; `cost_usd` a decimal string or null.
+`decision`, `combined`, ...). `seconds` a number or a decimal string; `cost_usd` a decimal string
+or null. `evaluation.item_categories_run` writes this format (it omits `ground_truth_source`, and
+says `calibrated` and `memory` in `run.json`).
 
 **Rows.** For every receipt the run has a line for, the reference record is
 `GroundTruth.categories` (exclusions, precedence and the pre-fill rule on
@@ -58,7 +60,7 @@ from categoriser.metrics import (
 )
 from evaluation.bootstrap import interval, rng_for
 from evaluation.common import COST_PER_1000_PLACES, COST_PER_RECEIPT_PLACES, timing_summary
-from evaluation.inputs import KNOWN_CATEGORY_SOURCES, ReceiptInfo, Run
+from evaluation.inputs import KNOWN_CATEGORY_SOURCES, ReceiptInfo, Run, seconds_value
 from evaluation.truth import GroundTruth
 
 SLUG = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -196,10 +198,14 @@ def build_rows(
 
 
 def _scores_calibrated(run: Run) -> bool | None:
-    """What the run says about its scores: `run.json`'s `scores_calibrated` (true when the scores
-    were calibrated, for example on a validation set), null when it does not say."""
-    value = run.meta.get("scores_calibrated")
-    return value if isinstance(value, bool) else None
+    """What the run says about its scores: `run.json`'s `scores_calibrated`, or `calibrated` as
+    `evaluation.item_categories_run` writes it (true when the scores were calibrated, for example
+    by `evaluation.item_categories_calibrate`), null when it says neither."""
+    for key in ("scores_calibrated", "calibrated"):
+        value = run.meta.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
 
 
 def encode(rows: list[Row], systems: dict[str, list[Row]] | None = None) -> Encoded:
@@ -434,13 +440,10 @@ def score_run(
         "top3_accuracy": float(np.mean(slip_top3)) if slips else None,
     }
     predicted_rows = [row for row in rows + slips if row.line is not None]
-    result["seconds_per_item"] = timing_summary(
-        float(row.line["seconds"])
-        for row in predicted_rows
-        if row.line is not None
-        and isinstance(row.line.get("seconds"), int | float)
-        and not isinstance(row.line.get("seconds"), bool)
-    )
+    seconds = [
+        seconds_value(row.line.get("seconds")) for row in predicted_rows if row.line is not None
+    ]
+    result["seconds_per_item"] = timing_summary(value for value in seconds if value is not None)
     result["cost_usd"] = _cost(predicted_rows)
     return CategoryRunScores(run=run, rows=rows, slips=slips, result=result)
 

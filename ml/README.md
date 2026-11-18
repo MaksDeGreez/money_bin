@@ -832,7 +832,15 @@ item:
   `sources`. The metrics are split by the values that occur; an undeclared word is counted as
   `other` (so a word written by mistake never reaches the results), and an item without a
   prediction or without a source as `unstated`.
-- `seconds`: a number; `cost_usd`: a decimal string, or null for a local model.
+- `seconds`: a number or a decimal string; `cost_usd`: a decimal string, or null for a local
+  model. Other keys (such as `error`) are ignored.
+
+`evaluation/item_categories_run.py` writes this format; the harness reads it as written: without
+`ground_truth_source` (positions then refer to the record the harness chooses, the person's record
+with categories, as the runner's), with `calibrated` instead of `scores_calibrated`, and with
+`memory` in `run.json`: when `memory.enabled` is true, the run also counts as the categoriser named
+in `memory.categoriser_name` (`label-memory`) for the pre-fill rule, so a receipt whose categories
+the label memory suggested is left out of it.
 
 ### Which ground truth counts
 

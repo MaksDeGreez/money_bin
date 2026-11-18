@@ -148,6 +148,9 @@ RUN_FOLDER = ("models/qwen8b", "local")
         ("mlx-community/Qwen3-VL-8B-Instruct-4bit", "local", RUN_HOSTED, "unknown"),
         ("source:hand", None, RUN_FOLDER, None),
         ("openai/gpt-4.1-mini", None, ("", None), "unknown"),
+        # A numeric model version says nothing about the model: it is skipped, not unknown.
+        ("label-memory", None, ("stub-categoriser", "0.1.0"), None),
+        ("stub-categoriser", None, ("stub-categoriser", "0.1.0"), "same_model"),
         # A pre-fill name that is only a revision hash identifies nothing.
         ("0123456789abcdef", None, RUN_HOSTED, "unknown"),
     ],

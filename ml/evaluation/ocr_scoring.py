@@ -39,7 +39,7 @@ from typing import Any
 
 from evaluation.bootstrap import Ratio, draws_for, estimate, rng_for
 from evaluation.common import cost_summary, timing_summary
-from evaluation.inputs import ReceiptInfo, Run
+from evaluation.inputs import ReceiptInfo, Run, seconds_value
 from evaluation.matching import VARIANTS, decimal_or_none, match_items
 from evaluation.ocr_fields import FIELDS, items_sum_to, predicted_of, truth_of
 from evaluation.text import levenshtein, normalise_merchant, normalise_name, plain
@@ -126,7 +126,7 @@ def score_receipt(
     outcome = ReceiptOutcome(
         receipt_id=info.receipt_id,
         status=record["status"],
-        seconds=record.get("seconds") if isinstance(record.get("seconds"), int | float) else None,
+        seconds=seconds_value(record.get("seconds")),
         repaired=bool(record.get("repaired")),
         kind_segment=truth.reference_kind(info),
         parts=info.parts,

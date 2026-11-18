@@ -10,6 +10,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +98,12 @@ class Run:
             )
         if self.is_combined and not self.combined_from:
             names.append(("", None))
+        memory = self.meta.get("memory")
+        if isinstance(memory, dict) and memory.get("enabled") is True:
+            # The label memory answers first; its name is what a receipt records when its
+            # suggestions came from memory (`categories_prefilled_by`).
+            name = memory.get("categoriser_name")
+            names.append((name if isinstance(name, str) else "", None))
         return names
 
     @property
@@ -167,6 +174,24 @@ def _finite_or_none(value: Any) -> bool:
     return math.isfinite(value)
 
 
+def seconds_value(value: Any) -> float | None:
+    """A line's `seconds`: a number or a decimal string (`"0.004"`, as the item categoriser
+    writes it), finite and not negative; None when absent or not such a value."""
+    if isinstance(value, str):
+        try:
+            number = Decimal(value)
+        except InvalidOperation:
+            return None
+        return float(number) if number.is_finite() and 0 <= number < 10**9 else None
+    if not _finite_or_none(value) or value is None or value < 0:
+        return None
+    return float(value)
+
+
+def _seconds_ok(value: Any) -> bool:
+    return value is None or seconds_value(value) is not None
+
+
 def _check_ocr_record(record: dict[str, Any], name: str, number: int) -> None:
     if not isinstance(record.get("receipt_id"), str):
         raise UsageError(f"{name}: line {number} has no receipt_id")
@@ -177,7 +202,7 @@ def _check_ocr_record(record: dict[str, Any], name: str, number: int) -> None:
         raise UsageError(f"{name}: line {number} has a receipt that is not an object")
     if isinstance(receipt, dict) and not isinstance(receipt.get("items") or [], list):
         raise UsageError(f"{name}: line {number} has items that are not a list")
-    if not _finite_or_none(record.get("seconds")):
+    if not _seconds_ok(record.get("seconds")):
         raise UsageError(f"{name}: line {number} has seconds that are not a finite number")
 
 
@@ -200,7 +225,7 @@ def _check_category_record(record: dict[str, Any], name: str, number: int) -> No
             raise UsageError(
                 f"{name}: line {number} has a candidate score that is not between 0 and 1"
             )
-    if not _finite_or_none(record.get("seconds")):
+    if not _seconds_ok(record.get("seconds")):
         raise UsageError(f"{name}: line {number} has seconds that are not a finite number")
     source_value = record.get("source")
     if source_value is not None and (

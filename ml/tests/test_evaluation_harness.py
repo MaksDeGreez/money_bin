@@ -1372,3 +1372,59 @@ def test_file_names_differing_only_by_case_are_refused(inputs: dict[str, Path]) 
         (path / "run.json").write_text(json.dumps(meta))
     with pytest.raises(ResultsShapeError, match="same name"):
         run_harness(inputs)
+
+
+# --- runs written by the item categoriser's own runner ---------------------------------------
+
+
+def test_runs_of_the_item_categoriser_are_read_as_written(
+    category_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    from evaluation import item_categories_run
+    from tests.categorise_helpers import CATEGORIES
+
+    # The label memory pre-filled rcpt_000001's categories: a run with memory must leave it out.
+    truth_file = category_inputs["truth"] / "ground_truth.jsonl"
+    lines = [json.loads(line) for line in truth_file.read_text(encoding="utf-8").splitlines()]
+    for line in lines:
+        if line["ingest_id"] == "rcpt_000001" and line["source"] == "manual":
+            line["categories_prefilled_by"] = "label-memory"
+    fx.write_truth(category_inputs["truth"], lines)
+    shutil.rmtree(category_inputs["runs"] / "cats")
+    categories = tmp_path / "item_categories.json"
+    categories.write_text(json.dumps({"categories": CATEGORIES}), encoding="utf-8")
+    for extra in ([], ["--memory"]):
+        item_categories_run.run(
+            item_categories_run.parse_args(
+                [
+                    "--ground-truth",
+                    str(truth_file),
+                    "--ingest",
+                    str(category_inputs["receipts"]),
+                    "--categories",
+                    str(categories),
+                    "--out",
+                    str(category_inputs["runs"]),
+                    "--backend",
+                    "stub",
+                    *extra,
+                ]
+            ),
+            io.StringIO(),
+        )
+    index, _ = run_harness(category_inputs)
+    assert index is not None
+    results = {
+        run["run_id"]: result(category_inputs, run["run_id"])
+        for run in index["runs"]
+        if run["task"] == "item_categories"
+    }
+    assert len(results) == 2
+    with_memory = [r for r in results.values() if r["counts"]["receipts_excluded_prefilled"]]
+    without = [r for r in results.values() if not r["counts"]["receipts_excluded_prefilled"]]
+    assert len(with_memory) == 1 and len(without) == 1
+    assert without[0]["headline"]["items"] == 4  # rcpt_000001 (3) and rcpt_000002 (1)
+    assert with_memory[0]["headline"]["items"] == 1  # rcpt_000001 left out
+    assert without[0]["seconds_per_item"]["count"] >= 4  # seconds written as decimal strings
+    assert without[0]["calibration"]["scores_calibrated"] is False
+    assert "Sentinel" not in all_text(category_inputs["out"])

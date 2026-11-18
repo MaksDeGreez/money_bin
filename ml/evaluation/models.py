@@ -41,7 +41,8 @@ different models (`different`); the same words and versions (a size given on one
 versions on one side only, do not matter) are the same model (`same`); anything else (a word the
 rules do not know, one version list going further than the other) is `unknown`. A name that is a
 path on disk, whose version is `local` (a model loaded from a folder: `ml/app/backends/mlx.py`
-reports that), or that leaves no word, is `unknown` too.
+reports that), or that leaves no word, is `unknown` too. A version that is a commit hash or a
+version number (`0.1.0`) is not a name and is skipped.
 
 **The rule** (`prefill_exclusion`): a record pre-filled by `source:hand` or `source:dps_xml` (or an
 imported record, with no `prefilled_by`) counts for every model. It is left out of a run as
@@ -135,8 +136,9 @@ MIXED_BITS = re.compile(r"[-_]mixed[-_]\d+[-_]\d+bit")
 DATE = re.compile(r"(?<!\d)\d{4}[-_.]\d{2}[-_.]\d{2}(?!\d)")
 SIZE = re.compile(r"\A(?:\d+(?:p\d+)?[bm]|a\d+b|\d+e)\Z")
 PIECE = re.compile(r"a\d+b(?![a-z])|\d+p\d+[bm](?![a-z])|\d+[bm](?![a-z])|\d+e(?![a-z])|[a-z]+|\d+")
-# A model version that is a revision, not a name: a commit hash or a fixed word.
-REVISION = re.compile(r"\A(?:[0-9a-f]{7,64}|not-started|not-configured)\Z")
+# A model version that is a revision, not a name: a commit hash, a version number (`0.1.0`,
+# `v2`) or a fixed word. It says nothing about which model it is, so it is skipped.
+REVISION = re.compile(r"\A(?:[0-9a-f]{7,64}|v?\d+(?:[._-]\d+)*|not-started|not-configured)\Z")
 
 
 @dataclass(frozen=True)
