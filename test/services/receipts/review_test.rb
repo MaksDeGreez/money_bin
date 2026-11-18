@@ -423,4 +423,3 @@ class Receipts::ReviewTest < ActiveSupport::TestCase
     assert_equal [ categories(:takeaway).id, 0.62 ], [ sandwich.suggested_category_id, sandwich.confidence ]
   end
 end
-

@@ -123,4 +123,3 @@ class UiFormBuilderTest < ActionView::TestCase
     assert_equal "Household supplies", fragment.at_css("input[role=combobox]")["value"]
   end
 end
-
