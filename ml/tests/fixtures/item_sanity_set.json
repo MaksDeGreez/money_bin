@@ -1,0 +1,103 @@
+{
+  "about": "Invented receipt items with the obviously right category, for tests and for a smoke test of a real model (python -m evaluation.item_sanity). Every name and shop is made up; none comes from a real receipt.",
+  "receipts": [
+    {
+      "merchant": "Супермаркет Ранок",
+      "items": [
+        ["Мол2,5%900гФерма", "groceries/groceries"],
+        ["Хл400БатонНарізн", "groceries/groceries"],
+        ["БананВаг", "groceries/groceries"],
+        ["Ковб.ВарЛікарська", "groceries/groceries"],
+        ["СирТвердий45%ваг", "groceries/groceries"],
+        ["ЯйцеКурС1 10шт", "groceries/groceries"],
+        ["ПивоСвітле0,5лЖБ", "alcohol-tobacco/alcohol-tobacco"],
+        ["ВиноЧервСух0,75", "alcohol-tobacco/alcohol-tobacco"],
+        ["Сигарети КласікСин", "alcohol-tobacco/alcohol-tobacco"],
+        ["Засіб д/посуду 500мл", "household-shopping/household-supplies"],
+        ["ТуалПапір 4шт", "household-shopping/household-supplies"],
+        ["Зубна паста 75мл", "household-shopping/household-supplies"]
+      ]
+    },
+    {
+      "merchant": "Аптека Добробут",
+      "items": [
+        ["Парацетамол 500мг №10", "health/health-pharmacy"],
+        ["ІбупрофенТаб200мг№20", "health/health-pharmacy"],
+        ["Пластир бактерицид.", "health/health-pharmacy"],
+        ["ВітамінС1000шип.№20", "health/health-pharmacy"],
+        ["Краплі назал. 10мл", "health/health-pharmacy"]
+      ]
+    },
+    {
+      "merchant": "Зоомагазин Лапа",
+      "items": [
+        ["Корм д/котів 85г Курка", "household-shopping/pets"],
+        ["Наповнювач силік. 3,8л", "household-shopping/pets"],
+        ["Ласощі д/собак", "household-shopping/pets"],
+        ["Іграшка м'ячик гум.", "household-shopping/pets"]
+      ]
+    },
+    {
+      "merchant": "АЗС Магістраль",
+      "items": [
+        ["ДП Євро5 40,00л", "car/fuel"],
+        ["А-95 Преміум", "car/fuel"],
+        ["ХотДог Класичний", "eating-out/takeaway-fast-food"],
+        ["Омивач скла -20 4л", "car/service-parts-tyres"],
+        ["Олива мотор. 5W-30 4л", "car/service-parts-tyres"]
+      ]
+    },
+    {
+      "merchant": "Кав'ярня Зерно",
+      "items": [
+        ["Капучино 350мл", "eating-out/cafes-bars-restaurants"],
+        ["Круасан мигдал.", "eating-out/cafes-bars-restaurants"],
+        ["Лате на вівс. мол.", "eating-out/cafes-bars-restaurants"]
+      ]
+    },
+    {
+      "merchant": "Бургерна Швидко",
+      "items": [
+        ["БУРГЕР ЧІЗ ПОДВ", "eating-out/takeaway-fast-food"],
+        ["КАРТОПЛЯ ФРІ СЕР", "eating-out/takeaway-fast-food"],
+        ["КОЛА 0,5 ЛЬОД", "eating-out/takeaway-fast-food"]
+      ]
+    },
+    {
+      "merchant": "Техніка Плюс",
+      "items": [
+        ["Кабель USB-C 1м", "household-shopping/electronics-appliances"],
+        ["Навушники бездрот.", "household-shopping/electronics-appliances"],
+        ["Чайник електр. 1,7л", "household-shopping/electronics-appliances"]
+      ]
+    },
+    {
+      "merchant": "Одяг для всіх",
+      "items": [
+        ["Футболка чол. р.L", "household-shopping/clothing-accessories"],
+        ["Шкарпетки 3пари", "household-shopping/clothing-accessories"],
+        ["Ремінь шкір. чорн.", "household-shopping/clothing-accessories"]
+      ]
+    },
+    {
+      "merchant": "Спорт Актив",
+      "items": [
+        ["Гантель 5кг", "sports-fitness/sports-fitness"],
+        ["Килимок д/йоги", "sports-fitness/sports-fitness"],
+        ["Протеїн сироватк. 900г", "sports-fitness/sports-fitness"]
+      ]
+    },
+    {
+      "merchant": "Кінотеатр Промінь",
+      "items": [
+        ["Квиток Зал2 Ряд5 Місце7", "leisure-entertainment/entertainment-outings"]
+      ]
+    },
+    {
+      "merchant": "Каса вокзалу",
+      "items": [
+        ["Квиток Київ-Львів ІС", "transport/trips-intercity-travel"]
+      ]
+    }
+  ]
+}

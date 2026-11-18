@@ -1,4 +1,9 @@
-"""The interface that every backend implements."""
+"""The interface that every OCR backend implements, and the errors every backend raises.
+
+Item categorisation has its own interface (`app.categorise.base.Categoriser`),
+chosen by its own setting, so OCR and categorisation can run on different
+backends.
+"""
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -6,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import Settings
-from app.schemas import CategoriseResult, Receipt
+from app.schemas import Receipt
 
 
 class BackendNotImplementedError(NotImplementedError):
@@ -73,15 +78,10 @@ class Extraction:
 
 
 class Backend(ABC):
-    """A model backend for receipt OCR and item categorisation.
+    """A model backend for receipt OCR.
 
-    One backend serves both tasks. A single vision-language model (local or
-    hosted) can do both, so one interface keeps the selection simple.
-
-    `model_name` is the OCR model. It is reported by `/health` and `/ocr`.
-    `categoriser_model_name` is reported by `/categorise`. A backend that uses
-    one model for both tasks sets the same value twice. Both share
-    `model_version`.
+    `model_name` and `model_version` are the OCR model, reported by `/health`
+    and `/ocr`.
 
     `start()` runs when the service starts (before the first request) and
     `stop()` when it shuts down. A backend that needs no warm-up keeps the
@@ -90,7 +90,6 @@ class Backend(ABC):
 
     name: str
     model_name: str
-    categoriser_model_name: str
     model_version: str
 
     def __init__(self, settings: Settings | None = None) -> None:
@@ -105,7 +104,3 @@ class Backend(ABC):
     @abstractmethod
     def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
         """Read one receipt from 1 to 3 images (pages or parts of the same receipt)."""
-
-    @abstractmethod
-    def categorise(self, texts: Sequence[str]) -> list[CategoriseResult]:
-        """Suggest categories for each text. Results keep the order of `texts`."""

@@ -93,8 +93,8 @@ def test_candidate_score_must_be_between_zero_and_one(score: float) -> None:
         CategoryCandidate(category_slug="groceries/groceries", score=score)
 
 
-@pytest.mark.parametrize("count", [2, 4])
-def test_a_result_needs_exactly_three_candidates(count: int) -> None:
+@pytest.mark.parametrize("count", [0, 4])
+def test_a_result_has_one_to_three_candidates(count: int) -> None:
     candidates = [
         CategoryCandidate(category_slug=f"group/category-{n}", score=0.1) for n in range(count)
     ]

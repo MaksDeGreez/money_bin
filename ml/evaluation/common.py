@@ -140,3 +140,40 @@ def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
         "per_receipt_usd": per_receipt,
         "per_1000_receipts_usd": per_1000,
     }
+
+
+def read_categories(path: Path) -> list[Any]:
+    """The candidate categories exported by the Rails app (`bin/rails categories:export_items`).
+
+    The file is `{"categories": [{"slug", "name", "description", "group"}, ...]}`.
+    Returns `CategoryOption`s in the file's order; the slugs are used as they are.
+    """
+    from app.categorise.prompt import CategoryOption
+
+    if not path.is_file():
+        raise UsageError(f"categories file not found: {path}")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        raise UsageError(f"{path.name} is not JSON") from None
+    rows = document.get("categories") if isinstance(document, dict) else None
+    if not isinstance(rows, list) or len(rows) < 2:
+        raise UsageError(f"{path.name} has no list of categories")
+    options = []
+    for row in rows:
+        if not isinstance(row, dict) or not all(
+            isinstance(row.get(key), str) for key in ("slug", "name", "group")
+        ):
+            raise UsageError(f"{path.name}: every category needs a slug, a name and a group")
+        description = row.get("description")
+        options.append(
+            CategoryOption(
+                slug=row["slug"],
+                name=row["name"],
+                description=description if isinstance(description, str) else "",
+                group=row["group"],
+            )
+        )
+    if len({option.slug for option in options}) != len(options):
+        raise UsageError(f"{path.name} lists a slug twice")
+    return options

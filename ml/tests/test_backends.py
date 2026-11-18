@@ -87,14 +87,6 @@ def test_an_unconfigured_openrouter_backend_answers_501(
     assert "OPENROUTER_OCR_MODEL" in error["message"]
 
 
-@pytest.mark.parametrize("name", ["openrouter", "mlx"])
-def test_categorise_is_501_on_the_model_backends(make_client: ClientFactory, name: str) -> None:
-    response = make_client(name).post("/categorise", json={"texts": ["milk"]})
-
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "backend_not_implemented"
-
-
 def test_uploads_are_checked_before_the_backend(make_client: ClientFactory) -> None:
     response = make_client("openrouter").post(
         "/ocr", files=[image_part("a.txt", b"x", "text/plain")]
