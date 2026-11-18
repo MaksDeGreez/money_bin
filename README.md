@@ -30,7 +30,9 @@ hosted model reads receipts under a zero-data-retention rule in
 items get category suggestions (the label memory, a zero-shot model, where confidence comes from) in
 [`docs/decisions/0015-item-categoriser.md`](docs/decisions/0015-item-categoriser.md), and how a hosted
 decision model categorises items, checks another model's answer and is combined with the other methods in
-[`docs/decisions/0016-decision-model-categoriser.md`](docs/decisions/0016-decision-model-categoriser.md).
+[`docs/decisions/0016-decision-model-categoriser.md`](docs/decisions/0016-decision-model-categoriser.md), and why reading receipts in a
+provider batch is a separate opt-in that gives up zero retention in
+[`docs/decisions/0017-ocr-batch-mode.md`](docs/decisions/0017-ocr-batch-mode.md).
 
 ## Status
 
@@ -481,6 +483,27 @@ The review form (rules: [`docs/domain.md`](docs/domain.md), "Review"):
 - **Save as ground truth** (Ctrl+Shift+S or Cmd+Shift+S) saves the form and snapshots it as the receipt's
   ground truth, categories included, without booking anything (see below).
 
+### Reading receipts in a batch
+
+For thousands of receipts at about half the price, the hosted backend can read them in a provider batch
+(results in minutes to a day). **A batch is not zero-retention**: OpenRouter and the provider keep the
+photos and answers until the batch is deleted (the app deletes it as soon as its results are stored; at
+most 30 days). So it is off unless the ML service is started with `OCR_BACKEND=openrouter`,
+`OPENROUTER_BATCH_ALLOW_RETENTION=true`, `OPENROUTER_BATCH_MODEL` (a model with a `:batch` variant) and
+`OPENROUTER_BATCH_PROVIDERS` (for example `anthropic`), and the OpenRouter account allows it: its privacy
+settings must not require zero retention for the batch provider (today they do, and OpenRouter refuses
+every batch), and it must be on OpenRouter's allowlist for inline images, since photos are never put on a
+public URL. Neither account setting can be changed from here. Details: `ml/README.md`, "Batch mode".
+
+Then the receipts list offers **Read in a batch (N)** next to "Read all in this filter" for the unread and
+failed receipts of the filter; a confirmation states the number, the estimated cost, the wait and what the
+provider keeps. While a receipt waits in a batch it is not read one at a time and its page says so; "Enter by
+hand" still works and wins over the batch's result. `/ocr-batches` shows every batch with its state,
+counts, estimated and actual cost, times, what went wrong and what happened to the provider's copy, live;
+the app polls OpenRouter (no webhook: it has no public URL). Each result is stored exactly as a read one at
+a time, followed by the category suggestions; an answer that needs the repair pass is read again one at a
+time, a few per batch.
+
 ### Labelling receipts
 
 Ground truth for the evaluation (rules: [`docs/domain.md`](docs/domain.md), "Manual ground truth"):
@@ -579,6 +602,8 @@ for development can never point the tests at development data; a real environmen
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
 | `MLX_OCR_MODEL`  | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
 | `OPENROUTER_API_KEY`, `OPENROUTER_OCR_MODEL` | (unset) | the `openrouter` backend's key (a secret, only in `.env`) and model (no default: the service does not start without it); `OPENROUTER_TIMEOUT`, `OPENROUTER_MAX_TOKENS`, `OPENROUTER_OCR_IMAGE_MAX_SIDE` and `OPENROUTER_STRUCTURED_OUTPUT` tune it. Receipt photos then leave the machine, to zero-retention endpoints only (see `ml/README.md`) |
+| `OPENROUTER_BATCH_ALLOW_RETENTION`, `OPENROUTER_BATCH_MODEL`, `OPENROUTER_BATCH_PROVIDERS` | `false`, (unset), (unset) | batch mode in the ML service: off unless the first is `true`; not zero-retention (see "Reading receipts in a batch") |
+| `ML_SERVICE_BATCH_TIMEOUT` | `600` | seconds the app waits for the ML service to build and send one batch |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
 | `APP_HOST`       | (unset)                         | one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1`: for pages in production only, for the MCP server in every environment |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |

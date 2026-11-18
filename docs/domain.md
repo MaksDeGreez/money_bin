@@ -103,7 +103,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   `batch` is a free label for a bulk upload (for a loaded receipt, the ingest batch). `ingest_id` is the
   stable number the receipt ingest tool gave the receipt (`rcpt_000123`, see "Receipt load"); nil for a
   receipt uploaded in the app. `sha256` is the photo fingerprint. `ocr_requested_at` is when OCR was last
-  queued for the receipt, nil when no request waits (see "Who enqueues OCR").
+  queued for the receipt, nil when no request waits (see "Who enqueues OCR"). `ocr_batch_id` is the OCR
+  batch the receipt waits in, nil when it waits in none (see "OCR in a batch").
   `category` is a card slip's one category: a slip has no items and is booked as one line, its `total` in
   this category; a person chooses it at review, and only a `card_slip` keeps one. `suggested_category` and
   `suggested_category_confidence` (0..1) are the guess for a slip, from its payee's history or the transaction
@@ -331,6 +332,8 @@ Who moves the status:
 | `processing` | `extracted` | `Receipts::ApplyOcr`, with the result |
 | `processing` | `failed` | `ReceiptOcrJob`, on a permanent failure or when the retries run out |
 | `uploaded`, `failed` | `extracted` | `Receipts::EnterByHand` ("Enter by hand": a person types it) |
+| `uploaded`, `failed` | `extracted` | `OcrBatches::ApplyResults`, with a batch's answer (see "OCR in a batch") |
+| `uploaded`, `failed` | `failed` | `OcrBatches::ApplyResults` or `OcrBatches::Submit`, when the batch could not read it |
 | `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
 | `reviewed` | `extracted` | destroying its transaction (the receipt is unlinked, keeps its items and can be accepted again) |
 
@@ -350,6 +353,10 @@ discarded quietly.
 | A receipt page is opened, and right after an upload | the receipt, when it is `uploaded` (never read) | `first_read` |
 | "Read again" on a receipt page | the receipt, when it is `failed`, `extracted` (after a confirmation: its items are replaced), or `processing` for over an hour (stuck: the job was lost) | `read_again` |
 | "Read all in this filter" on the list | every `uploaded` receipt of the filter and every `failed` one without items, on every page, in the list's order | `read_all` |
+
+None of them takes a receipt that waits in an OCR batch (`ocr_batch_id` set; see "OCR in a batch"), and a
+batch takes none that waits for a read one at a time. A batch's answer that needs the repair pass is handed
+to this queue through `read_all`.
 
 A `reviewed` receipt is never queued: it was accepted into the ledger, and a new OCR result must not change
 it (`Receipts::ApplyOcr` refuses it too). A `processing` one is being read already, unless it has been
@@ -381,13 +388,108 @@ earlier items still there (only a successful read replaces them).
 "Read all" can queue hundreds of receipts; the OCR capsule reads them one at a time, so with a local model
 this takes hours. The confirmation and the notice say so.
 
+### OCR in a batch
+
+A hosted model's batch mode reads many receipts in one submission, at about half the price, with results
+in minutes to a day (`ml/README.md`, "Batch mode"; reasons in `docs/decisions/0017-ocr-batch-mode.md`). It
+is off unless the ML service allows it (`OPENROUTER_BATCH_ALLOW_RETENTION`): a batch is not zero-retention,
+the provider keeps the photos and answers until the batch is deleted (at most 30 days). The app never reads
+that setting; it asks the service (`/ocr/batches/capability`, `OcrBatches::Availability`, kept for five
+minutes).
+
+**Entities.** `OcrBatch`: one provider batch of up to a hundred receipts, with its own life cycle (`state`),
+what the provider last said (`provider_status`), the provider's batch id, model and provider, the request
+counts, the estimated and the actual cost in US dollars (BigDecimal, `numeric` without a scale: every
+digit the provider reported), and the times it was submitted, last checked, is due to be checked, expires,
+finished and was deleted upstream (with what the provider did with its copy). `OcrBatchEntry`: one receipt
+in one batch, with its random key (`custom_id`, 24 URL-safe characters from SecureRandom; the only link
+between a provider result and a receipt, kept only in this table) and its outcome. `receipts.ocr_batch_id`
+is the hold: the open batch the receipt waits in.
+
+**Sending.** "Read in a batch" on the receipts list (`OcrBatchesController`) shows only when the service
+says batch mode is available, in a lazy Turbo Frame so the list never waits for the service. Its
+confirmation states the number of receipts and batches, the estimated cost (rough: within a factor of
+two), that results take up to a day, and what the provider keeps. `OcrBatches::Create` takes the receipts
+"Read all in this filter" would queue (unread, and failed without items to lose) that have photos, splits
+them in the list's order into batches of at most `max_receipts` (100) and 150 MB of stored photos, creates
+them `pending` with one entry each, and sets each receipt's hold, all in one database transaction.
+`OcrBatchSubmitJob` sends the pending batches one at a time (`OcrBatches::Submit`).
+
+**The queue-once rule.** The hold is a column on the receipt, written under the receipt's row lock, as
+`Receipts::RequestOcr` writes `ocr_requested_at`. The batch claim takes only receipts with neither a
+waiting request nor a hold, and `RequestOcr.readable` skips held receipts, so a receipt is never in a
+batch and the synchronous queue at once, nor in two open batches. Opening a held receipt's page queues
+nothing; "Read again" says it waits in a batch; `ReceiptOcrJob` leaves a held receipt alone (a stray job
+from a request that counted as lost); the receipt load treats it as not pristine, so its photos are not
+regrouped while the provider has them. A held receipt keeps its status (`uploaded`, or `failed`, never
+`processing`): its page and list row show "In a batch", the batch's number and since when, and it is not
+`ocr_in_flight?`, so "Enter by hand" stays offered.
+
+| `OcrBatch.state` | Meaning | Next |
+|---|---|---|
+| `pending` | created, receipts held, waiting for the submitter (also after a retry wait) | `submitting` |
+| `submitting` | the photos are being sent | `running`; `pending` (nothing reached the provider: tried again after 1, 5, 15 and 60 minutes, then `failed`); `failed` (refused for good); `unknown` (sent, answer lost); two `pending` batches (too large: split in half) |
+| `running` | the provider has it; checked when due | `applying`; `failed` (failed, expired, cancelled, or OpenRouter no longer has it) |
+| `applying` | completed; results being stored entry by entry | `finished` |
+| `finished` | every entry resolved | deleted upstream |
+| `failed`, `unknown` | its waiting entries released | deleted upstream when the provider had it |
+
+`unknown` is the one case the app cannot settle: the photos were sent and the answer was lost (a timeout
+after sending, a server error after the upload, an answer whose batch id cannot be read, a worker stopped
+mid-send, noticed after 15 minutes). The provider may have the batch, but sending it again could pay for it
+twice, so the receipts are released and the batches page says to look for it in OpenRouter's logs and
+delete it there.
+
+**Polling.** There is no webhook: the app has no public URL. `OcrBatchPollJob` runs `OcrBatches::Poll`
+(each due batch gets one `OcrBatches::Check`) and queues itself again for when the next batch is due,
+between 30 seconds and 15 minutes; a running batch is checked after 1 minute, then 1.5, 2.25, ... up to 15.
+One chain at a time: its token and due time are in the cache, and a job of a retired chain stops. A lost
+chain (the queue emptied, the worker killed, the cache cleared) is started again by `ensure_scheduled`
+once it is ten minutes overdue, from the batches page, the receipts list's offer, a new batch and the
+worker's start; "Check now" starts a fresh chain at once. Two runs never overlap (a PostgreSQL advisory
+lock), and a check that fails (the service down, batch mode switched off, a rate limit) only records
+`check_error_code`/`check_error_message` and waits at least five minutes.
+
+**Results** (`OcrBatches::ApplyResults`). Each waiting entry is resolved in its own database transaction,
+with the entry row and then the receipt row locked:
+
+| Entry outcome | When | The receipt |
+|---|---|---|
+| `applied` | an answer | stored by `Receipts::ApplyOcr` exactly as a read one at a time (fields, items, `extracted`, `ocr_raw` with the model and prompt plus the batch accounting); then its category suggestions come from `ReceiptCategoriseJob` (the same `Receipts::SuggestCategories` step), one receipt at a time on the OCR capsule, so a batch of thousands does not hold up the poller |
+| `sync_queued` | the answer needs the repair pass (`ocr_parse_failed`), while the batch has handed over fewer than max(5, 10%) of its receipts | handed to the normal queue (`Receipts::RequestOcr.read_all`) after the commit |
+| `failed` | any other error, a parse failure over that limit, or no result for the key | `failed` with the reason in `ocr_raw`, as a read one at a time records it; "Read again" can try |
+| `released` | the batch failed, expired or was lost; or storing this entry raised (a bug, reported) | back to what it was, hold cleared |
+| `superseded` | the receipt is no longer held by this batch, or no longer `uploaded`/`failed` (entered by hand, deleted) | untouched: the person's work wins |
+
+So a poll that runs twice, or dies half way, never applies a result twice, never loses one (an entry is
+either still `waiting` or resolved together with its receipt's change), and never leaves a receipt held by
+a finished batch. "Enter by hand" clears the hold under the row lock the batch also takes, so the batch's
+later result for that receipt is `superseded`; acceptance needs a reviewable receipt, which a held one
+never is. The limit on hand-overs is there because a parse failure in most of a batch means something
+systematic (a model that cannot follow the schema), and reading hundreds again at full price is not done
+unasked.
+
+**Deleting upstream.** As soon as a batch is `finished` or `failed` and the provider had it, the next
+check deletes it at OpenRouter (which also deletes the provider's copy where it can) and records
+`deleted_upstream_at` and `upstream_deletion` (`deleted`, `unsupported`: the provider keeps its copy under
+its own rules, `not_applicable`, or `gone`: OpenRouter no longer had it). A deletion that fails is tried
+again by the poller; the batch stays on its list until it is deleted.
+
+**Pages.** `/ocr-batches` lists every batch with its state, the reason if it failed, the last check's
+problem, its receipts (a link to the receipts list filtered by the batch, `ocr_batch=<id>`), provider,
+estimated and actual cost and times, and whether batch mode is available now and what it keeps.
+`/ocr-batches/:id` adds the counts at the provider, the next check, the expiry, what happened to the
+provider's copy, the entries per outcome and every receipt that was not simply read, with the reason.
+Both refresh live (`OcrBatches::LiveUpdate`, the stream `ocr_batches` and the batch's own); the receipts
+refresh through `Receipts::LiveUpdate` as for a read one at a time.
+
 ### Receipt pages
 
 - `/receipts` (`ReceiptsController#index`): 50 receipts to a page (`Pagination`, a COUNT and an OFFSET; no
   gem for a list of a few thousand rows). Newest first (`Receipt.newest_first`): receipts uploaded in the
   app (no ingest number) by upload time, then loaded ones by ingest number, highest first, compared as a
   number. The filter (`Receipt::Filter`: batch, status, kind, tax QR, incomplete, ground truth, the check of
-  a tax-service record) is a GET form; its state is the URL, carried by every link (rows, pages, counts,
+  a tax-service record, the OCR batch it was sent in) is a GET form; its state is the URL, carried by every link (rows, pages, counts,
   receipt pages and back). A value that is not a choice is ignored. The counts per status apply every filter
   but the status; the ground-truth choices (labelled by hand, not labelled by hand, with a tax-service record,
   with none) and the check choices (checked against the print or not) show their counts under every other
