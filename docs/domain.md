@@ -674,11 +674,12 @@ from the tax service (`docs/decisions/0010-receipt-ground-truth.md` says why).
   this number, so the file is not imported; the warning names the receipt id and the fields, never the
   values. Agreeing on the register's number proves little (every receipt of that register shares it), so a
   file agrees only when it also matches on the receipt's own fiscal number, or on the total and the time
-  together. A file without those values, for a receipt whose QR code has them, is not imported either
-  (`unverifiable`: most likely a tag the reader does not know). A receipt whose QR code lacks them (no QR
-  code, or one read only in part) cannot be checked: its file is imported and counted as unverified. A
-  file refused this way never deletes a record stored from it earlier; the warning says so, and the export
-  marks the record.
+  together. A file that cannot show this is still imported, as unverified: with a warning naming the
+  receipt when the QR code has those values and the file lacks them (`unverifiable`: most likely a tag the
+  reader does not know), and counted only when the QR code itself lacks them (`no_qr`: no QR code, or one
+  read only in part). The export carries the status, so the evaluation can keep to verified records. A
+  file refused for a disagreement never deletes a record stored from it earlier; the warning says so, and
+  the export marks the record.
 - The receipt's `dps_xml` record is created; left alone when the file's digest and the format variant are
   the same as last time; replaced when either changed (a corrected variant reads the files again), unless a
   person has checked the record: that is a counted conflict and the record stays.

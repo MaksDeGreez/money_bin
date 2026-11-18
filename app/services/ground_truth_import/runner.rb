@@ -10,9 +10,9 @@ module GroundTruthImport
   # 1. DpsXml::Reader turns it into a ground-truth document; a file it refuses is counted with a warning;
   # 2. the receipt is found by `ingest_id`; a file whose receipt is not loaded is skipped with a warning;
   # 3. CrossCheck compares it with the receipt's QR ground truth; a disagreement means the wrong file was
-  #    saved under this number, so it is not imported (the warning names the fields, never the values), and
-  #    so is a file without the values to prove it is this receipt's. A receipt whose QR code cannot prove
-  #    it (no QR values) is imported unverified;
+  #    saved under this number, so it is not imported (the warning names the fields, never the values). A
+  #    file that cannot be checked is imported and counted as unverified: with a warning when the QR code
+  #    has identifying values that the file lacks (most likely a tag the reader does not know);
   # 4. the receipt's `dps_xml` ReceiptGroundTruth is created, left alone (same file digest and the same
   #    format variant), or replaced (the file or the variant changed), unless a person has already checked
   #    it: then the change is a counted conflict and the record stays.
@@ -102,20 +102,19 @@ module GroundTruthImport
         else
           report.count(outcome)
           report.count_stored(result, check)
+          if check.status == :unverifiable
+            report.warn(ingest_id, "imported unverified, the file lacks the values to compare with the receipt's QR " \
+              "code (its fiscal number, or the total and the time)")
+          end
         end
       end
 
-      # A file that does not prove it belongs to the receipt is not imported. A record stored from an earlier
-      # version of it stays (the import never deletes); the export marks it with its current check.
+      # A file that disagrees with the QR code is not imported. A record stored from an earlier version of it
+      # stays (the import never deletes); the export marks it with its current check.
       def refuse(receipt, ingest_id, check, report)
         kept = receipt.ground_truths.dps_xml.exists? ? "; the record stored earlier is kept and the export marks it" : ""
-        if check.status == :disagrees
-          report.count(:mismatch, ingest_id, "not imported, the file disagrees with the receipt's QR code on " \
-            "#{check.disagreeing.join(', ')} (another receipt's file saved under this number?)#{kept}")
-        else
-          report.count(:unverifiable, ingest_id, "not imported, the file lacks the values to compare with the receipt's " \
-            "QR code (its fiscal number, or the total and the time)#{kept}")
-        end
+        report.count(:mismatch, ingest_id, "not imported, the file disagrees with the receipt's QR code on " \
+          "#{check.disagreeing.join(', ')} (another receipt's file saved under this number?)#{kept}")
       end
 
       # The file's bytes; a file over the reader's limit is refused from its size, before it is read.

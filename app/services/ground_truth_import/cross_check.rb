@@ -11,7 +11,8 @@ module GroundTruthImport
   # file agrees only when nothing differs and it matches on identifying evidence: the receipt's own fiscal
   # number, or the total together with the time. When the QR code has that evidence but the file does not
   # (a value left out, a tag the reader does not know), the file is `unverifiable`. When the QR code itself
-  # lacks it (no QR code, or one read only in part), the file cannot be checked: `no_qr`.
+  # lacks it (no QR code, or one read only in part), the file cannot be checked: `no_qr`. Only `disagrees`
+  # keeps a file out; the other two are imported as unverified, and the export carries the status.
   #
   # A disagreement means the file saved under this receipt's number belongs to another receipt. Nothing
   # here returns or prints a value.
@@ -32,7 +33,7 @@ module GroundTruthImport
       end
 
       def stored?
-        %i[agrees no_qr].include?(status)
+        status != :disagrees
       end
     end
 

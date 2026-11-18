@@ -199,6 +199,23 @@ module ReceiptLoad
       assert_match(/rcpt_000001: left alone, its photos changed, but receipt \d+ is extracted/, @output.string)
     end
 
+    test "a receipt with ground truth is kept when it leaves the ingest set, and its photos are not regrouped" do
+      write_ingest([ ingest_line(1, colours: [ 1 ]), ingest_line(2) ])
+      load_receipts
+      [ loaded(1), loaded(2) ].each do |receipt|
+        receipt.ground_truths.create!(source: :manual, schema_version: 1, items_known: false,
+          document: ReceiptGroundTruth::Document.blank)
+      end
+
+      write_ingest([ ingest_line(1, colours: [ 1, 2 ]) ]) # 1 regrouped, 2 left the set
+      report = load_receipts
+
+      assert_equal({ conflict: 1, retired_kept: 1, retired_deleted: 0 }, counts(report, :conflict, :retired_kept, :retired_deleted))
+      assert_equal 1, loaded(1).images.count
+      assert loaded(2)
+      assert_match(/rcpt_000001: left alone, its photos changed, but receipt \d+ is uploaded or has items, a transaction or ground truth/, @output.string)
+    end
+
     test "a regrouped receipt that OCR picks up between the check and the lock is left alone, uploads deleted" do
       write_ingest([ ingest_line(1, colours: [ 1 ]) ])
       load_receipts

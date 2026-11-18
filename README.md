@@ -323,9 +323,9 @@ bin/rails "receipts:export_ground_truth[$HOME/Documents/money_bin_data/ground_tr
 ```
 
 Each file becomes the receipt's `dps_xml` ground-truth record (`receipt_ground_truths`), after a check
-against the receipt's QR code: a file that disagrees (saved under the wrong number), or that lacks the
-receipt number or the total and time the QR code has, is not imported, and a receipt without QR values is
-imported as unverified. Running it again changes nothing unless a file
+against the receipt's QR code: a file that disagrees (saved under the wrong number) is not imported; one
+that cannot be matched on the receipt number or on the total and time is imported as unverified (with a
+warning when the QR code has those values), and the export says which. Running it again changes nothing unless a file
 changed; a record a person has checked is never replaced. The import never touches the receipt, its items
 or the ledger. It prints counts and receipt ids only and skips, with a counted warning, any file that is
 not well-formed, not a receipt or carries a document type declaration. The file format is implemented from

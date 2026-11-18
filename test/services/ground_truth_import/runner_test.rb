@@ -109,21 +109,25 @@ module GroundTruthImport
       assert_nil record
     end
 
-    test "a file without identifying values is not imported when the QR code has them" do
+    test "a file without identifying values is imported unverified, with a warning, when the QR code has them" do
       write_dps_file(MARKET, dps_xml(head: { "ORDERTAXNUM" => nil, "ORDERTIME" => nil }))
 
       report = import
 
-      assert_equal 1, report[:unverifiable]
-      assert_match(/\Arcpt_000041: not imported, the file lacks the values to compare/, report.warnings.sole)
-      assert_nil record
+      assert_equal({ created: 1, verified: 0, unverifiable: 1 },
+        { created: report[:created], verified: report.stored(:verified), unverifiable: report.stored(:unverifiable) })
+      assert_match(/\Arcpt_000041: imported unverified, the file lacks the values to compare/, report.warnings.sole)
+      assert record
+      assert_includes output, "1 unverified (the file lacks the values to compare)"
     end
 
-    test "agreeing on the register number alone is not enough" do
+    test "agreeing on the register number alone does not verify a file" do
       write_dps_file(MARKET, dps_xml(head: { "ORDERTAXNUM" => nil, "ORDERTIME" => nil }, total: nil))
 
-      assert_equal 1, import[:unverifiable]
-      assert_nil record
+      report = import
+
+      assert_equal [ 0, 1 ], [ report.stored(:verified), report.stored(:unverifiable) ]
+      assert_equal "unverifiable", GroundTruthImport::CrossCheck.call(market, record.document).status.to_s
     end
 
     test "a receipt whose QR code has only the register number is imported unverified" do
@@ -133,7 +137,8 @@ module GroundTruthImport
       report = import
 
       assert_equal 1, report[:created]
-      assert_equal 1, report.stored(:unverified)
+      assert_equal 1, report.stored(:no_qr)
+      assert_empty report.warnings
     end
 
     test "a file that now disagrees leaves the earlier record and says so" do
@@ -165,11 +170,11 @@ module GroundTruthImport
       report = import
 
       assert_equal 1, report[:created]
-      assert_equal({ unverified: 1, without_items: 1 }, { unverified: report.stored(:unverified), without_items: report.stored(:without_items) })
+      assert_equal({ no_qr: 1, without_items: 1 }, { no_qr: report.stored(:no_qr), without_items: report.stored(:without_items) })
       truth = receipt.ground_truths.sole
       assert_not truth.items_known
       assert_equal [], truth.document["items"]
-      assert_includes output, "1 unverified"
+      assert_includes output, "1 unverified (the QR code has too little to compare)"
     end
 
     test "the same file again changes nothing; a changed file replaces the record" do

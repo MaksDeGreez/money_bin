@@ -59,7 +59,7 @@ module ReceiptLoad
             :retired_deleted
           end
         end
-        @report.warn("#{receipt.ingest_id}: left the ingest set, kept because it is #{receipt.status} or has items or a transaction (receipt #{receipt.id})") if outcome == :retired_kept
+        @report.warn("#{receipt.ingest_id}: left the ingest set, kept because it is #{receipt.status} or has items, a transaction or ground truth (receipt #{receipt.id})") if outcome == :retired_kept
         @report.count(batch, outcome)
       end
     end
@@ -95,7 +95,7 @@ module ReceiptLoad
       end
 
       def regroup(receipt, line)
-        busy = "its photos changed, but receipt #{receipt.id} is #{receipt.status} or has items or a transaction"
+        busy = "its photos changed, but receipt #{receipt.id} is #{receipt.status} or has items, a transaction or ground truth"
         return conflict(line, busy) unless receipt.pristine?
 
         written = with_uploads(line) do |blobs|

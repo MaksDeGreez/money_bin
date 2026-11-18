@@ -62,11 +62,13 @@ A file saved under the wrong number would quietly teach the evaluation wrong ite
 with the receipt's QR values where both have one (register number, receipt number, total, date and time
 to the minute in Kyiv time); a disagreement keeps the file out and names the receipt and the fields. The
 register number is shared by every receipt of a shop's register, so it proves nothing alone: a file must
-also match on the receipt's own fiscal number, or on the total and the time together. When the QR code has
-those values and the file does not, the file is kept out too, because the likeliest cause is a format the
-reader misreads, and an unchecked import is exactly what the check is for. A receipt whose QR code lacks
-them is imported and counted as unverified. The export repeats the check, so a record that later QR values
-contradict is marked rather than silently kept.
+also match on the receipt's own fiscal number, or on the total and the time together, to count as
+verified. A file that cannot show this is imported as unverified, as a receipt without QR values is: only
+a disagreement is evidence of a wrong file. When the QR code has those values and the file lacks them, the
+import warns with the receipt's id, because the likeliest cause is a format the reader misreads. The export
+repeats the check and writes its status (`agrees`, `disagrees`, `unverifiable`, `no_qr`), so the evaluation
+can keep to verified records, and a record that later QR values contradict is marked rather than silently
+kept.
 
 ### A tolerant reader, one class per format variant
 
