@@ -2,7 +2,7 @@ require "test_helper"
 
 class ManualExpenseTest < ActiveSupport::TestCase
   def expense(**attributes)
-    ManualExpense.new({ account_id: accounts(:cash_uah).id, payee_name: "Corner Shop", occurred_on: "2026-10-08",
+    ManualExpense.new({ booking_account_id: accounts(:cash_uah).id, payee_name: "Corner Shop", occurred_on: "2026-10-08",
                         rows: { "0" => { name: "Bread", amount: "40,40", category_id: categories(:groceries).id.to_s },
                                 "1" => { name: "Soap", amount: "25.00", category_id: categories(:household_supplies).id.to_s },
                                 "2" => { name: "Cheese", amount: "100.10", category_id: categories(:groceries).id.to_s } } }.merge(attributes))
@@ -63,11 +63,11 @@ class ManualExpenseTest < ActiveSupport::TestCase
   end
 
   test "the account must be active, the date a date, the time a time, a category a category" do
-    record = expense(account_id: accounts(:old_wallet).id, occurred_on: "2026-13-01", occurred_time: "25:00",
+    record = expense(booking_account_id: accounts(:old_wallet).id, occurred_on: "2026-13-01", occurred_time: "25:00",
                      rows: [ { amount: "1", category_id: categories(:groceries_group).id.to_s } ])
 
     assert_not record.save
-    assert record.errors[:account_id].any?
+    assert record.errors[:booking_account_id].any?
     assert_equal [ "must be a date" ], record.errors[:occurred_on]
     assert_equal [ "must be a time such as 18:40" ], record.errors[:occurred_time]
     assert_equal [ "must be a category, not a group" ], record.rows.first.errors[:category_id]

@@ -1,6 +1,6 @@
 # An expense entered by hand, without a receipt (`/transactions/new`, docs/domain.md, "Manual entry").
 #
-#   expense = ManualExpense.new(account_id: 1, payee_name: "Corner Shop", occurred_on: "2026-10-08",
+#   expense = ManualExpense.new(booking_account_id: 1, payee_name: "Corner Shop", occurred_on: "2026-10-08",
 #                               rows: [{ name: "Bread", amount: "40,40", category_id: 3 }])
 #   expense.save  # => true, and expense.transaction is the booked Transaction
 #
@@ -74,7 +74,7 @@ class ManualExpense
       end
   end
 
-  attribute :account_id, :integer
+  attribute :booking_account_id, :integer
   attribute :payee_name, :string
   attribute :occurred_on, :string
   attribute :occurred_time, :string
@@ -100,7 +100,7 @@ class ManualExpense
   end
 
   def account
-    @account ||= Account.active.find_by(id: account_id) if account_id
+    @account ||= Account.active.find_by(id: booking_account_id) if booking_account_id
   end
 
   def date
@@ -144,7 +144,7 @@ class ManualExpense
     end
 
     def account_is_active
-      errors.add(:account_id, "must be one of your accounts that is not archived") if account.nil?
+      errors.add(:booking_account_id, "must be one of your accounts that is not archived") if account.nil?
     end
 
     def date_is_valid

@@ -17,9 +17,9 @@
     legend.sr-only Expense
     .review-fields
       .field
-        = f.label :account_id, "Account"
-        = f.select :account_id, account_choices(nil, Account.find_by(id: expense.account_id)), { include_blank: "Choose an account" }
-        = f.error_for :account_id
+        = f.label :booking_account_id, "Account"
+        = f.select :booking_account_id, account_choices(nil, Account.find_by(id: expense.booking_account_id)), { include_blank: "Choose an account" }
+        = f.error_for :booking_account_id
       .field
         = f.label :payee_name, "Merchant or payee (optional)"
         = f.text_field :payee_name, autocomplete: "off"

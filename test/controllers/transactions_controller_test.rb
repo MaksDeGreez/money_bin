@@ -11,7 +11,7 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
     get new_transaction_path
     assert_redirected_to new_session_path
     assert_no_difference -> { Transaction.count } do
-      post transactions_path, params: { manual_expense: { account_id: accounts(:cash_uah).id, occurred_on: "2026-10-08", rows: [ { amount: "5" } ] } }
+      post transactions_path, params: { manual_expense: { booking_account_id: accounts(:cash_uah).id, occurred_on: "2026-10-08", rows: [ { amount: "5" } ] } }
     end
     assert_redirected_to new_session_path
   end
@@ -58,7 +58,7 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "nav[aria-label=Main] a[href=?][aria-current=page]", new_transaction_path, text: "Add expense"
     assert_select "form[action=?][data-controller~=form-guard][data-controller~=money-totals]", transactions_path do
-      assert_select "select[name='manual_expense[account_id]'] option[selected][value=?]", accounts(:card_uah).id.to_s
+      assert_select "select[name='manual_expense[booking_account_id]'] option[selected][value=?]", accounts(:card_uah).id.to_s
       assert_select "input[name='manual_expense[occurred_on]'][value=?]", "2026-11-18"
       assert_select "input[name='manual_expense[rows][0][amount]']", 1
       assert_select "select[name='manual_expense[rows][0][category_id]'][hidden]"
@@ -68,7 +68,7 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "saving an expense books it and shows the transaction" do
-    params = { account_id: accounts(:cash_uah).id, payee_name: "Corner Shop", occurred_on: "2026-10-08", occurred_time: "09:30",
+    params = { booking_account_id: accounts(:cash_uah).id, payee_name: "Corner Shop", occurred_on: "2026-10-08", occurred_time: "09:30",
                rows: { "0" => { name: "Bread", amount: "40,40", category_id: categories(:groceries).id },
                        "1" => { name: "", amount: "", category_id: "" } } }
 
@@ -84,7 +84,7 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "a refused expense renders the form again with the typed rows and the errors" do
-    params = { account_id: accounts(:cash_uah).id, occurred_on: "2026-10-08",
+    params = { booking_account_id: accounts(:cash_uah).id, occurred_on: "2026-10-08",
                rows: { "0" => { name: "Bread", amount: "40.404", category_id: categories(:groceries).id } } }
 
     assert_no_difference -> { Transaction.count } do

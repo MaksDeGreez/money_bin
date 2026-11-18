@@ -13,7 +13,7 @@ class TransactionsController < ApplicationController
   end
 
   def new
-    @expense = ManualExpense.new(account_id: Account.default_for(nil)&.id, occurred_on: Date.current.iso8601)
+    @expense = ManualExpense.new(booking_account_id: Account.default_for(nil)&.id, occurred_on: Date.current.iso8601)
   end
 
   def create
@@ -27,7 +27,7 @@ class TransactionsController < ApplicationController
 
   private
     def expense_params
-      params.fetch(:manual_expense, {}).permit(:account_id, :payee_name, :occurred_on, :occurred_time,
+      params.fetch(:manual_expense, {}).permit(:booking_account_id, :payee_name, :occurred_on, :occurred_time,
         rows: %i[name amount category_id])
     end
 end
