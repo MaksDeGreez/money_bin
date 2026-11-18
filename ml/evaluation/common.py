@@ -1,0 +1,84 @@
+"""Shared helpers of the evaluation scripts: reading the receipt set, files, statistics."""
+
+import json
+import math
+import os
+import statistics
+from collections.abc import Iterable, Iterator, Sequence
+from pathlib import Path
+from typing import Any
+
+FILE_MODE = 0o600
+DIR_MODE = 0o700
+
+
+class UsageError(Exception):
+    """A bad argument or input file. The scripts print it and exit with 2."""
+
+
+def read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    """The JSON objects of a JSON-lines file, skipping blank lines."""
+    with path.open(encoding="utf-8") as lines:
+        for number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                raise UsageError(f"{path.name}: line {number} is not JSON") from None
+            if not isinstance(value, dict):
+                raise UsageError(f"{path.name}: line {number} is not a JSON object")
+            yield value
+
+
+def read_receipt_set(ingest: Path) -> list[dict[str, Any]]:
+    """The lines of `receipts.jsonl` in a receipt set folder."""
+    path = ingest / "receipts.jsonl"
+    if not path.is_file():
+        raise UsageError(f"no receipts.jsonl in {ingest}")
+    return list(read_jsonl(path))
+
+
+def inside_git_repository(path: Path) -> bool:
+    """Whether `path` (which may not exist yet) is inside a git working tree."""
+    current = path.resolve()
+    return any((folder / ".git").exists() for folder in (current, *current.parents))
+
+
+def ensure_private_folder(path: Path) -> None:
+    """Create a folder (and its parents) readable by the owner only."""
+    path.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+
+
+def write_private_json(path: Path, value: Any) -> None:
+    """Write JSON to a file only the owner can read, through a temporary file."""
+    temporary = path.with_name(path.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        json.dump(value, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    temporary.replace(path)
+
+
+def percentile(values: Sequence[float], share: float) -> float | None:
+    """The nearest-rank percentile (`share` between 0 and 1), or None without values."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(share * len(ordered)))
+    return ordered[rank - 1]
+
+
+def timing_summary(seconds: Iterable[float]) -> dict[str, float | int | None]:
+    """Count, mean, median and 90th percentile of durations, rounded to milliseconds."""
+    values = list(seconds)
+
+    def rounded(value: float | None) -> float | None:
+        return None if value is None else round(value, 3)
+
+    return {
+        "count": len(values),
+        "mean": rounded(statistics.fmean(values)) if values else None,
+        "median": rounded(statistics.median(values)) if values else None,
+        "p90": rounded(percentile(values, 0.9)),
+    }

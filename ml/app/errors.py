@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.backends import BackendNotImplementedError
+from app.ocr.images import ImageDecodeError
+from app.ocr.parsing import OcrParseError
 from app.schemas import ErrorDetail, ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,16 @@ async def _handle_not_implemented(
     return error_response(501, "backend_not_implemented", str(exc))
 
 
+async def _handle_parse_failed(request: Request, exc: OcrParseError) -> JSONResponse:
+    # The problems name fields and error types only, never what the model read.
+    logger.warning("OCR answer unreadable after the repair pass: %s", exc.problems)
+    return error_response(422, "ocr_parse_failed", str(exc))
+
+
+async def _handle_image_unreadable(request: Request, exc: ImageDecodeError) -> JSONResponse:
+    return error_response(422, "image_unreadable", str(exc))
+
+
 async def _handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     code = _HTTP_CODES.get(exc.status_code, "http_error")
     return error_response(exc.status_code, code, str(exc.detail), headers=exc.headers)
@@ -72,5 +84,7 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApiError, _handle_api_error)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(BackendNotImplementedError, _handle_not_implemented)
+    app.add_exception_handler(OcrParseError, _handle_parse_failed)
+    app.add_exception_handler(ImageDecodeError, _handle_image_unreadable)
     app.add_exception_handler(StarletteHTTPException, _handle_http_error)
     app.add_exception_handler(Exception, _handle_unexpected)

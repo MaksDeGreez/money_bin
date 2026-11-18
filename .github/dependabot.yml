@@ -54,6 +54,10 @@ updates:
           - "patch"
 
   # The Python ML service (ml/pyproject.toml and ml/uv.lock).
+  # MLX, mlx-vlm, transformers and llguidance stay out of the groups: they run the local OCR model and its
+  # constrained decoding, change their
+  # behaviour between minor releases, and CI cannot test them (Linux, no weights). Each update comes as a
+  # pull request of its own, to be checked by hand on the Mac (docs/decisions/0005-local-ocr-backend.md).
   - package-ecosystem: uv
     directory: "/ml"
     schedule:
@@ -72,6 +76,10 @@ updates:
       python-minor-patch:
         patterns:
           - "*"
+        exclude-patterns:
+          - "mlx*"
+          - "transformers"
+          - "llguidance"
         update-types:
           - "minor"
           - "patch"

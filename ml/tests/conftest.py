@@ -42,3 +42,29 @@ def make_client() -> ClientFactory:
 @pytest.fixture
 def client(make_client: ClientFactory) -> TestClient:
     return make_client("stub")
+
+
+def encoded_image(
+    width: int = 64,
+    height: int = 32,
+    image_format: str = "JPEG",
+    orientation: int | None = None,
+) -> bytes:
+    """A real, decodable image of one colour (no receipt content)."""
+    from io import BytesIO
+
+    import pillow_heif
+    from PIL import Image
+
+    image = Image.new("RGB", (width, height), "white")
+    buffer = BytesIO()
+    if image_format == "HEIF":
+        pillow_heif.from_pillow(image).save(buffer, quality=50)
+        return buffer.getvalue()
+    options = {}
+    if orientation is not None:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        options["exif"] = exif
+    image.save(buffer, image_format, **options)
+    return buffer.getvalue()

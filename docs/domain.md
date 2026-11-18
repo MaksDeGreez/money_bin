@@ -300,12 +300,15 @@ is discarded quietly.
 What is stored where:
 
 - on success, `ocr_raw` is the service's full response body as returned (the `receipt` part plus
-  `backend`, `model_name` and `model_version`). `ocr_model_name` and `ocr_model_version` are copied from
-  it; `merchant_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total` and `currency` come from
-  the `receipt` part (a null stores nil). `kind` (`fiscal` or `card_slip`, in any letter case) and
-  `card_last4` (four ASCII digits) are stored when the answer carries a valid value; anything else, a
-  missing key included, stores nil. The QR ground truth, `qr_payload`, `ingest_id`, `batch`, `incomplete`
-  and the photos are never touched;
+  `backend`, `model_name`, `model_version`, `prompt_version`, `repaired` and `elapsed_seconds`).
+  `ocr_model_name` and `ocr_model_version` are copied from it; `merchant_name`, `fiscal_number`,
+  `receipt_number`, `issued_at`, `total` and `currency` come from the `receipt` part (a null stores nil).
+  A real model does not always read everything, so every one of those, including `total` and `currency`,
+  may be null; so may an item's `quantity` and `unit_price`. The keys are always present. `kind`
+  (`fiscal` or `card_slip`, in any letter case) and `card_last4` (four ASCII digits) are stored when the
+  answer carries a valid value; anything else, a missing key included, stores nil. `sum_matches_total`
+  stays in `ocr_raw` only. The QR ground truth, `qr_payload`, `ingest_id`, `batch`, `incomplete` and the
+  photos are never touched;
 - the items are replaced by the returned ones, in the same database transaction. An item's `position` is
   its place in the answer counting from 1, so position N is item N of `ocr_raw`. Amounts and quantities
   are parsed from decimal strings with `BigDecimal`; anything else (a float, unreadable text) counts as
@@ -313,7 +316,8 @@ What is stored where:
   models refuse it rather than round it). New items have no category yet;
 - on failure, `ocr_raw` is `{"error": {"code": ..., "message": ...}}` and nothing else: no stack trace and
   no response body. `code` is the service's own code (`validation_error`, `too_many_images`,
-  `image_too_large`, `unsupported_media_type`, `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
+  `image_too_large`, `unsupported_media_type`, `image_unreadable`, `ocr_parse_failed`,
+  `backend_not_implemented`, `internal_error`, ...), or `ml_unreachable`,
   `ml_timeout`, `invalid_response`, `no_images` or `image_missing`. `message` is one line of at most 300
   characters. There is no separate column for the reason: `ocr_raw` already means "what the OCR step
   left".
@@ -337,8 +341,11 @@ Retries and timeouts:
   about 3 s, 18 s, 83 s, 258 s), 5 runs in all; then the receipt becomes `failed`. Transient means the
   service cannot be reached, a timeout, or a 5xx answer other than 501;
 - permanent failures make the receipt `failed` at once: a 4xx answer (for example 413 `image_too_large`,
-  a photo over the service's `ML_MAX_IMAGE_BYTES`, 15 MB by default, or 415 `unsupported_media_type`, a
-  file whose first bytes are not a JPEG, PNG, WebP or HEIC image), 501 (the backend is only a
+  a photo over the service's `ML_MAX_IMAGE_BYTES`, 15 MB by default; 415 `unsupported_media_type`, a
+  file whose first bytes are not a JPEG, PNG, WebP or HEIC image; 422 `image_unreadable`, a file that
+  cannot be decoded; or 422 `ocr_parse_failed`, the model's answer was not valid receipt JSON even after
+  one repair pass: the model is deterministic, so the same photos would fail the same way, and the
+  receipt waits for a retry by hand or manual entry), 501 (the backend is only a
   placeholder), an answer that is not JSON or misses a required key, no photos attached, a photo file
   missing from storage;
 - any other exception (a bug, the database gone) is raised: Sidekiq's own retries apply and the receipt

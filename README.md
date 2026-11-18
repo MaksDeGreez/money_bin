@@ -13,21 +13,23 @@ owner's machine, and the data and photos stay there.
   AI agent ┘   (UI, API, later MCP)├─> local disk (Active Storage: receipt photos)
                      │             │
                      └─> Sidekiq ──┴─> ML service :8100 (FastAPI, ml/)
-                                         OCR + categorisation; backend: stub now,
-                                         a local MLX model or OpenRouter later
+                                         OCR + categorisation; backend: stub, or a
+                                         local Qwen VL model (MLX); OpenRouter later
 ```
 
 The decisions behind this stack are in [`docs/decisions/0001-stack.md`](docs/decisions/0001-stack.md), and
 the ones behind sign-in and API tokens in
 [`docs/decisions/0002-authentication-and-api-tokens.md`](docs/decisions/0002-authentication-and-api-tokens.md).
 How coding agents share the work is in
-[`docs/decisions/0003-agent-tooling.md`](docs/decisions/0003-agent-tooling.md).
+[`docs/decisions/0003-agent-tooling.md`](docs/decisions/0003-agent-tooling.md), and how the local OCR model
+runs in [`docs/decisions/0005-local-ocr-backend.md`](docs/decisions/0005-local-ocr-backend.md).
 
 ## Status
 
 Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
 owner signs in, AI agents authenticate with personal API tokens and read the ledger through a read-only
-JSON API, the ML service answers with its stub backend, and CI checks both. The domain model is described in
+JSON API, the ML service answers with its stub backend or reads receipts with a local vision model
+(`OCR_BACKEND=mlx`, Apple silicon), and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
 
 ## Requirements
@@ -300,6 +302,7 @@ for development can never point the tests at development data; a real environmen
 | `REDIS_URL`      | `redis://localhost:6379/<db>`   | Redis for Sidekiq, the cache and Action Cable; overrides the database numbers below |
 | `ML_SERVICE_URL` | `http://127.0.0.1:8100`         | where Rails finds the ML service |
 | `OCR_BACKEND`    | `stub`                          | the ML service's backend: `stub`, `mlx`, `openrouter` (see `ml/README.md`) |
+| `MLX_OCR_MODEL`  | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | the `mlx` backend's model; `MLX_OCR_MAX_TOKENS`, `MLX_OCR_IMAGE_MAX_SIDE` and `MLX_OCR_CONSTRAINED_DECODING` tune it (see `ml/README.md`) |
 | `PORT`           | `3100`                          | the Rails server port in `bin/dev` |
 | `APP_HOST`       | (unset)                         | production only: one more host name to answer to, besides `localhost`, `127.0.0.1` and `::1` |
 | `DATABASE_URL`   | (unset)                         | merged over `config/database.yml`; CI sets it in the environment for the tests |
@@ -397,7 +400,8 @@ This repository will be public. No secrets and no personal data may enter it.
   The `CI` job passes only when all four passed; it is the check that decides a merge. The leak check
   does not run on GitHub, because the terms file only exists on the owner's machine.
 - **Dependabot** opens weekly, grouped updates for gems, GitHub Actions and the Python packages of `ml/`
-  and `tools/receipt_ingest/`.
+  and `tools/receipt_ingest/`. MLX, mlx-vlm, transformers and llguidance come one pull request each, outside the
+  groups: CI cannot run the local model, so each is checked by hand on the Mac.
 
 ## Git worktrees
 

@@ -9,7 +9,7 @@ from app.config import Settings
 from app.main import create_app
 from tests.conftest import ClientFactory, image_part
 
-PLACEHOLDERS = ["mlx", "openrouter"]
+PLACEHOLDERS = ["openrouter"]
 
 
 def test_registry_lists_every_backend() -> None:
@@ -23,6 +23,15 @@ def test_create_backend_accepts_valid_names(name: str) -> None:
     backend = create_backend(name)
 
     assert backend.name == name.strip().lower()
+
+
+def test_create_backend_passes_the_settings_on() -> None:
+    settings = Settings(mlx_ocr_model="example/model")
+
+    backend = create_backend("mlx", settings)
+
+    assert backend.settings is settings
+    assert backend.model_name == "example/model"
 
 
 def test_create_backend_rejects_an_unknown_name_and_lists_valid_names() -> None:
@@ -74,7 +83,7 @@ def test_placeholder_ocr_is_501(make_client: ClientFactory, name: str) -> None:
     assert name in error["message"]
 
 
-@pytest.mark.parametrize("name", PLACEHOLDERS)
+@pytest.mark.parametrize("name", ["openrouter", "mlx"])
 def test_placeholder_categorise_is_501(make_client: ClientFactory, name: str) -> None:
     response = make_client(name).post("/categorise", json={"texts": ["milk"]})
 

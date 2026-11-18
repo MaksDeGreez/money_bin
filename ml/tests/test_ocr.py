@@ -7,12 +7,11 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers, UploadFile
 
-from app.backends import ImageInput
+from app.backends import Extraction, ImageInput
 from app.backends.stub import stub_receipt
 from app.config import DEFAULT_MAX_IMAGE_BYTES, Settings
 from app.errors import ApiError
 from app.main import _read_images, create_app, detect_image_type
-from app.schemas import Receipt
 from tests.conftest import (
     HEIC_BYTES,
     JPEG_BYTES,
@@ -31,7 +30,13 @@ def test_ocr_returns_the_stub_receipt(client: TestClient) -> None:
     assert body["backend"] == "stub"
     assert body["model_name"] == "stub-ocr"
     assert body["model_version"] == "0.1.0"
+    assert body["prompt_version"] is None
+    assert body["repaired"] is False
+    assert Decimal(body["elapsed_seconds"]) >= 0
     receipt = body["receipt"]
+    assert receipt["kind"] == "fiscal"
+    assert receipt["card_last4"] is None
+    assert receipt["sum_matches_total"] is True
     assert receipt["merchant"] == "Example Market"
     assert receipt["fiscal_number"] == "0000000000"
     assert receipt["receipt_number"] == "000123"
@@ -42,8 +47,10 @@ def test_ocr_returns_the_stub_receipt(client: TestClient) -> None:
 
 
 def test_ocr_writes_money_and_quantity_as_decimal_strings(client: TestClient) -> None:
-    receipt = client.post("/ocr", files=[image_part()]).json()["receipt"]
+    body = client.post("/ocr", files=[image_part()]).json()
+    receipt = body["receipt"]
 
+    assert isinstance(body["elapsed_seconds"], str)
     assert isinstance(receipt["total"], str)
     for item in receipt["items"]:
         for field in ("quantity", "unit_price", "amount", "discount"):
@@ -222,9 +229,9 @@ def test_ocr_passes_the_images_to_the_backend() -> None:
     app = create_app(Settings(ocr_backend="stub"))
     seen: list[ImageInput] = []
 
-    def spy(images: Sequence[ImageInput]) -> Receipt:
+    def spy(images: Sequence[ImageInput]) -> Extraction:
         seen.extend(images)
-        return stub_receipt()
+        return Extraction(receipt=stub_receipt())
 
     app.state.backend.extract_receipt = spy
     client = TestClient(app)
