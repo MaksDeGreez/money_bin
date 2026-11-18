@@ -7,6 +7,10 @@ module Receipts
   #   `ocr_model_version` the model that produced it.
   # - `merchant_name`, `fiscal_number`, `receipt_number`, `issued_at`, `total` and `currency` come from the
   #   receipt part. A null in the answer stores nil.
+  # - `kind` (`fiscal` or `card_slip`) and `card_last4` (four digits) are stored when the answer carries a
+  #   valid value; anything else, a missing key included, stores nil.
+  # - What the OCR does not own is never touched: the QR ground truth (`qr_*`, `qr_payload`), `ingest_id`,
+  #   `batch`, `incomplete` and the photos.
   # - The items are replaced by the returned ones. An item's position is its place in the answer, counting
   #   from 1 like a printed receipt, so position N is always `ocr_raw["receipt"]["items"][N - 1]`.
   #   Money and quantities are parsed with BigDecimal; text that is not a decimal becomes nil. Money with more
@@ -66,7 +70,8 @@ module Receipts
           status: :extracted,
           merchant_name: text(data["merchant"]), fiscal_number: text(data["fiscal_number"]),
           receipt_number: text(data["receipt_number"]), issued_at: time(data["issued_at"]),
-          total: decimal(data["total"]), currency: text(data["currency"])
+          total: decimal(data["total"]), currency: text(data["currency"]),
+          kind: kind(data["kind"]), card_last4: card_last4(data["card_last4"])
         )
         clear_refused(@receipt, RECEIPT_FIELDS.keys)
       end
@@ -103,6 +108,16 @@ module Receipts
           "Receipts::ApplyOcr: receipt #{@receipt.id} skipped item at position #{item.position} " \
           "(#{item.errors.attribute_names.join(', ')} refused)"
         )
+      end
+
+      def kind(value)
+        value = text(value)&.downcase
+        value if Receipt.kinds.key?(value)
+      end
+
+      def card_last4(value)
+        value = text(value)
+        value if value&.match?(Receipt::CARD_LAST4_FORMAT)
       end
 
       def text(value)
