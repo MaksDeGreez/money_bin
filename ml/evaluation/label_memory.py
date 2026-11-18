@@ -18,10 +18,10 @@ database. Both normalise names the same way, checked by the shared cases in
   of a Beta(1 + k, 0.25 + n - k) posterior, i.e. a weak prior that a name keeps
   its category (prior mean 0.8, worth 1.25 labels). One label gives 0.89, two
   that agree 0.92, four 0.95; a disagreement pulls it down fast (2 of 3: 0.71).
-- **Similar items** (`similar`, offline only): for a name the memory cannot
-  answer, the labelled names whose keys share the most character trigrams with
-  its key (Jaccard similarity at least `MIN_SIMILARITY`), each with its
-  majority category. The decision-model categoriser shows them as examples.
+- **Similar items** (`similar`, offline only): the labelled names whose keys
+  share the most character trigrams with the name's key (Jaccard similarity at
+  least `MIN_SIMILARITY`; the same key counts, as 1), each with its majority
+  category. The decision-model categoriser shows them as examples.
 """
 
 import unicodedata
@@ -101,8 +101,8 @@ class LabelMemory:
     def similar(self, name: str, limit: int) -> list[tuple[str, str]]:
         """Up to `limit` labelled (name, majority category) pairs most like `name`, best first.
 
-        Names with the same key are left out (the memory itself answers those, or found no
-        majority); so are keys without a strict majority, and keys below `MIN_SIMILARITY`.
+        Keys without a strict majority are left out, and keys below `MIN_SIMILARITY`. The
+        name's own key counts (when the memory answers first, such a name never gets here).
         """
         key = name_key(name)
         grams = trigrams(key)
@@ -110,8 +110,6 @@ class LabelMemory:
             return []
         scored = []
         for other, other_grams in self._trigrams.items():
-            if other == key:
-                continue
             similarity = len(grams & other_grams) / len(grams | other_grams)
             if similarity < MIN_SIMILARITY:
                 continue

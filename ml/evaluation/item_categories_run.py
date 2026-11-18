@@ -445,6 +445,11 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
                     counts["stopped"] = 1
                     break
     finally:
+        # The endpoints the decision model's requests were limited to (`stop` forgets them).
+        catalogue = (
+            categoriser.client.catalogue if isinstance(categoriser, DecisionsCategoriser) else None
+        )
+        zdr_endpoints = list(catalogue.endpoints) if catalogue else []
         categoriser.stop()
 
     summary: dict[str, Any] = {
@@ -483,9 +488,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             "max_questions": categoriser.max_questions,
             "examples_per_item": args.examples,
             "verified_run": args.verify.name if args.verify else None,
-            "zdr_endpoints": list(categoriser.client.catalogue.endpoints)
-            if categoriser.client.catalogue
-            else [],
+            "zdr_endpoints": zdr_endpoints,
         },
         "git": git_commit(),
         "started_at": started_at.isoformat(),
