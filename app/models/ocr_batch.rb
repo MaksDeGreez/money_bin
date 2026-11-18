@@ -49,6 +49,9 @@ class OcrBatch < ApplicationRecord
   validates :provider_batch_id, presence: true, if: -> { running? || applying? }
   validates :upstream_deletion, inclusion: { in: UPSTREAM_DELETIONS }, allow_nil: true
   validates :upstream_deletion, presence: true, if: -> { deleted_upstream_at.present? }
+  validates :deleted_upstream_at, presence: true, if: -> { upstream_deletion.present? }
+  validates :provider_batch_id, presence: true, if: -> { deleted_upstream_at.present? }
+  validates :checks, :submit_attempts, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
   validates :estimated_cost_usd, :cost_usd, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
   validates :requests_total, :requests_completed, :requests_failed,
     numericality: { only_integer: true, greater_than_or_equal_to: 0 }, allow_nil: true
@@ -63,15 +66,24 @@ class OcrBatch < ApplicationRecord
 
   # Releases every entry still waiting (each keeps `code` and `message`), takes the hold off their receipts,
   # and ends the batch as `final_state` (failed or unknown) with the reason. The receipts go back to what they
-  # were (`uploaded` or `failed`), free for a read one at a time or another batch. Idempotent.
+  # were (`uploaded` or `failed`), free for a read one at a time or another batch, and their open pages are
+  # refreshed. Idempotent.
   def release!(final_state, code, message, now: Time.current)
     transaction do
       lock!
       waiting = entries.where(state: "waiting")
-      Receipt.where(id: waiting.select(:receipt_id), ocr_batch_id: id).update_all(ocr_batch_id: nil)
+      held = Receipt.where(id: waiting.select(:receipt_id), ocr_batch_id: id).order(:id)
+      released = held.pluck(:id)
+      held.update_all(ocr_batch_id: nil)
       waiting.update_all(state: "released", error_code: code, error_message: message, resolved_at: now, updated_at: now)
       update!(state: final_state, error_code: code, error_message: message, finished_at: finished_at || now, next_check_at: now)
+      Receipt.where(id: released).find_each { |receipt| Receipts::LiveUpdate.changed(receipt) }
     end
+  end
+
+  # Every waiting entry is resolved and every follow-up (category suggestions, a read one at a time) queued.
+  def settled?
+    !entries.where(state: "waiting").or(entries.where(state: OcrBatchEntry::FOLLOWED_UP_STATES, followed_up_at: nil)).exists?
   end
 
   # How many entries are in each state, every state present.

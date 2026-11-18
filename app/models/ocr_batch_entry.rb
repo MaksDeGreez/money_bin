@@ -17,6 +17,9 @@
 # Every state but `waiting` is final and has `resolved_at`.
 class OcrBatchEntry < ApplicationRecord
   STATES = %w[waiting applied sync_queued failed released superseded].freeze
+  # The outcomes with a step after them: category suggestions (`applied`), a read one at a time (`sync_queued`).
+  # `followed_up_at` is set once that step was queued.
+  FOLLOWED_UP_STATES = %w[applied sync_queued].freeze
   CUSTOM_ID_FORMAT = /\A[A-Za-z0-9_-]{16,64}\z/
   RANDOM_BYTES = 18
 
@@ -26,7 +29,8 @@ class OcrBatchEntry < ApplicationRecord
   belongs_to :receipt, optional: true
 
   validates :custom_id, format: { with: CUSTOM_ID_FORMAT }, uniqueness: true
-  validates :position, numericality: { only_integer: true, greater_than: 0 }
+  validates :position, numericality: { only_integer: true, greater_than: 0 }, uniqueness: { scope: :ocr_batch_id }
+  validates :followed_up_at, absence: true, unless: -> { FOLLOWED_UP_STATES.include?(state) }
   validates :resolved_at, presence: true, unless: :waiting?
   validates :resolved_at, absence: true, if: :waiting?
   validates :cost_usd, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true

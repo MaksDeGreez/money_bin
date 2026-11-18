@@ -76,4 +76,21 @@ class OcrBatchTest < ActiveSupport::TestCase
     held_batch([ receipt ])
     assert_not receipt.reload.pristine?
   end
+
+  test "the model refuses what the database refuses" do
+    batch = ocr_batches(:finished_batch)
+    { checks: -1, submit_attempts: -1 }.each do |field, value|
+      copy = batch.dup.tap { |record| record.provider_batch_id = "batch_copy1" }
+      copy[field] = value
+      assert_not copy.valid?, field
+    end
+    assert_not OcrBatch.new(state: "failed", receipts_count: 1, upstream_deletion: "deleted").valid?
+    assert_not OcrBatch.new(state: "failed", receipts_count: 1, deleted_upstream_at: Time.current, upstream_deletion: "gone").valid?
+    entry = ocr_batch_entries(:finished_entry).dup.tap { |record| record.custom_id = OcrBatchEntry.new_custom_id }
+    assert_not entry.valid?, "a position is unique within its batch"
+    entry.position = 2
+    assert entry.valid?
+    entry.assign_attributes(state: "released", followed_up_at: Time.current)
+    assert_not entry.valid?
+  end
 end

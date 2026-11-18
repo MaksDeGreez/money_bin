@@ -11,7 +11,9 @@
 #   reported, never rounded.
 # - ocr_batch_entries: one receipt in one batch, with the opaque random key (`custom_id`) that stands for it at
 #   the provider, and what became of it (`state`, `error_code`, `error_message`, its own cost when reported).
-#   The key is the only link between a provider result and a receipt; it lives only here.
+#   The key is the only link between a provider result and a receipt; it lives only here. `followed_up_at`:
+#   when the step after an applied (category suggestions) or handed-over (a read one at a time) result was
+#   queued; nil until then, so a poll that died in between does it next time.
 # - receipts.ocr_batch_id: the open batch the receipt waits in. One column, so a receipt is in at most one
 #   open batch; the claim writes it under the receipt's row lock, as Receipts::RequestOcr writes
 #   ocr_requested_at, so a synchronous request and a batch never both take a receipt.
@@ -77,6 +79,7 @@ class CreateOcrBatches < ActiveRecord::Migration[8.1]
       t.text :error_message
       t.decimal :cost_usd
       t.timestamptz :resolved_at
+      t.timestamptz :followed_up_at
       t.timestamps
 
       t.index :custom_id, unique: true
@@ -89,6 +92,8 @@ class CreateOcrBatches < ActiveRecord::Migration[8.1]
       t.check_constraint "(state = 'waiting') = (resolved_at IS NULL)", name: "ocr_batch_entries_resolved_consistent"
       t.check_constraint "position > 0", name: "ocr_batch_entries_position_positive"
       t.check_constraint "cost_usd >= 0", name: "ocr_batch_entries_cost_not_negative"
+      t.check_constraint "followed_up_at IS NULL OR state IN ('applied', 'sync_queued')",
+        name: "ocr_batch_entries_follow_up_needs_a_result"
     end
 
     add_reference :receipts, :ocr_batch, foreign_key: { on_delete: :nullify }
