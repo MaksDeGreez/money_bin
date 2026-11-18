@@ -5,9 +5,10 @@
 #   that app/views/layouts/_head.html.slim loads: the stylesheet from fonts.googleapis.com and the font
 #   files from fonts.gstatic.com.
 # - Inline scripts and styles run only with the page's nonce. The importmap tags get it on their own; the
-#   one inline script, the theme boot in the head, sets it itself; Turbo reads it from the csp-nonce meta
-#   tag (csp_meta_tag) for the style of its progress bar. There is no 'unsafe-inline' and no
-#   'unsafe-eval'.
+#   theme boot script in the head sets it itself, and so does the Chartkick helper on the one script per
+#   chart it writes (config/initializers/chartkick.rb, docs/decisions/0013-dashboard-charts.md); Turbo
+#   reads it from the csp-nonce meta tag (csp_meta_tag) for the style of its progress bar and for the
+#   scripts of a page it swaps in. There is no 'unsafe-inline' and no 'unsafe-eval'.
 # - The nonce is the id of the Rails session, as the Rails guide advises with Turbo: Turbo keeps the first
 #   page's policy while it swaps in later pages, so the nonce must stay the same from page to page. It
 #   changes when the session is reset (signing in and out), and those forms reload the whole page.

@@ -850,7 +850,9 @@ truth; it is a pipeline state, so it has no period or currency.
 
 The dashboard (the home page, `Dashboard`) shows these figures for a period (the last 12 full months and
 the current one, or a calendar year) and one currency; spending is shown positive there, and the
-categories beyond the ten largest are summed as "Other". Reasons:
+categories beyond the ten largest are summed as "Other"; lines with no category are shown as "No
+category", apart from the Uncategorised category, and the headline's uncategorised figure is the two
+together. Reasons:
 [`decisions/0013-dashboard-charts.md`](decisions/0013-dashboard-charts.md).
 
 ## Decisions and why

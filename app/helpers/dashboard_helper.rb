@@ -6,7 +6,7 @@
 # tooltip shows, formatted here from the same BigDecimal (`library: { exact: [...] }`, read by
 # app/javascript/charts.js). Chart.js turns the strings into numbers only to draw the bars.
 module DashboardHelper
-  # Money as stored, two decimals, thin groups: "1 250.40", "1 250.40 UAH". Never through a Float.
+  # Money as stored, two decimals, thousands split by a space: "1 250.40", "1 250.40 UAH". Never through a Float.
   def dashboard_money(amount, currency = nil)
     [ number_with_precision(amount, precision: 2, delimiter: " "), currency ].compact.join(" ")
   end
@@ -26,7 +26,7 @@ module DashboardHelper
   def dashboard_slice_label(slice, grouping)
     case slice.kind
     when :category, :group then slice.record.name
-    when :uncategorised then "Uncategorised"
+    when :no_category then "No category"
     when :other then "Other (#{pluralize(slice.count, grouping)})"
     end
   end

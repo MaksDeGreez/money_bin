@@ -12,9 +12,13 @@
 # the period and the currency, fills empty months with zero, and sums the tail of the categories as
 # "Other", all in BigDecimal. Spending is shown as a positive figure (`spent` = -expenses).
 #
-# The state is the URL, like the receipts filter: `period` ("last12", the default, or a year that has
-# booked rows), `currency` (UAH by default) and `by` ("category", the default, or "group"). A value that is
-# not a choice falls back to the default, so an old or edited URL never fails.
+# The state is the URL, like the receipts filter: `period` ("last12", the default, or a year from the first
+# booked row's to this one), `currency` (UAH by default) and `by` ("category", the default, or "group"). A
+# value that is not a choice falls back to the default, so an old or edited URL never fails.
+#
+# Periods are whole calendar months: the last 12 months run from the first day of the month a year back
+# to the last day of this month, and a year from 1 January to 31 December, so a booked row dated later this
+# month or year (a payment booked ahead) is counted, as GET /api/v1/summary counts it for the same range.
 class Dashboard
   KEYS = %i[period currency by].freeze
   LAST_12 = "last12"
@@ -30,10 +34,11 @@ class Dashboard
   end
   # `month` is the first day of the month; `spent` and `income` are positive BigDecimals (0 when none).
   Month = Data.define(:month, :spent, :income)
-  # One bar of the category chart. `kind` is :category, :group, :uncategorised or :other; `record` the
-  # Category (nil for the last two); `count` how many categories "Other" holds; `transactions` is nil for
-  # groups and "Other" (a split transaction would be counted in several of them).
-  Slice = Data.define(:kind, :record, :spent, :transactions, :count)
+  # One bar of the category chart. `kind` is :category, :group, :no_category (lines with no category,
+  # reported apart from the taxonomy's own Uncategorised category, as in the summary) or :other; `record`
+  # the Category, `group` its group (nil where there is none); `count` how many categories "Other" holds;
+  # `transactions` is nil for groups and "Other" (a split transaction would be counted in several of them).
+  Slice = Data.define(:kind, :record, :group, :spent, :transactions, :count)
   # This month so far against the previous month and the same month a year before (whole months).
   Comparison = Data.define(:month, :spent, :previous_month, :previous_spent, :year_ago_month, :year_ago_spent)
 
@@ -62,13 +67,14 @@ class Dashboard
 
   def period
     @period ||= if (year = available_years.find { |candidate| candidate.to_s == @period_key })
-      Period.new(key: year.to_s, from: Date.new(year, 1, 1), to: [ Date.new(year, 12, 31), today ].min)
+      Period.new(key: year.to_s, from: Date.new(year, 1, 1), to: Date.new(year, 12, 31))
     else
-      Period.new(key: LAST_12, from: last_12_from, to: today)
+      Period.new(key: LAST_12, from: last_12_from, to: today.end_of_month)
     end
   end
 
-  # The years from the first booked, non-transfer row to this one, newest first (this year always).
+  # Every year from the first booked, non-transfer row's to this one, newest first (this year always; a year
+  # in between may have no rows, and then shows the empty state).
   def available_years
     @available_years ||= today.year.downto([ first_booked_on&.year || today.year, today.year ].min).to_a
   end
@@ -109,22 +115,25 @@ class Dashboard
     end
   end
 
-  # The largest categories (or groups) by what was spent, then the rest summed as "Other". Lines with no
-  # category are one slice of their own ("uncategorised").
+  # The largest categories (or groups) by what was spent, then the rest summed as "Other". The lines with no
+  # category are ranked like a category (the summary's row with a nil category), so outside the top they
+  # are part of "Other" too.
   def slices
     @slices ||= begin
       rows = figures ? (grouping == "group" ? figures.expenses.by_group : figures.expenses.by_category) : []
       top, rest = rows.first(TOP_CATEGORIES), rows.drop(TOP_CATEGORIES)
       slices = top.map { |row| slice_of(row) }
-      slices << Slice.new(kind: :other, record: nil, spent: self.class.as_spent(rest.sum(ZERO, &:amount)), transactions: nil, count: rest.size) if rest.any?
+      slices << Slice.new(kind: :other, record: nil, group: nil, spent: self.class.as_spent(rest.sum(ZERO, &:amount)), transactions: nil, count: rest.size) if rest.any?
       slices
     end
   end
 
-  # The expense lines of the period with no category: [amount spent, transactions].
+  # The uncategorised spending of the period: the lines in the taxonomy's Uncategorised category (where the
+  # history import puts what it could not map) and the lines with no category, as [amount spent,
+  # transactions]. A split transaction with lines in both counts twice in the number, never in the amount.
   def uncategorised
-    row = figures&.expenses&.by_category&.find { |candidate| candidate.category.nil? }
-    row ? [ self.class.as_spent(row.amount), row.transactions ] : [ ZERO, 0 ]
+    rows = figures ? figures.expenses.by_category.select { |row| row.category.nil? || row.category.slug == Category::UNCATEGORISED_SLUG } : []
+    [ self.class.as_spent(rows.sum(ZERO, &:amount)), rows.sum(&:transactions) ]
   end
 
   def payees
@@ -173,12 +182,13 @@ class Dashboard
       summary.currencies.find { |entry| entry.currency == currency }
     end
 
-    # The last-12-months range covers the three months compared; another period needs its own summary.
+    # The last-12-months range covers the three months compared (whole months, this one to its last day);
+    # another period needs its own summary.
     def comparison_figures
       if period.last_12?
         figures
       else
-        SpendingSummaryQuery.new(from: last_12_from, to: today, currency:).call.currencies.first
+        SpendingSummaryQuery.new(from: last_12_from, to: today.end_of_month, currency:).call.currencies.first
       end
     end
 
@@ -198,10 +208,11 @@ class Dashboard
 
     def slice_of(row)
       if row.is_a?(SpendingSummaryQuery::GroupAmount)
-        Slice.new(kind: row.group ? :group : :uncategorised, record: row.group, spent: self.class.as_spent(row.amount), transactions: nil, count: 1)
+        Slice.new(kind: row.group ? :group : :no_category, record: row.group, group: nil, spent: self.class.as_spent(row.amount),
+          transactions: nil, count: 1)
       else
-        Slice.new(kind: row.category ? :category : :uncategorised, record: row.category, spent: self.class.as_spent(row.amount),
-          transactions: row.transactions, count: 1)
+        Slice.new(kind: row.category ? :category : :no_category, record: row.category, group: row.group,
+          spent: self.class.as_spent(row.amount), transactions: row.transactions, count: 1)
       end
     end
 end

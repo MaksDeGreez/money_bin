@@ -25,12 +25,12 @@ class DashboardTest < ActiveSupport::TestCase
       view.needs_review_count, view.comparison, view.ledger_empty?, view.empty?, view.spent, view.income ]
   end
 
-  test "defaults: the last 12 full months and this one, UAH, by category" do
+  test "defaults: the last 12 full months and the whole of this one, UAH, by category" do
     view = dashboard
 
     assert view.period.last_12?
     assert_equal Date.new(2025, 11, 1), view.period.from
-    assert_equal TODAY, view.period.to
+    assert_equal Date.new(2026, 11, 30), view.period.to
     assert_equal 13, view.months.size
     assert_equal Date.new(2025, 11, 1), view.months.first.month
     assert_equal Date.new(2026, 11, 1), view.months.last.month
@@ -47,7 +47,7 @@ class DashboardTest < ActiveSupport::TestCase
     assert_equal "category", view.grouping
   end
 
-  test "a year with booked rows is a period, the current one up to today; a year without any is not offered" do
+  test "every year from the first booked row's to this one is a period, 1 January to 31 December" do
     book(amount: "-10.00", on: Date.new(2024, 3, 5))
 
     assert_equal [ 2026, 2025, 2024 ], dashboard.available_years
@@ -55,8 +55,9 @@ class DashboardTest < ActiveSupport::TestCase
     assert_equal Date.new(2024, 1, 1)..Date.new(2024, 12, 31), year.period.from..year.period.to
     assert_equal 12, year.months.size
     current = dashboard(period: "2026")
-    assert_equal TODAY, current.period.to
-    assert_equal 11, current.months.size
+    assert_equal Date.new(2026, 12, 31), current.period.to
+    assert_equal 12, current.months.size
+    assert_empty dashboard(period: "2025").slices
     assert dashboard(period: "2023").period.last_12?
     assert_equal({ period: "2024", by: "group" }, year.to_params(by: "group"))
   end
@@ -125,7 +126,7 @@ class DashboardTest < ActiveSupport::TestCase
     stub_const(Dashboard, :TOP_CATEGORIES, 2) do
       slices = dashboard.slices
 
-      assert_equal %i[category uncategorised other], slices.map(&:kind)
+      assert_equal %i[category no_category other], slices.map(&:kind)
       assert_equal [ categories(:groceries), nil ], slices.first(2).map(&:record)
       assert_equal 3, slices.last.count
       # household 250 + cafes 85 + 5 + takeaway 60
@@ -137,15 +138,38 @@ class DashboardTest < ActiveSupport::TestCase
   test "by group, groups roll up their categories" do
     slices = dashboard(by: "group").slices
 
-    assert_equal %i[group uncategorised group group], slices.map(&:kind)
+    assert_equal %i[group no_category group group], slices.map(&:kind)
     eating_out = slices.find { |slice| slice.record == categories(:eating_out) }
     assert_equal BigDecimal("145.00"), eating_out.spent
     assert_nil eating_out.transactions
   end
 
-  test "uncategorised spending is the lines with no category" do
+  test "uncategorised spending is the lines in the Uncategorised category and the lines with no category" do
     assert_equal [ BigDecimal("830.00"), 1 ], dashboard.uncategorised
+    book(amount: "-500.00", category: :uncategorised)
+
+    view = dashboard
+
+    assert_equal [ BigDecimal("1330.00"), 2 ], view.uncategorised
     assert_equal [ BigDecimal("0"), 0 ], dashboard(currency: "USD").uncategorised
+    slices = view.slices.to_h { |slice| [ slice.kind == :no_category ? :no_category : slice.record, slice.spent ] }
+    assert_equal BigDecimal("830.00"), slices[:no_category]
+    assert_equal BigDecimal("500.00"), slices[categories(:uncategorised)]
+  end
+
+  test "a slice carries its group, so the page needs no lookup per category" do
+    slice = dashboard.slices.find { |candidate| candidate.record == categories(:cafes) }
+
+    assert_equal categories(:eating_out), slice.group
+  end
+
+  test "a booked row dated later this month or year is counted, as the REST summary counts it" do
+    book(amount: "-7.00", on: Date.new(2026, 11, 29))
+    book(amount: "-3.00", on: Date.new(2026, 12, 20))
+
+    assert_equal BigDecimal("2232.40"), dashboard.spent
+    assert_equal BigDecimal("7.00"), dashboard.comparison.spent
+    assert_equal BigDecimal("2235.40"), dashboard(period: "2026").spent
   end
 
   test "this month so far against the whole previous month and the same month a year before, in any period" do

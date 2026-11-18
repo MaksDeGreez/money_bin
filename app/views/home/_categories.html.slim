@@ -30,7 +30,7 @@ section.chart-card aria-labelledby="chart-categories-title"
               tr
                 th scope="row" = dashboard_slice_label(slice, noun)
                 - if noun == "category"
-                  td = slice.record&.parent&.name
+                  td = slice.group&.name
                   td.data-grid-num = slice.transactions && number_with_delimiter(slice.transactions, delimiter: " ")
                 td.data-grid-num = dashboard_money(slice.spent)
           tfoot

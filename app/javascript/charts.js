@@ -8,7 +8,7 @@
 //   colour-blind readers.
 // - A tooltip shows the figure the server formatted from the exact decimal (the dataset's `exact` list,
 //   passed as the series' `library` option), never the number the chart drew. Axis ticks are only scale
-//   marks and are rounded to whole units.
+//   marks, written by Chartkick with a space between thousands.
 // - No animation: a chart is ready as soon as it is drawn, for screenshots and print.
 import "Chart.bundle"
 import "chartkick"
@@ -46,7 +46,6 @@ function applyTheme() {
 
 Chartkick.setDefaultOptions({
   thousands: " ",
-  round: 0,
   library: {
     animation: false,
     plugins: { tooltip: { callbacks: { label: exactLabel } } }

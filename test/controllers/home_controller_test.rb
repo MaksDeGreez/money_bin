@@ -84,7 +84,7 @@ class HomeControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal [
       [ "Groceries", "Groceries", "1", "1 000.40" ],
-      [ "Uncategorised", "", "1", "830.00" ],
+      [ "No category", "", "1", "830.00" ],
       [ "Household supplies", "Household & shopping", "1", "250.00" ],
       [ "Cafes, bars & restaurants", "Eating out", "1", "85.00" ],
       [ "Takeaway & fast food", "Eating out", "1", "60.00" ]
@@ -102,25 +102,60 @@ class HomeControllerTest < ActionDispatch::IntegrationTest
 
   test "every figure equals the REST summary for the same period and currency" do
     book(amount: "-12.34", on: Date.new(2026, 3, 9), category: :cafes)
+    book(amount: "-5.00", on: Date.new(2025, 11, 1), category: :uncategorised)
+    book(amount: "250.00", on: Date.new(2025, 12, 31), category: :salary)
+    book(amount: "-4.00", on: Date.new(2026, 11, 30), category: :takeaway)
     book(account: :savings_usd, amount: "-20.00", on: Date.new(2026, 10, 9))
     sign_in_as users(:owner)
+    money = ->(amount) { ActiveSupport::NumberHelper.number_to_rounded(BigDecimal(amount), precision: 2, delimiter: " ") }
+    as_spent = ->(amount) { money.(BigDecimal("0") - BigDecimal(amount)) }
 
-    get root_path(period: "2026")
-    months = table_rows("chart-months").to_h { |month, spent, income| [ month, [ spent, income ] ] }
-    categories = table_rows("chart-categories").to_h { |name, _group, _count, spent| [ name, spent ] }
-    total = table_total("chart-months")
+    { { period: "2026" } => %w[2026-01-01 2026-12-31], {} => %w[2025-11-01 2026-11-30] }.each do |params, (from, to)|
+      get root_path(params)
+      months = table_rows("chart-months").to_h { |month, spent, income| [ month, [ spent, income ] ] }
+      categories = table_rows("chart-categories").to_h { |name, _group, _count, spent| [ name, spent ] }
+      total = table_total("chart-months")
+      payees_total = table_total("chart-payees")
 
-    api_get api_v1_summary_path, params: { from: "2026-01-01", to: "2026-11-18", currency: "UAH" }
-    uah = json["currencies"].sole
-    as_spent = ->(amount) { ActiveSupport::NumberHelper.number_to_rounded(-BigDecimal(amount), precision: 2, delimiter: " ") }
+      api_get api_v1_summary_path, params: { from:, to:, currency: "UAH" }
+      uah = json["currencies"].sole
 
-    assert_equal as_spent.(uah.dig("expenses", "total")), total[1]
-    assert_equal ActiveSupport::NumberHelper.number_to_rounded(BigDecimal(uah.dig("incomes", "total")), precision: 2, delimiter: " "), total[2]
-    uah.dig("expenses", "by_month").each do |row|
-      assert_equal as_spent.(row["amount"]), months.fetch(Date.parse("#{row['month']}-01").strftime("%b %Y")).first
+      assert_equal as_spent.(uah.dig("expenses", "total")), total[1], params
+      assert_equal money.(uah.dig("incomes", "total")), total[2], params
+      assert_equal as_spent.(uah.dig("expenses", "total")), payees_total[2], params
+      assert_equal uah.dig("expenses", "transactions").to_s, payees_total[1], params
+      %w[expenses incomes].each_with_index do |side, column|
+        uah.dig(side, "by_month").each do |row|
+          figure = side == "expenses" ? as_spent.(row["amount"]) : money.(row["amount"])
+          assert_equal figure, months.fetch(Date.parse("#{row['month']}-01").strftime("%b %Y"))[column], [ params, side, row["month"] ]
+        end
+      end
+      uah.dig("expenses", "by_category").each do |row|
+        assert_equal as_spent.(row["amount"]), categories.fetch(row.dig("category", "name") || "No category"), [ params, row["category"] ]
+      end
     end
-    uah.dig("expenses", "by_category").each do |row|
-      assert_equal as_spent.(row["amount"]), categories.fetch(row.dig("category", "name") || "Uncategorised")
+  end
+
+  test "the period follows the Kyiv date: half past midnight on 1 December is December" do
+    travel_to Time.zone.local(2026, 12, 1, 0, 30)
+    sign_in_as users(:owner)
+
+    get root_path
+
+    assert_select ".stat-label", "Spent in Dec 2026 so far"
+    assert_equal [ "Dec 2025", "Dec 2026" ], [ table_rows("chart-months").first.first, table_rows("chart-months").last.first ]
+  end
+
+  test "the categories beyond the top ten are one Other bar, also in the chart" do
+    stub_const(Dashboard, :TOP_CATEGORIES, 2) do
+      sign_in_as users(:owner)
+
+      get root_path
+
+      rows = table_rows("chart-categories")
+      assert_equal [ "Other (3 categories)", "", "", "395.00" ], rows.last
+      data, = chart_payload("chart-categories")
+      assert_equal [ "Other (3 categories)", "395.00" ], data.first["data"].last
     end
   end
 
@@ -258,9 +293,11 @@ class HomeControllerTest < ActionDispatch::IntegrationTest
     sign_in_as users(:owner)
     get root_path
     small = count_queries { get root_path }
-    40.times { |index| book(amount: "-1.00", on: Date.new(2026, 1 + (index % 10), 1 + index % 28), category: index.even? ? :cafes : :takeaway) }
+    # Categories of every group, so a lookup per row or per group would show.
+    spread = %i[cafes takeaway household_supplies groceries uncategorised]
+    40.times { |index| book(amount: "-1.00", on: Date.new(2026, 1 + (index % 10), 1 + index % 28), category: spread[index % spread.size]) }
 
     assert_equal small, count_queries { get root_path }
-    assert_operator small, :<=, 14
+    assert_operator small, :<=, 10
   end
 end

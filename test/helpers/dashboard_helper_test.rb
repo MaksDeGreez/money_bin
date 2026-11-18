@@ -20,11 +20,11 @@ class DashboardHelperTest < ActionView::TestCase
   end
 
   test "slice labels" do
-    other = Dashboard::Slice.new(kind: :other, record: nil, spent: BigDecimal("1"), transactions: nil, count: 3)
-    none = Dashboard::Slice.new(kind: :uncategorised, record: nil, spent: BigDecimal("1"), transactions: 2, count: 1)
+    other = Dashboard::Slice.new(kind: :other, record: nil, group: nil, spent: BigDecimal("1"), transactions: nil, count: 3)
+    none = Dashboard::Slice.new(kind: :no_category, record: nil, group: nil, spent: BigDecimal("1"), transactions: 2, count: 1)
 
     assert_equal "Other (3 categories)", dashboard_slice_label(other, "category")
     assert_equal "Other (3 groups)", dashboard_slice_label(other, "group")
-    assert_equal "Uncategorised", dashboard_slice_label(none, "category")
+    assert_equal "No category", dashboard_slice_label(none, "category")
   end
 end

@@ -52,10 +52,15 @@ vendored Chart.js was the fallback had any of this failed.
   (`app/models/dashboard.rb`) picks the period and currency from the URL, fills empty months with zero and
   sums the categories beyond the top ten as "Other", in BigDecimal. A test compares the page with
   `GET /api/v1/summary` for the same range.
+- Periods are whole calendar months (the last 12 months to the last day of this month, a year to
+  31 December), so a booked row dated ahead is counted as the API counts it for the same range.
+- "Uncategorised spending" is the taxonomy's Uncategorised category (where the history import puts what it
+  could not map) plus the lines with no category. In the category chart the two stay apart, as in the
+  summary: the category under its own name, the lines without one as "No category".
 - Chartkick gets money as exact decimal strings (`JsonFormat.money`) and Integers for counts; the helper
   refuses a Float. Chart.js parses the strings only to draw. Each series also carries, per point, the
   text its tooltip shows (`library: { exact: [...] }`), formatted on the server; `charts.js` uses it as
-  the tooltip label. Axis ticks are scale marks, rounded to whole units by Chartkick.
+  the tooltip label. Axis ticks are only scale marks, written by Chartkick with a space between thousands.
 - Each chart has the same figures as a table in a `<details>` disclosure; the canvas is `aria-hidden`.
   The tests read the tables.
 
