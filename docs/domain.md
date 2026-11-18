@@ -842,6 +842,17 @@ model above:
 
 The reasons are in [`decisions/0007-read-api.md`](decisions/0007-read-api.md).
 
+`TopPayeesQuery` ranks payees by what they took in a range, per currency, with the same rules on the
+expense side: its named payees, the other payees and the spending with no payee add up to the summary's
+expense total for the same range and currency. A split transaction counts once, whole, for its payee.
+`ReceiptCountsQuery` counts the receipts per status, read by OCR (`ocr_model_name` set) and with ground
+truth; it is a pipeline state, so it has no period or currency.
+
+The dashboard (the home page, `Dashboard`) shows these figures for a period (the last 12 full months and
+the current one, or a calendar year) and one currency; spending is shown positive there, and the
+categories beyond the ten largest are summed as "Other". Reasons:
+[`decisions/0013-dashboard-charts.md`](decisions/0013-dashboard-charts.md).
+
 ## Decisions and why
 
 **The model is called `Transaction`; a line points back with `parent`.** It is the domain word. Rails
@@ -998,6 +1009,8 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   category).
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
-- Exchange rates and a base-currency view.
+- Exchange rates and a base-currency view (the dashboard shows one currency at a time until then).
+- Top payees and receipt counts over the REST API and the MCP server (their query objects are ready), and
+  a transactions list for the dashboard's "needs review" and "uncategorised" figures to link to.
 - Payee merging and categorisation rules.
 - Budgets and other planning features.
