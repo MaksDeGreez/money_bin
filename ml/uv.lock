@@ -488,6 +488,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pillow" },
     { name = "pillow-heif" },
     { name = "pydantic" },
@@ -516,6 +517,7 @@ mlx = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.163.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pillow-heif", specifier = ">=1.8.1" },
     { name = "pydantic", specifier = ">=2.14.3" },

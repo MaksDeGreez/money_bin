@@ -1,6 +1,13 @@
 """Backend registry. The backend is chosen by name, from the `OCR_BACKEND` setting."""
 
-from app.backends.base import Backend, BackendNotImplementedError, Extraction, ImageInput
+from app.backends.base import (
+    Backend,
+    BackendConfigError,
+    BackendError,
+    BackendNotImplementedError,
+    Extraction,
+    ImageInput,
+)
 from app.backends.mlx import MlxBackend
 from app.backends.openrouter import OpenRouterBackend
 from app.backends.stub import StubBackend
@@ -34,6 +41,8 @@ def create_backend(name: str, settings: Settings | None = None) -> Backend:
 __all__ = [
     "BACKENDS",
     "Backend",
+    "BackendConfigError",
+    "BackendError",
     "BackendNotImplementedError",
     "Extraction",
     "ImageInput",
