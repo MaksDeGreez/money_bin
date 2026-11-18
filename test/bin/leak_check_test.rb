@@ -305,6 +305,39 @@ class LeakCheckTest < ActiveSupport::TestCase
     assert_includes output, "commit #{sha[0, 12]} message line 1: term on line 4 of the terms file"
   end
 
+  test "two terms in one line give two findings, and a term in another line of the file is not repeated" do
+    commit({ "notes.txt" => "plain\nzorblax and quuxwidget\nplain\nzorblax again\n" }, "Add notes")
+
+    output, status = leak_check("--tree")
+
+    assert_blocked output, status
+    assert_equal [
+      "  notes.txt line 2: term on line 3 of the terms file",
+      "  notes.txt line 2: term on line 4 of the terms file",
+      "  notes.txt line 4: term on line 3 of the terms file"
+    ], output.lines(chomp: true).grep(/notes\.txt/)
+  end
+
+  # A real terms file holds every payee and account name. The cost must not grow with terms x lines:
+  # the first version of the script built one regular expression per term for every line it read.
+  test "a terms file with thousands of terms checks a large tree and a large commit in seconds" do
+    File.write(@terms_file, (1..3000).map { |n| "Invented term #{n} qz" }.join("\n") + "\nZorblax\n")
+    lines = (1..4000).map { |n| "a clean line of text, number #{n}\n" }
+    sha = commit({ "big.txt" => lines.join, "docs/also-big.txt" => (lines + [ "a line with zorblax\n" ]).join }, "Add big files")
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    tree_output, tree_status = leak_check("--tree")
+    history_output, history_status = leak_check("--history")
+    seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_blocked tree_output, tree_status
+    assert_includes tree_output, "docs/also-big.txt line 4001: term on line 3001 of the terms file"
+    assert_match(/1 forbidden term found/, tree_output)
+    assert_blocked history_output, history_status
+    assert_includes history_output, "commit #{sha[0, 12]} docs/also-big.txt line 4001: term on line 3001 of the terms file"
+    assert_operator seconds, :<, 20, "the two checks took #{seconds.round(1)} s"
+  end
+
   test "a wrong argument is a usage error" do
     output, status = leak_check("--everything")
 
