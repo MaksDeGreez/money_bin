@@ -3,6 +3,9 @@
 - `python -m evaluation.ocr_run`: runs a backend over receipts of a receipt set
   (the output of `tools/receipt_ingest`) and writes a run folder.
 - `python -m evaluation.ocr_fields`: scores a run against the QR codes.
+- `python -m evaluation.harness` (`make eval`): scores every run (OCR and item categories) against
+  the QR codes and the ground-truth export, compares runs, and writes aggregates and tables to
+  `eval/results/` through a whitelisted writer.
 
 Receipt photos and model answers are personal data: the run folder must be
 outside any git repository, and both scripts print aggregates only.
