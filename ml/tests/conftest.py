@@ -34,6 +34,19 @@ OPENROUTER_VARIABLES = (
 
 
 @pytest.fixture(autouse=True)
+def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may open a network connection: every socket connect fails."""
+    import socket
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("tests must not use the network")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+@pytest.fixture(autouse=True)
 def no_hosted_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in OPENROUTER_VARIABLES:
         monkeypatch.delenv(name, raising=False)

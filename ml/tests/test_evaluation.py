@@ -641,3 +641,27 @@ def test_a_local_run_reports_no_cost(ingest: Path, tmp_path: Path) -> None:
     assert "cost_usd" not in summary
     scores = ocr_fields.run(ocr_fields.parse_args(["--run", str(the_run(out))]), io.StringIO())
     assert scores["cost_usd"] is None
+
+
+def test_a_hosted_run_stops_after_an_unverified_provider(
+    ingest: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.backends.openrouter import HttpResponse
+    from tests.test_openrouter_backend import FakeTransport, chat_answer
+
+    transport = FakeTransport(HttpResponse(200, chat_answer(provider="Gamma")))
+
+    summary, run_dir, console = hosted_run(ingest, tmp_path, monkeypatch, transport)
+
+    records = list(read_jsonl(run_dir / "predictions.jsonl"))
+    assert [r["error"] for r in records] == ["openrouter_provider_unverified"]
+    assert len(transport.posts) == 1
+    assert "stopped: an answer came from a provider outside" in console
+    assert summary["upstream_providers"] == {"Gamma": 1}
+
+
+def test_tests_cannot_reach_the_network() -> None:
+    import socket
+
+    with pytest.raises(OSError, match="must not use the network"):
+        socket.create_connection(("192.0.2.1", 443), timeout=0.1)

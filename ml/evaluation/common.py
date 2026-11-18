@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from app.decimals import bounded, exact_sum
+
 FILE_MODE = 0o600
 DIR_MODE = 0o700
 
@@ -98,7 +100,7 @@ def _cost(value: Any) -> Decimal | None:
         cost = Decimal(value)
     except InvalidOperation:
         return None
-    return cost if cost.is_finite() else None
+    return bounded(cost)
 
 
 def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
@@ -122,13 +124,13 @@ def cost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
     paid = [diagnostics for diagnostics in hosted if diagnostics.get("model_calls", 0) > 0]
     costs = [_cost(diagnostics.get("cost_usd")) for diagnostics in paid]
     known = [cost for cost in costs if cost is not None]
-    total = sum(known, Decimal("0"))
+    total = exact_sum(known)
     per_receipt = per_1000 = None
     if known:
-        per_receipt = str((total / len(known)).quantize(COST_PER_RECEIPT_PLACES))
-        per_1000 = str((total * 1000 / len(known)).quantize(COST_PER_1000_PLACES))
+        per_receipt = format((total / len(known)).quantize(COST_PER_RECEIPT_PLACES), "f")
+        per_1000 = format((total * 1000 / len(known)).quantize(COST_PER_1000_PLACES), "f")
     return {
-        "total_usd": str(total),
+        "total_usd": format(total, "f"),
         "receipts_with_cost": len(known),
         "receipts_without_cost": len(costs) - len(known),
         "complete": len(known) == len(costs),

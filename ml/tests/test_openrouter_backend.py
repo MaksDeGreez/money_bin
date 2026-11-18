@@ -29,6 +29,7 @@ from app.backends.openrouter import (
     HttpxTransport,
     OpenRouterBackend,
     encode_jpeg,
+    key_is_valid,
     read_catalogue,
     upstream_error,
 )
@@ -230,7 +231,8 @@ def test_the_request_for_one_image() -> None:
     (post,) = transport.posts
     assert post["url"] == CHAT_URL
     assert post["api_key"] == FAKE_KEY
-    assert post["timeout"] == 60.0
+    # What is left of the receipt's 100 seconds.
+    assert 90 < post["timeout"] <= 100
     body = post["body"]
     assert set(body) == {
         "model",
@@ -256,7 +258,6 @@ def test_the_request_for_one_image() -> None:
     assert text == {"type": "text", "text": expected[1]["content"]}
     assert body["provider"] == {
         "only": ["alpha"],
-        "require_parameters": True,
         "allow_fallbacks": True,
         "zdr": True,
         "data_collection": "deny",
@@ -357,7 +358,6 @@ def test_without_structured_endpoints_the_answer_is_plain_json() -> None:
     assert "response_format" not in body
     assert body["provider"] == {
         "only": ["beta/fp8"],
-        "require_parameters": False,
         "allow_fallbacks": True,
         "zdr": True,
         "data_collection": "deny",
@@ -374,7 +374,7 @@ def test_structured_output_can_be_turned_off() -> None:
     body = transport.posts[0]["body"]
     assert "response_format" not in body
     assert body["provider"]["only"] == ["alpha", "beta/fp8"]
-    assert body["provider"]["require_parameters"] is False
+    assert "require_parameters" not in body["provider"]
 
 
 @pytest.mark.parametrize(
@@ -383,7 +383,7 @@ def test_structured_output_can_be_turned_off() -> None:
         {},
         {"openrouter_structured_output": False},
         {
-            "openrouter_timeout": 5,
+            "openrouter_timeout": 30,
             "openrouter_max_tokens": 10,
             "openrouter_ocr_image_max_side": 256,
         },
@@ -420,7 +420,7 @@ def test_the_catalogue_keeps_only_endpoints_without_any_retention() -> None:
 
     assert catalogue.endpoints == ("alpha", "beta/fp8")
     assert catalogue.structured_endpoints == ("alpha",)
-    assert catalogue.providers == frozenset({"Alpha", "Beta"})
+    assert catalogue.providers == frozenset({"alpha", "beta"})
     assert catalogue.model_version == DATED_MODEL
 
 
@@ -686,7 +686,7 @@ def test_an_unreadable_image_is_refused_before_any_call() -> None:
         (401, 424, "openrouter_auth_failed"),
         (402, 424, "openrouter_payment_required"),
         (403, 424, "openrouter_refused"),
-        (404, 424, "openrouter_no_zdr_endpoint"),
+        (404, 424, "openrouter_no_matching_endpoint"),
         (400, 424, "openrouter_bad_request"),
         (413, 424, "openrouter_bad_request"),
         (422, 424, "openrouter_bad_request"),
@@ -738,6 +738,12 @@ def test_network_failures_are_transient(failure: Exception, status: int, code: s
             "openrouter_upstream_error",
         ),
         (json.dumps({"provider": "Alpha", "choices": []}), 502, "openrouter_upstream_error"),
+        (json.dumps({"error": {"code": 502, "message": "x"}}), 502, "openrouter_upstream_error"),
+        (
+            json.dumps({"provider": "Gamma", "choices": [{"error": {"code": 502}}]}),
+            424,
+            "openrouter_provider_unverified",
+        ),
     ],
 )
 def test_odd_answers(text: str, status: int, code: str) -> None:
@@ -904,7 +910,7 @@ def test_the_real_client_sends_only_these_headers(monkeypatch: pytest.MonkeyPatc
     assert chat.headers["authorization"] == f"Bearer {FAKE_KEY}"
     assert chat.headers["user-agent"] == USER_AGENT
     assert chat.headers["content-type"] == "application/json"
-    assert chat.extensions["timeout"]["read"] == 60.0
+    assert 90 < chat.extensions["timeout"]["read"] <= 100
     assert chat.extensions["timeout"]["connect"] == 10.0
     body = json.loads(chat.content)
     assert body["provider"]["zdr"] is True
@@ -934,3 +940,229 @@ def test_the_real_client_does_not_follow_a_redirect() -> None:
         backend.extract_receipt([jpeg()])
 
     assert error.value.code == "openrouter_bad_request"
+
+
+# Review fixes ----------------------------------------------------------------------
+
+
+def test_a_slug_that_would_also_reach_a_retaining_endpoint_is_not_used() -> None:
+    zdr = {
+        "data": [
+            endpoint("alpha", "Alpha", supported_parameters=STRUCTURED),
+            endpoint("alpha/eu", "Alpha", safety_retention=True),
+            endpoint("beta/fp8", "Beta"),
+            # Another model's retaining endpoint does not matter.
+            endpoint("beta/fp8/flex", "Beta", model="example/other-model", safety_retention=True),
+        ]
+    }
+
+    catalogue = read_catalogue(FakeTransport(zdr=zdr), MODEL, structured=True, now=0.0)
+
+    assert catalogue.endpoints == ("beta/fp8",)
+    assert catalogue.structured_endpoints == ()
+    assert catalogue.providers == frozenset({"beta"})
+
+
+def test_a_slug_shared_with_a_retaining_endpoint_is_not_used() -> None:
+    zdr = {"data": [endpoint("alpha", "Alpha"), endpoint("alpha", "Alpha", safety_retention=None)]}
+
+    with pytest.raises(BackendConfigError):
+        read_catalogue(FakeTransport(zdr=zdr), MODEL, structured=True, now=0.0)
+
+
+@pytest.mark.parametrize(
+    "architecture", [None, "text+image", {"input_modalities": "text+image"}, {}]
+)
+def test_odd_model_entries_are_refused(architecture: Any) -> None:
+    models = {"data": [{"id": MODEL, "architecture": architecture}]}
+
+    with pytest.raises(BackendConfigError) as error:
+        read_catalogue(FakeTransport(models=models), MODEL, structured=True, now=0.0)
+
+    assert error.value.code == "openrouter_model_without_images"
+
+
+def test_provider_names_are_compared_without_case() -> None:
+    backend, _ = make_backend(FakeTransport(HttpResponse(200, chat_answer(provider=" alpha "))))
+
+    assert backend.extract_receipt([jpeg()]).receipt.total == Decimal("71.40")
+
+
+def test_after_an_unverified_provider_nothing_more_is_sent() -> None:
+    transport = FakeTransport(
+        HttpResponse(200, chat_answer(provider="Gamma")), HttpResponse(200, chat_answer())
+    )
+    backend, _ = make_backend(transport)
+
+    with pytest.raises(BackendError):
+        backend.extract_receipt([jpeg()])
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert error.value.code == "openrouter_provider_unverified"
+    assert error.value.status_code == 424
+    assert "restarted" in error.value.message
+    assert len(transport.posts) == 1
+
+
+def test_a_receipt_has_one_time_budget() -> None:
+    backend, transport = make_backend(openrouter_timeout=4)
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert (error.value.status_code, error.value.code) == (504, "openrouter_timeout")
+    assert transport.posts == []
+
+
+def test_the_repair_pass_is_skipped_without_time_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.backends.openrouter as module
+
+    ticks = iter([0.0, 1.0, 1.0, 98.0])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(ticks))
+    backend, transport = make_backend(FakeTransport(HttpResponse(200, chat_answer("bad"))))
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert error.value.code == "openrouter_timeout"
+    assert len(transport.posts) == 1
+    assert transport.posts[0]["timeout"] == 99.0
+    assert error.value.diagnostics["model_calls"] == 1
+
+
+def test_unknown_token_counts_stay_unknown() -> None:
+    text = json.dumps({"provider": "Alpha", "choices": [{"message": {"content": ANSWER}}]})
+    backend, _ = make_backend(FakeTransport(HttpResponse(200, text)))
+
+    diagnostics = backend.extract_receipt([jpeg()]).diagnostics
+
+    assert diagnostics["prompt_tokens"] is None
+    assert diagnostics["generation_tokens"] is None
+    assert diagnostics["cost_usd"] is None
+
+
+def test_cookies_from_the_catalogue_never_reach_the_chat_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = Recorder()(request)
+        response.headers["set-cookie"] = "tracker=abc; Domain=openrouter.ai; Path=/"
+        recorded.append(request)
+        return response
+
+    recorded: list[httpx.Request] = []
+    backend = OpenRouterBackend(settings(), transport=HttpxTransport(httpx.MockTransport(handler)))
+
+    backend.extract_receipt([jpeg()])
+    backend.extract_receipt([jpeg()])
+    backend.stop()
+
+    assert len(recorded) == 4
+    assert all("cookie" not in request.headers for request in recorded)
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code", "lost_calls"),
+    [
+        (httpx.ConnectTimeout("slow"), 504, "openrouter_timeout", 0),
+        (httpx.ReadTimeout("slow"), 504, "openrouter_timeout", 1),
+        (httpx.ConnectError("refused"), 502, "openrouter_unreachable", 0),
+        (httpx.RemoteProtocolError("cut"), 502, "openrouter_unreachable", 1),
+    ],
+)
+def test_a_call_that_may_have_been_paid_makes_the_cost_unknown(
+    failure: Exception, status: int, code: str, lost_calls: int
+) -> None:
+    transport = FakeTransport(HttpResponse(200, chat_answer("bad", cost="0.5")), failure)
+    backend, _ = make_backend(transport)
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert (error.value.status_code, error.value.code) == (status, code)
+    diagnostics = error.value.diagnostics
+    assert diagnostics["model_calls"] == 1 + lost_calls
+    assert diagnostics["cost_usd"] == (None if lost_calls else "0.5")
+
+
+def test_an_unreadable_answer_makes_the_cost_unknown() -> None:
+    transport = FakeTransport(
+        HttpResponse(200, chat_answer("bad", cost="0.5")), HttpResponse(200, "<html>")
+    )
+    backend, _ = make_backend(transport)
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert error.value.code == "openrouter_bad_response"
+    assert error.value.diagnostics["model_calls"] == 2
+    assert error.value.diagnostics["cost_usd"] is None
+
+
+@pytest.mark.parametrize(
+    ("document", "status", "code"),
+    [
+        ({"error": {"code": 503, "message": "unavailable"}}, 502, "openrouter_upstream_error"),
+        ({"error": {"code": 429, "message": "slow down"}}, 503, "openrouter_rate_limited"),
+        ({"error": {"code": 403, "message": "flagged"}}, 424, "openrouter_refused"),
+        ({"error": {"code": "x"}}, 502, "openrouter_upstream_error"),
+        ({"choices": [{"error": {"code": 429}}]}, 503, "openrouter_rate_limited"),
+        (
+            {"provider": "Alpha", "choices": [{"error": {"code": 402}}]},
+            424,
+            "openrouter_payment_required",
+        ),
+    ],
+)
+def test_errors_inside_a_200_answer_are_mapped_by_their_code(
+    document: dict[str, Any], status: int, code: str
+) -> None:
+    backend, _ = make_backend(FakeTransport(HttpResponse(200, json.dumps(document))))
+
+    with pytest.raises(BackendError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert (error.value.status_code, error.value.code) == (status, code)
+    assert "unavailable" not in error.value.message and "flagged" not in error.value.message
+
+
+def test_costs_keep_every_digit() -> None:
+    long_cost = "0.12345678901234567890123456789"
+    answers = [
+        HttpResponse(200, chat_answer("bad", cost=long_cost)),
+        HttpResponse(200, chat_answer(cost="1000000.000000000000000000000001")),
+    ]
+    backend, _ = make_backend(FakeTransport(*answers))
+
+    diagnostics = backend.extract_receipt([jpeg()]).diagnostics
+
+    assert diagnostics["calls"][0]["cost_usd"] == long_cost
+    assert diagnostics["cost_usd"] == "1000000.12345678901234567890123556789"
+
+
+@pytest.mark.parametrize("cost", ["1" + "0" * 60, "1e-60", "1e60"])
+def test_an_absurd_cost_counts_as_unknown(cost: str) -> None:
+    backend, _ = make_backend(FakeTransport(HttpResponse(200, chat_answer(cost=f'"{cost}"'))))
+
+    assert backend.extract_receipt([jpeg()]).diagnostics["cost_usd"] is None
+
+
+@pytest.mark.parametrize("key", ["sk-or-v1-abc\nINJECTED", "two words", "ключ"])
+def test_a_malformed_key_is_refused_before_it_reaches_the_http_client(
+    key: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    transport = FakeTransport()
+    backend, _ = make_backend(transport, openrouter_api_key=key)
+
+    backend.start()
+    with pytest.raises(BackendConfigError) as error:
+        backend.extract_receipt([jpeg()])
+
+    assert error.value.code == "openrouter_key_invalid"
+    assert key not in error.value.message and key not in caplog.text
+    assert "OPENROUTER_API_KEY" in caplog.text
+    assert transport.posts == []
+
+
+def test_a_key_is_valid_only_when_set() -> None:
+    assert not key_is_valid(Settings())
+    assert key_is_valid(settings())

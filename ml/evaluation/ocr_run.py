@@ -323,6 +323,13 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
                 records.append(record)
                 took = "" if record["seconds"] is None else f" {record['seconds']:.1f} s"
                 print(f"{number}/{len(selected)} {record['status']}{took}", file=out)
+                if record["error"] == "openrouter_provider_unverified":
+                    print(
+                        "stopped: an answer came from a provider outside the zero-retention "
+                        "list; check the account's settings before another run",
+                        file=out,
+                    )
+                    break
         # Read before `stop()`, which forgets the endpoint list.
         used_settings = backend_settings(backend, settings)
     finally:
