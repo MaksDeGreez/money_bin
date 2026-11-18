@@ -32,8 +32,10 @@ installs, so `bin/setup` and CI need nothing new.
   transaction, and the largest line is the one that best says what the money was for. The metrics JSON
   counts how many rows were split and how many of those had a tie, so the effect of the rule is visible.
 - The label is the chosen line's category as the export names it: its English group and category
-  names. A line without a category, with an unmapped category, or mapped to Uncategorised has no label;
-  the row is dropped and counted.
+  names. A line without a category, with an unmapped category, with names that are not in the app's
+  taxonomy (`db/seeds/taxonomy.yml`), or mapped to Uncategorised has no label; the row is dropped and
+  counted. The importer sends all of these lines to Uncategorised, and a model must never suggest a
+  category the app cannot store.
 - The features come from the transaction alone (payee, comment, bank description, merchant, MCC, the
   amount's sign and size bucket, the account kind), never from its lines, because a new bank transaction
   has no lines yet.
@@ -86,13 +88,20 @@ The metrics JSON holds, for each baseline and the model: macro-F1 (the main metr
 accuracy, top-3 accuracy, each with a 95% bootstrap interval (1,000 resamples of the test rows, fixed
 seed, the same resamples for every system so differences are paired), the interval of the model's gain
 over the best baseline, precision when only the most confident rows are kept (by coverage level and by
-confidence threshold), McNemar's test between the model and the best baseline (exact binomial and
-corrected chi-square), per-category support and F1, and the same headline metrics per segment. It also
-records the export's manifest SHA-256, the split dates, the row counts, the library versions, the git
-commit and the seed, so every number names the data and the code it came from.
+confidence threshold), McNemar's test between the model and the best baseline, per-category support
+and F1, and the same headline metrics per segment. It also records the export's manifest SHA-256, the
+taxonomy's SHA-256, the split dates, the row counts, the library versions, the git commit and the seed,
+so every number names the data and the code it came from.
 
-Macro-F1 averages over the categories that occur in the evaluated rows; a category that is only
-predicted counts through the precision it costs the true categories.
+- Macro-F1 is scikit-learn's default definition: the mean over every category that is a true label or
+  a top-1 prediction, so a prediction of a category absent from the test rows costs its F1 of 0.
+- McNemar's test compares top-1 correctness, so it tests a difference in accuracy, while the best
+  baseline is chosen by validation macro-F1. The exact binomial p-value is the one to quote.
+- At a coverage level, rows that tie in confidence with the last kept row are all kept (a baseline's
+  confidences tie a lot), and the coverage actually reached is reported, so the curve does not depend
+  on the order of the rows.
+- Rows are not independent: the same payee recurs over nearby days. The row bootstrap is therefore
+  probably too narrow, and a second set of intervals resamples whole days as a sensitivity check.
 
 ### Files and privacy
 
@@ -117,6 +126,8 @@ predicted counts through the precision it costs the true categories.
   cannot be learnt, and the metrics JSON lists any such category.
 - One run gives one split. The intervals describe the uncertainty of the test sample, not that of the
   choice of cut date.
+- The validation slice is small for the number of categories, so the choice of `C` is noisy; the
+  validation score of every tried value is in the metrics JSON.
 
 ## Consequences
 
