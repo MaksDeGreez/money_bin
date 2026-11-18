@@ -37,11 +37,13 @@ CLEAN = {"sha": "0" * 40, "dirty": False}
 
 
 @pytest.fixture(scope="module", autouse=True)
-def committed_code() -> Any:
-    """The checks compare git states; the tests run on a fixed, clean one."""
+def committed_code(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """The checks compare git states; the tests run on a fixed, clean one. No test may touch
+    the real record of test scores."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(common, "git_state", lambda: dict(CLEAN))
         patch.setattr(score, "git_state", lambda: dict(CLEAN))
+        patch.setattr(score, "DEFAULT_LEDGER", tmp_path_factory.mktemp("home") / "scores.jsonl")
         yield patch
 
 
@@ -242,11 +244,50 @@ def test_the_seal_stays_closed_when_the_refit_fails(
     assert not ledger.exists()
 
 
+def test_an_encoder_that_cannot_load_fails_before_the_seal_opens(
+    scored: dict[str, Any], tmp_path: Path
+) -> None:
+    class Broken(FakeEncoder):
+        def prepare(self) -> None:
+            raise score.EmbeddingError("the weights are not in the local cache")
+
+    data = json.loads(scored["selection"]["selection_path"].read_text())
+    ledger = tmp_path / "scores.jsonl"
+
+    with pytest.raises(score.EmbeddingError, match="weights"):
+        score.run(
+            **_options(
+                scored,
+                encoders={"fake": Broken(data["reproducibility"]["encoders"]["fake"])},
+                **_fresh(tmp_path),
+            )
+        )
+
+    assert not ledger.exists()
+
+
+def test_a_score_recorded_meanwhile_stops_the_run(tmp_path: Path) -> None:
+    ledger = tmp_path / "scores.jsonl"
+    entry = {"manifest_sha256": "abc"}
+    score._record(ledger, entry, known=0, rescore=False)
+
+    with pytest.raises(TrainingError, match="meanwhile"):
+        score._record(ledger, entry, known=0, rescore=False)
+    score._record(ledger, entry, known=0, rescore=True)
+
+    assert len(ledger.read_text().splitlines()) == 2
+    assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+
+
 def test_other_code_is_refused_unless_a_reason_is_given(
     scored: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     options = _options(scored, out_dir=tmp_path / "out", ledger_path=tmp_path / "scores.jsonl")
-    for state in ({"sha": "1" * 40, "dirty": False}, {"sha": "0" * 40, "dirty": True}):
+    for state in (
+        {"sha": "1" * 40, "dirty": False},
+        {"sha": "0" * 40, "dirty": True},
+        {"sha": None, "dirty": None},
+    ):
         monkeypatch.setattr(score, "git_state", lambda state=state: dict(state))
         with pytest.raises(TrainingError, match="not the committed code"):
             score.run(**options)
@@ -254,13 +295,15 @@ def test_other_code_is_refused_unless_a_reason_is_given(
     result = score.run(**options, code_change_reason="a comment was fixed")
 
     assert result["metrics"]["final_scoring"]["code_change_reason"] == "a comment was fixed"
-    assert result["metrics"]["final_scoring"]["code"]["at_scoring"]["dirty"] is True
+    assert result["metrics"]["final_scoring"]["code"]["at_scoring"]["dirty"] is None
 
 
 def test_another_encoder_is_refused(scored: dict[str, Any], tmp_path: Path) -> None:
     data = json.loads(scored["selection"]["selection_path"].read_text())
-    data["chosen"]["config"] = {**data["first_version"]["config"]}
-    data["chosen"]["config"].update(feature_set="embedding", encoder="fake")
+    # Make the rule pick the embedding candidate, as if it had won on validation.
+    row = next(row for row in data["candidates"] if row["name"] == "emb:fake")
+    row.update(macro_f1=1.0, top3_accuracy=1.0)
+    data["chosen"] = {"name": row["name"], "config": row["config"]}
     changed = tmp_path / "selection.json"
     changed.write_text(json.dumps(data))
     other = {"fake": FakeEncoder("fake-encoder@2")}
@@ -296,6 +339,12 @@ def test_another_taxonomy_is_refused(scored: dict[str, Any], tmp_path: Path) -> 
         (lambda data: data["split"]["test"].update(rows=1), "test set differs"),
         (lambda data: data["split"]["test"].update(first_date="2000-01-01"), "test set differs"),
         (lambda data: data.update(selection_version=0), "another version"),
+        (lambda data: data["reproducibility"]["git"].update(dirty=True), "committed code"),
+        (lambda data: data["reproducibility"]["git"].update(sha=None), "committed code"),
+        (lambda data: data["reproducibility"]["libraries"].update(numpy="0.0"), "library"),
+        (lambda data: data["chosen"].update(name="tfidf+switch"), "selection rule picks"),
+        (lambda data: data["chosen"]["config"].update(c=123.0), "selection rule picks"),
+        (lambda data: data.pop("chosen"), "no usable chosen"),
     ],
 )
 def test_a_changed_selection_is_refused(
@@ -342,10 +391,9 @@ def test_main_scores_from_the_command_line(
     )
     path = next(out.glob("*.selection.json"))
     capsys.readouterr()
-    ledger = ["--ledger", str(tmp_path / "data" / "scores.jsonl")]
 
     code = score.main(
-        [str(export), "--selection", str(path), "--out", str(out), "--resamples", "5", *ledger]
+        [str(export), "--selection", str(path), "--out", str(out), "--resamples", "5"]
     )
 
     assert code == 0
@@ -355,7 +403,7 @@ def test_main_scores_from_the_command_line(
     for text in private_strings():
         assert text not in printed
 
-    code = score.main([str(export), "--selection", str(path), "--out", str(out), *ledger])
+    code = score.main([str(export), "--selection", str(path), "--out", str(tmp_path / "other")])
 
     assert code == 1
     assert "already scored" in capsys.readouterr().err

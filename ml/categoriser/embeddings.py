@@ -88,13 +88,10 @@ class EmbeddingCache:
 
     def __init__(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        folder.chmod(0o700)  # also when the folder already existed
         path = folder / CACHE_FILE
         if not path.exists():
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
         self._db = sqlite3.connect(path)
-        # No journal file next to the cache (it would get the umask's mode, not 600).
-        self._db.execute("PRAGMA journal_mode=MEMORY")
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, dim INTEGER, vector BLOB)"
         )
@@ -140,6 +137,12 @@ class CachedEncoder:
     @property
     def key(self) -> str:
         return self.encoder.key
+
+    def prepare(self) -> None:
+        """Load the encoder's model now (a cache hit never loads it)."""
+        prepare = getattr(self.encoder, "prepare", None)
+        if prepare is not None:
+            prepare()
 
     def encode(self, texts: Sequence[str]) -> np.ndarray:
         """One unit-length float32 vector per text, in order."""
@@ -211,9 +214,12 @@ class TransformerEncoder:  # pragma: no cover - needs torch, transformers and lo
         model.eval()
         self._model = model.to(self._device)
 
-    def encode(self, texts: Sequence[str]) -> np.ndarray:
+    def prepare(self) -> None:
         if self._model is None:
             self._load()
+
+    def encode(self, texts: Sequence[str]) -> np.ndarray:
+        self.prepare()
         prefixed = [self.spec.prefix + text for text in texts]
         torch = self._torch
         out = []

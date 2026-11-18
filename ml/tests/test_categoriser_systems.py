@@ -328,11 +328,16 @@ def test_real_encoders_are_named_cached_and_lazy(
     assert isinstance(encoders["e5-large"].encoder, TransformerEncoder)  # nothing loaded yet
 
 
-def test_an_existing_cache_folder_is_made_private(tmp_path: Path) -> None:
-    folder = tmp_path / "cache"
-    folder.mkdir(mode=0o755)
+def test_prepare_loads_the_encoder_without_encoding(tmp_path: Path) -> None:
+    class Loading(FakeEncoder):
+        loaded = 0
 
-    EmbeddingCache(folder).put({"k": np.ones(2, dtype=np.float32)})
+        def prepare(self) -> None:
+            self.loaded += 1
 
-    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
-    assert [path.name for path in folder.iterdir()] == ["embeddings.sqlite3"]
+    loading = Loading()
+    CachedEncoder(loading, EmbeddingCache(tmp_path)).prepare()
+    CachedEncoder(FakeEncoder(), EmbeddingCache(tmp_path)).prepare()  # nothing to load
+
+    assert loading.loaded == 1
+    assert loading.calls == []

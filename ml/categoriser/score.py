@@ -23,6 +23,7 @@ The console shows counts and metrics only; the JSON holds category names and num
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -66,7 +67,13 @@ from categoriser.metrics import (
     mcnemar,
     per_class,
 )
-from categoriser.selection import FIRST_VERSION, SELECTION_VERSION, real_encoders
+from categoriser.selection import (
+    FIRST_VERSION,
+    SELECTION_VERSION,
+    choose,
+    optional_versions,
+    real_encoders,
+)
 from categoriser.split import SplitError, time_split
 from categoriser.systems import Config, fit_system
 from categoriser.taxonomy import DEFAULT_TAXONOMY, TaxonomyError
@@ -87,9 +94,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         selection = _read_selection(selection_path)
         names = sorted(
             {
-                config["encoder"]
-                for config in (selection["chosen"]["config"], selection["first_version"]["config"])
-                if config["encoder"]
+                config.encoder
+                for config in (_config(selection, "chosen"), _config(selection, "first_version"))
+                if config.encoder
             }
         )
         result = run(
@@ -101,7 +108,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             encoders=real_encoders(names, Path(args.embedding_cache).expanduser()),
             rescore_reason=args.rescore_reason,
             code_change_reason=args.code_change_reason,
-            ledger_path=Path(args.ledger).expanduser(),
             echo=print,
         )
     except (ExportError, SplitError, TaxonomyError, TrainingError, EmbeddingError) as error:
@@ -122,13 +128,14 @@ def run(
     encoders: Mapping[str, Encoder] | None = None,
     rescore_reason: str | None = None,
     code_change_reason: str | None = None,
-    ledger_path: Path = DEFAULT_LEDGER,
+    ledger_path: Path | None = None,
     echo: Callable[[str], Any] = print,
 ) -> dict[str, Any]:
-    """Refit the chosen configuration and score the test set once; return the metrics."""
+    """Refit the chosen configuration and score the test set once; return the metrics.
+
+    `ledger_path` is for the tests only; the command always uses `DEFAULT_LEDGER`."""
+    ledger_path = DEFAULT_LEDGER if ledger_path is None else ledger_path
     selection = _read_selection(selection_path)
-    if selection.get("selection_version") != SELECTION_VERSION:
-        raise TrainingError("the selection file was written by another version of the selection")
     reproducibility = selection["reproducibility"]
     parameters = reproducibility["parameters"]
     seed = reproducibility["seed"]
@@ -138,7 +145,8 @@ def run(
     if sha256_file(taxonomy_path) != reproducibility["taxonomy_sha256"]:
         raise TrainingError("the taxonomy is not the one the selection used")
     manifest = selection["export"]["manifest_sha256"]
-    earlier = _earlier_scores(out_dir, manifest) + _ledger_scores(ledger_path, manifest)
+    in_ledger = _ledger_scores(ledger_path, manifest)
+    earlier = _earlier_scores(out_dir, manifest) + in_ledger
     if earlier and not _given(rescore_reason):
         raise TrainingError(
             f"this export's test set was already scored ({', '.join(earlier)}); it is scored "
@@ -146,17 +154,33 @@ def run(
         )
     code = git_state()
     selected_code = reproducibility["git"]
+    libraries = {**environment()["libraries"], **optional_versions(("torch", "transformers"))}
+    selected_libraries = {
+        **reproducibility["libraries"],
+        **(reproducibility.get("embedding_libraries") or {}),
+    }
     code_differs = (
-        code["sha"] != selected_code["sha"] or bool(code["dirty"]) or bool(selected_code["dirty"])
+        code["sha"] is None
+        or code["sha"] != selected_code["sha"]
+        or code["dirty"] is not False
+        or selected_code["dirty"] is not False
+        or any(libraries.get(name) != version for name, version in selected_libraries.items())
     )
     if code_differs and not _given(code_change_reason):
         raise TrainingError(
-            "the code is not the committed code the selection ran on (another commit, or a "
-            "modified tree); run the selection again, or pass --code-change-reason"
+            "the code is not the committed code the selection ran on (another or an unknown "
+            "commit, a modified tree, or other library versions); run the selection again, or "
+            "pass --code-change-reason"
         )
 
-    chosen = Config.from_dict(selection["chosen"]["config"])
-    first = Config.from_dict(selection["first_version"]["config"])
+    chosen = _config(selection, "chosen")
+    first = _config(selection, "first_version")
+    rechosen, _trace = choose(selection["candidates"])
+    if (
+        rechosen["name"] != selection["chosen"]["name"]
+        or rechosen["config"] != (selection["chosen"]["config"])
+    ):
+        raise TrainingError("the chosen configuration is not the one the selection rule picks")
     selected_encoders = reproducibility["encoders"]
     for name in {config.encoder for config in (chosen, first) if config.encoder}:
         if name not in (encoders or {}) or (encoders or {})[name].key != selected_encoders.get(
@@ -187,6 +211,12 @@ def run(
     final = fit_system(chosen, train, seed=seed, encoders=encoders or {})
     fit_seconds = time.perf_counter() - started
     first_version = fit_system(first, train, seed=seed, encoders=encoders or {})
+    for encoder in (encoders or {}).values():
+        # Every training text is cached, so the encoder model first loads for the test texts:
+        # load it now, so a missing model fails before the seal opens.
+        prepare = getattr(encoder, "prepare", None)
+        if prepare is not None:
+            prepare()
 
     # The seal opens only now, and the record of it is written before any test row is read.
     scored_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -197,9 +227,14 @@ def run(
             "manifest_sha256": manifest,
             "selection_sha256": selection_sha,
             "configuration": chosen.name,
+            "test_rows": split.test.size,
+            "test_first_date": str(split.test.cut),
+            "git_sha": code["sha"],
             "rescore_reason": rescore_reason if earlier else None,
             "code_change_reason": code_change_reason if code_differs else None,
         },
+        known=len(in_ledger),
+        rescore=_given(rescore_reason),
     )
     echo(f"Scoring the test set once: {chosen.name}")
     test = split.test.unseal(purpose)
@@ -239,7 +274,11 @@ def run(
             "unsealed_for": purpose,
             "earlier_scores_of_this_export": earlier,
             "rescore_reason": rescore_reason if earlier else None,
-            "code": {"at_scoring": code, "at_selection": selected_code},
+            "code": {
+                "at_scoring": code,
+                "at_selection": selected_code,
+                "libraries_at_scoring": libraries,
+            },
             "code_change_reason": code_change_reason if code_differs else None,
             "record_of_test_scores": ledger_path.name,
             "protocol": EARLIER_RESULT_SEEN,
@@ -335,6 +374,8 @@ def _read_selection(path: Path) -> dict[str, Any]:
         raise TrainingError("the selection file cannot be read") from None
     if not isinstance(selection, dict) or selection.get("kind") != "categoriser-selection":
         raise TrainingError("the selection file is not a categoriser selection")
+    if selection.get("selection_version") != SELECTION_VERSION:
+        raise TrainingError("the selection file was written by another version of the selection")
     return selection
 
 
@@ -342,12 +383,33 @@ def _given(reason: str | None) -> bool:
     return bool(reason and reason.strip())
 
 
-def _record(path: Path, entry: dict[str, Any]) -> None:
-    """Append one unsealing to the record of test scores (created with mode 600)."""
+def _config(selection: dict[str, Any], key: str) -> Config:
+    try:
+        return Config.from_dict(selection[key]["config"])
+    except (KeyError, TypeError):
+        raise TrainingError(f"the selection file has no usable {key} configuration") from None
+
+
+def _record(path: Path, entry: dict[str, Any], *, known: int, rescore: bool) -> None:
+    """Append one unsealing to the record of test scores, mode 600, under an exclusive lock.
+
+    Under the lock the record is read again: if another run recorded a score of the same export
+    since this run checked (`known` entries then), this run stops unless it is a rescore."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry) + "\n")
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            if len(_ledger_scores(path, entry["manifest_sha256"])) > known and not rescore:
+                raise TrainingError(
+                    "another run scored this export's test set meanwhile; it is scored once"
+                )
+            handle.write(json.dumps(entry) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _ledger_scores(path: Path, manifest_sha256: str) -> list[str]:
@@ -445,11 +507,7 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="score although the code differs from the selection's, recording why",
     )
-    parser.add_argument(
-        "--ledger",
-        default=str(DEFAULT_LEDGER),
-        help="the record of test scores, kept whatever --out is (default: %(default)s)",
-    )
+
     return parser
 
 

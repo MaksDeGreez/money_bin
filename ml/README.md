@@ -569,9 +569,8 @@ none for TF-IDF only), `--embedding-cache DIR`
 (`~/Documents/money_bin_data/cache/embeddings/`), `--taxonomy`
 (`../db/seeds/taxonomy.yml`). `score` options: `--selection FILE` (required),
 `--out DIR`, `--resamples`, `--embedding-cache DIR`, `--taxonomy`,
-`--rescore-reason TEXT`, `--code-change-reason TEXT`, `--ledger FILE`. The
-seed, the fractions and every tuned value come
-from the selection file.
+`--rescore-reason TEXT`, `--code-change-reason TEXT`. The seed, the
+fractions and every tuned value come from the selection file.
 
 **Rows.** One per transaction that is not a transfer leg. A split transaction
 is represented by its largest line by absolute amount (the first line on a
@@ -626,12 +625,14 @@ taxonomy or split, refits the chosen configuration on the whole training
 period (fitting rows + validation slice) with every tuned value kept, refits
 the first version and the baselines the same way, and scores them all on the
 test set. It also refuses another encoder, another selection format, another
-test set, and code other than the committed code the selection ran on
-(another commit or modified files; `--code-change-reason` overrides, and the
-reason is recorded). It refits before it opens the seal, and appends each
-unsealing to a record of test scores
-(`~/Documents/money_bin_data/categoriser-test-scores.jsonl`, `--ledger`)
-before it reads a test row. It refuses to score an export that the record or
+test set, a chosen configuration that the recorded rule does not pick from
+the recorded table, and code other than the committed code the selection ran
+on (another or an unknown commit, modified files, other library versions;
+`--code-change-reason` overrides, and the reason is recorded). It refits and
+loads the encoders before it opens the seal, and appends each unsealing to a
+record of test scores
+(`~/Documents/money_bin_data/categoriser-test-scores.jsonl`, always that file,
+under a lock) before it reads a test row. It refuses to score an export that the record or
 the output folder shows as scored already, unless `--rescore-reason` says why
 (the reason is recorded).
 

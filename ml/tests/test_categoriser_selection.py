@@ -236,13 +236,15 @@ def test_the_rule_gives_ties_to_the_simpler_model() -> None:
 
 
 def test_a_grid_that_repeats_the_first_version_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(selection.TrainingError, match="two candidates are named tfidf"):
+    with pytest.raises(selection.TrainingError, match="power of 1 is the first version"):
         selection.run(
-            export_dir=write_export(tmp_path / "export"),
+            export_dir=tmp_path,
             out_dir=tmp_path / "out",
-            **{**SMALL, "class_weight_powers": (1.0,), "half_lives": ()},
-            echo=lambda _line: None,
+            **{**SMALL, "class_weight_powers": (0.5, 1.0)},
         )
+    candidates = {"tfidf": selection.Config()}
+    with pytest.raises(selection.TrainingError, match="two candidates are named tfidf"):
+        selection._add(candidates, selection.Config(c=2.0))
 
 
 @pytest.mark.parametrize(

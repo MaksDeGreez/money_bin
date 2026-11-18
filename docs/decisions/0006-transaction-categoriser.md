@@ -145,13 +145,15 @@ protocol, so that the final number is still an honest estimate.
   day, which the split defines) and is tested to be unchanged when every test label is shuffled. The
   scoring command (`categoriser.score`) is a separate, explicit step. It reads the selection file and
   checks that the export, the taxonomy, the split (test set included), the encoders, the selection
-  format and the code (the same git commit, no modified files) are the ones the selection used; it
-  refits before it opens the seal; it appends each unsealing to a record of test scores kept in the data
-  folder, whatever the output folder, before it reads a test row; and it refuses to score the same
+  format, the chosen configuration (the recorded rule must pick it from the recorded table) and the code
+  (the same known git commit, no modified files, the same library versions) are the ones the selection
+  used; it refits and loads the encoders before it opens the seal; it appends each unsealing to one
+  record of test scores in the data folder, whatever the output folder, under a lock and before it reads
+  a test row; and it refuses to score the same
   export a second time unless a reason is given, which it records. The metrics JSON records which
   configuration was scored, from which selection file (with its SHA-256) and when. What it cannot stop is
   a scoring of a different export (a re-export gets a new manifest); the record of test scores keeps
-  that visible.
+  that visible, since each entry names the test set's first day and size and the git commit.
 
 ### Refit on training + validation
 

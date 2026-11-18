@@ -162,6 +162,8 @@ def run(
     if not c_grid or any(c <= 0 for c in c_grid):
         raise TrainingError("every C must be above 0")
     check_options(seed=seed, resamples=resamples, min_df=min_df)
+    if 1.0 in class_weight_powers:
+        raise TrainingError("a class weight power of 1 is the first version itself; leave it out")
     refuse_repository(out_dir)
     encoders = dict(encoders or {})
 
@@ -280,9 +282,7 @@ def run(
         "reproducibility": {
             "seed": seed,
             **environment(),
-            "embedding_libraries": _optional_versions(("torch", "transformers"))
-            if encoders
-            else {},
+            "embedding_libraries": optional_versions(("torch", "transformers")) if encoders else {},
             "parameters": {
                 "test_fraction": test_fraction,
                 "validation_fraction": validation_fraction,
@@ -423,7 +423,7 @@ def echo_table(
     )
 
 
-def _optional_versions(names: Sequence[str]) -> dict[str, str | None]:
+def optional_versions(names: Sequence[str]) -> dict[str, str | None]:
     versions: dict[str, str | None] = {}
     for name in names:
         try:
