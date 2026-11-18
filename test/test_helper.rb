@@ -8,6 +8,7 @@ require_relative "support/session_test_helper"
 require_relative "support/api_token_test_helper"
 require_relative "support/openapi_test_helper"
 require_relative "support/api_request_test_helper"
+require_relative "support/mcp_test_helper"
 require_relative "support/legacy_export_files"
 
 # Load every app file, so a file that no test touches still counts in the coverage report. This cannot

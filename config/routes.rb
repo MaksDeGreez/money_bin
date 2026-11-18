@@ -27,6 +27,10 @@ Rails.application.routes.draw do
     end
   end
 
+  # The MCP server for AI assistants (McpController): personal API tokens only, POST only, stateless.
+  # Every method is routed so the controller can answer the others with 405 after its checks.
+  match "mcp", to: "mcp#handle", via: :all, format: false, as: :mcp
+
   # Sidekiq's dashboard, for a signed-in browser only (the same session cookie as every page). For anyone
   # else the route does not match, so they get a plain 404 and cannot tell that it exists.
   constraints ->(request) { Session.from_cookies(request.cookie_jar).present? } do
