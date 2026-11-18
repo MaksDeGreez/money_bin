@@ -777,7 +777,10 @@ make eval RUNS_DIR=~/elsewhere EVAL_ARGS="--compare RUN_A RUN_B --diagnostics ~/
 (`eval/results`); `EVAL_ARGS` adds options: `--compare A B` (repeatable), `--comparisons FILE`
 (lines `RUN_A RUN_B`; default `comparisons.txt` in the runs folder when it exists),
 `--no-auto-compare`, `--seed` (42), `--resamples` (1000), `--check`, `--diagnostics DIR`. A
-relative folder in a `make` variable is taken from the repository root; `~` is expanded.
+relative folder in one of the `*_DIR` variables is taken from the repository root (a relative path
+inside `EVAL_ARGS` is taken from `ml/`); `~` is expanded. The results folder must be new, empty or
+one the harness wrote (only `README.md`, `index.json`, `runs/`, `comparisons/`, `tables/`): stale
+files there are removed, so any other folder is refused.
 `--check` scores everything and runs every check of the writer, then writes nothing; without it,
 nothing is written either until every file has passed (a refused value leaves the folder as it was).
 
@@ -803,10 +806,14 @@ running `make eval` again. Nothing else changes.
 
 `run.json`: `"task": "item_categories"`, `run_id`, `backend`, `model_name`, `model_version`,
 `prompt_version` (or null), `git` (`sha`, `dirty`), `started_at`, `finished_at`, `counts` (whole
-numbers by name), `seconds_per_item`, `cost_usd`. `predictions.jsonl`, one line per item:
+numbers by name), `seconds_per_item`, `cost_usd`, `scores_calibrated` (true when the scores were
+calibrated, for example on a validation set; false when they are raw; absent or null when not
+known) and, for a run made by combining other runs, `combined_from`: a list of
+`{"run_id", "backend", "model_name"}`, one per run it combines. `predictions.jsonl`, one line per
+item:
 
 ```json
-{"receipt_id": "rcpt_000123", "ground_truth_source": "dps_xml", "position": 2,
+{"receipt_id": "rcpt_000123", "ground_truth_source": "manual", "position": 2,
  "candidates": [{"category_slug": "groceries/groceries", "score": 0.82},
                 {"category_slug": "household-shopping/household-supplies", "score": 0.11}],
  "source": "model", "seconds": 0.004, "cost_usd": null}
@@ -814,10 +821,13 @@ numbers by name), `seconds_per_item`, `cost_usd`. `predictions.jsonl`, one line 
 
 - `receipt_id`: the ingest id; `position`: the item's 1-based place in the `items` of the
   ground-truth record named by `ground_truth_source` (`dps_xml` or `manual`; optional: without it,
-  the record the harness chooses). A card slip has one line with `position: null`, for the
-  receipt's own category.
-- `candidates`: at most 3, best first; `score` a number (the first one's is the confidence) or null.
-- `source`: `memory` (an earlier booking of the same text) or `model`.
+  the record the harness chooses; categories are only ever on `manual` records). A card slip has
+  one line with `position: null`, for the receipt's own category.
+- `candidates`: at most 3, best first; `score` a number between 0 and 1 (the first one's is the
+  confidence) or null.
+- `source`: an open set of short lower-case words, for example `memory` (an earlier booking of the
+  same text), `model`, `decision` (a hosted decision model), `combined`; the metrics are split by
+  whatever values occur.
 - `seconds`: a number; `cost_usd`: a decimal string, or null for a local model.
 
 ### Which ground truth counts
@@ -840,18 +850,22 @@ numbers by name), `seconds_per_item`, `cost_usd`. `predictions.jsonl`, one line 
   `source:hand` and `source:dps_xml` count for every model; `source:unknown-model` (and any other
   `source:` value) leaves the record out of every OCR run, `source:unknown` out of every
   item-category run. The QR fields are never left out.
-- **Same model** (`evaluation/models.py`, the one place): a name's identity is its last path
-  segment, without case, a `backend:` prefix, a `:variant` suffix, a date at the end (`-2025-04-14`,
-  `-20260217`, `-2507`), and build words (quantisation such as `4bit`, `bf16`, `q4_k_m`; `mlx`,
-  `gguf`; `instruct`), as a sorted list of tokens (split at `-`, `_`, `.`). Two names are the same
-  model when their identities are equal: `mlx-community/Qwen3-VL-8B-Instruct-4bit` =
+- **Same model** (`evaluation/models.py`, the one place; its docstring has the details): a name
+  is read as a family, sizes, versions and words, ignoring the publisher or host, case, a backend
+  prefix, a routing suffix (`:free`), dates and releases (`-2025-04-14`, `-20260217`, `-2507`),
+  quantisation and packaging (`4bit`, `bf16`, `fp8`, `Q4_K_M`, `mlx`, `gguf`, `unsloth`, `qat`),
+  `instruct` and a reasoning effort (`high`). Two names are **different models only with proof**:
+  another family, other sizes (`8b` against `235b a22b`), other versions (`qwen2.5` against
+  `qwen3`), or a tier word on one side only (`mini`, `pro`, `flash`, `sonnet`, `opus`, `vl`,
+  `thinking`, ...). The same words are the same model (`mlx-community/Qwen3-VL-8B-Instruct-4bit` =
   `qwen/qwen3-vl-8b-instruct`; `anthropic/claude-4.6-sonnet-20260217` =
-  `anthropic/claude-sonnet-4.6`; but `qwen3-vl-8b` ≠ `qwen3-vl-235b-a22b`, `gpt-4.1` ≠
-  `gpt-4.1-mini`, `qwen2.5` ≠ `qwen3`. Both the run's `model_name` and `model_version` (when it is a
-  name, not a commit hash) and the record's `prefilled_by` and `prefilled_model_version` are
-  compared. A name that is a path on disk, or leaves no token, is unknown: a record pre-filled by
-  such a name, or by any model when the run's own model is such a name, is left out (when in
-  doubt, leave it out).
+  `anthropic/claude-sonnet-4.6`; `openai/gpt-4.1-mini-2025-04-14` = `openai/gpt-4.1-mini`).
+  Anything else is **unknown**, and so is a name that is a path on disk, a run or pre-fill whose
+  version is `local` (a model loaded from a folder) or a name that leaves no word: an unknown
+  comparison leaves the record out (counted in `..._unknown`). Both the run's `model_name` and
+  `model_version` (when it is a name, not a commit hash) and the record's `prefilled_by` and
+  `prefilled_model_version` are compared; one `same` pair is enough to leave the record out, and
+  it counts only when every pair is proved different.
 
 ### OCR metrics
 
@@ -908,7 +922,27 @@ or a top-1 prediction; weighted F1; accuracy; top-3 accuracy), `coverage` (preci
 confident rows at 10, 25, 50, 75, 90 and 100% coverage, whole tie groups kept, and at confidence
 0.5, 0.7, 0.9), `auto_accept` (the largest coverage whose kept rows are at least 95% precise, and
 the confidence that reaches it), `per_class` (support, predictions, F1), `confusion`, `by_source`
-(`memory`, `model`), `seconds_per_item`, `cost_usd` (from the lines' `cost_usd`).
+(the headline metrics and the calibration for each `source` value that occurs; `none` for items
+without a prediction), `seconds_per_item`, `cost_usd` (from the lines' `cost_usd`).
+
+**Calibration** (`calibration`): whether the top candidate's score means what it says, over the
+items whose top candidate has a score (`rows_without_score` counts the others). Reliability table:
+ten equal-width bins of the score over [0, 1] (`[0, 0.1)`, ..., `[0.9, 1]`, the last one closed),
+fixed rather than fitted to the data so two runs are binned alike, each with its number of items,
+mean score and share correct. Expected calibration error (`ece`): the sum over bins of
+`items in bin / items * |share correct - mean score|`. Brier score of the top candidate (`brier`):
+the mean of `(score - correct)^2`, correct being 1 or 0. Both with 95% intervals from resampling
+receipts. `scores_calibrated` copies what the run says about its scores (null when it says
+nothing), so a reader can tell a raw score from a calibrated one. A bin with few items is noisy:
+read the counts.
+
+**A combined run** is left out on a receipt (the pre-fill rule) when any categoriser it combines
+pre-filled that receipt's categories: the identities come from its own `model_name` and every
+`model_name` in `combined_from`; an entry without a name counts as unknown.
+
+The `memory` source answers from earlier bookings of the same text, which may include the booking
+whose category became the ground truth; its share correct is an upper bound, so read it apart
+(`by_source`) and say so next to it.
 
 ### Intervals and comparisons
 

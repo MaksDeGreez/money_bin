@@ -1010,9 +1010,11 @@ review save keeps it (it is not a form field). Rows filled from the tax-service 
 model, whatever its version or prompt (the same weights answer much the same); one whose
 `categories_prefilled_by` names a categoriser is not test ground truth for that categoriser's categories.
 Records pre-filled by `source:hand` or `source:dps_xml`, and imported records, count for every model;
-`source:unknown-model` (an OCR answer that named no model) counts for none. The names are compared exactly,
+`source:unknown-model` (an OCR answer that named no model) counts for none. The names are stored exactly,
 as the ML service reports them: one model served by two backends has two names (a local quantised repository
-id, a hosted provider's id), so the evaluation maps names to model families before it applies the rule.
+id, a hosted provider's id), so the evaluation maps each name to a model identity before it applies the rule
+(`ml/evaluation/models.py`): the same base model whatever its quantisation, host or dated slug; another size
+or version of a family is another model; a name it cannot place leaves the record out.
 
 ### Checking an imported record
 

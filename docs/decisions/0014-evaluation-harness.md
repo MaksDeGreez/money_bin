@@ -77,17 +77,25 @@ The app records model names exactly as the ML service reports them, and one mode
 local quantised build (`mlx-community/Qwen3-VL-8B-Instruct-4bit`), the hosted id
 (`qwen/qwen3-vl-8b-instruct`), a dated slug as the version (`anthropic/claude-4.6-sonnet-20260217`).
 Exact comparison would let a person's corrections of the hosted model's answer test the local build
-of the same weights. So the harness maps every name to an identity in one module
-(`ml/evaluation/models.py`): the last path segment, without case, backend prefix, routing suffix,
-trailing date, quantisation and packaging words or the word "instruct", as a sorted list of tokens.
-The same base model is one model whatever its quantisation, host, publisher or dated slug; another
-size of the family (8B against 235B-A22B), another generation (Qwen2.5 against Qwen3) or another tier
-(`gpt-4.1` against `gpt-4.1-mini`) is another model, since its answers differ enough to be measured
-apart. Both the run's name and version and the record's `prefilled_by` and `prefilled_model_version`
-are compared. When in doubt the receipt is left out: a name that is a path on disk (a local folder
-says nothing reliable about its weights) or leaves no token is unknown, and a record pre-filled by an
-unknown name, or by any model when the run's own model is unknown, is left out of the run. Every run
-reports how many receipts the rule left out and how many of those for an unknown model.
+of the same weights. So the harness reads every name, in one module (`ml/evaluation/models.py`), as a
+family, sizes, versions and words, ignoring the publisher or host, case, prefixes and routing
+suffixes, dates and releases, quantisation and packaging words and "instruct". The same base model is
+one model whatever its quantisation, host, publisher or dated slug; another size of the family (8B
+against 235B-A22B), another version (Qwen2.5 against Qwen3) or another tier (`gpt-4.1` against
+`gpt-4.1-mini`) is another model, since its answers differ enough to be measured apart.
+
+Names are written in too many ways for a list of rules to read every one, so the comparison is built
+to fail safe: two names are different models only with proof (another family, size, version or tier
+word); the same words are the same model; anything else, a word the rules do not know, is unknown, and
+an unknown comparison leaves the record out. A name that is a path on disk, a version `local` (a model
+loaded from a folder says nothing reliable about its weights) or a name that leaves no word is unknown
+too. A first version that compared token lists for equality was refuted in review: the same model
+written another way (`qwen-2.5` against `qwen2.5`, a date before the quantisation suffix, an unknown
+build word) got two identities, and the rule was bypassed. Both the run's name and version and the
+record's `prefilled_by` and `prefilled_model_version` are compared. Every run reports how many receipts
+the rule left out and how many of those for an unknown model. A combined item-category run is every
+categoriser it combines (`combined_from` in its `run.json`): it is left out wherever any of them
+pre-filled the categories.
 
 Rejected: exact names (misses the same weights under another name); family-level identity, all Qwen-VL
 sizes as one model (would empty the test set of the comparison the chapter needs most, local 8B against
@@ -119,6 +127,18 @@ ground truth were chosen (a person picked about fifty), for run-to-run variation
 so a rerun repeats itself), for other shops, printers or phones, or for multiple comparisons; McNemar
 on items assumes independent items, which items of one receipt are not, so its p-values are too small.
 The chapter says so next to the numbers.
+
+### Calibration of item categories
+
+The categoriser's confidence decides what can be accepted without a look, so every item-category run
+reports whether its top score means what it says: a reliability table over ten fixed, equal-width
+bins of the score (fixed so that runs are binned alike; adaptive bins would move with each run), the
+expected calibration error from those bins, and the Brier score of the top candidate, with intervals
+from resampling receipts; the run says whether its scores were calibrated (`scores_calibrated`). The
+metrics are also split by the source of each prediction (an open set: `memory`, `model`, `decision`,
+`combined`, ...), because an answer from memory and one from a model are different mechanisms; the
+`memory` answers may come from the very booking whose category became the ground truth, so their
+share correct is an upper bound.
 
 ## Consequences
 
