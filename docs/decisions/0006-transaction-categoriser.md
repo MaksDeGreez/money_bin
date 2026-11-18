@@ -1,7 +1,6 @@
 # 0006. Transaction categoriser: a local text model, rule baselines and a time split
 
-Status: accepted, extended by "Improving the model" below. Training and evaluation only; serving the
-model and using it in the app come later.
+Status: accepted, extended by "Improving the model" and "Serving" below.
 
 ## Context
 
@@ -228,6 +227,72 @@ version; the selection JSON holds the whole table and every tuning grid.
   McNemar's test on the same rows), but both share the data's dependence between rows; the day-resampled
   intervals remain the ones to quote.
 
+## Serving
+
+The configuration chosen and scored above is what the app uses. It is not tuned further or swapped for
+another here, and the test period stays as it was scored: nothing in serving reads its labels to make a
+choice.
+
+### The refit for serving
+
+`python -m categoriser.serving` fits the chosen configuration, every tuned value kept as a number, on
+**every labelled row of the export**, the test period's included. That is the usual practice once the
+evaluation is done: the test period is the end of the history, the part most like the transactions to
+come, and a served model that left it out would ignore the newest payees and the current kind of data (bank
+feeds rather than hand-entered rows). The same argument made the scoring step refit on the validation slice.
+
+The consequence is stated wherever the numbers appear: the served fit has **no test score of its own**. The
+evaluated numbers belong to the configuration fitted on the training period; the artefact's metadata says
+what the served fit was fitted on, names the selection and the scoring it follows, and carries no metric.
+More rows of the same kind are expected to help, not hurt, but that is not measured. The recency weights
+are counted back from the newest row of the fit, so the half-life means the same as in the evaluation.
+
+The command reuses the training code (`fit_system` and the feature builders), and refuses an export, a
+taxonomy, a split or a code version it cannot vouch for, as the scoring step does: another manifest hash,
+another taxonomy, rows that no longer cut into the selection's periods, a selection that was never scored
+(the record of test scores holds no entry of it), a file of `ml/categoriser/` that existed at the
+selection's commit and differs now (a new file, such as the serving code itself, cannot change what the old
+ones fit), other library versions, another encoder. A test proves that the served path (the app's raw
+fields, through the serving code's row builder, into the training code's system) gives the same
+probabilities as the training path for the same rows.
+
+### The service and the app
+
+- `POST /categorise/transaction` in the ML service (`ml/README.md`) answers the three best categories of
+  each transaction with their probabilities, and whether the payee's (or the MCC's) history weighed in. The
+  artefact and the sentence encoder load lazily, once; a missing artefact is a 501 for this endpoint only.
+  It always runs on this machine; there is no hosted backend and no setting for one.
+- **Category mapping.** The model's classes are the export's English group and category names. The app owns
+  the slugs, so it sends its category list with every request (as the item categoriser does), and the
+  service matches each class to the listed category of the same group and name. A class the list does not
+  name is refused (422 `categories_mismatch`) rather than dropped or guessed: a category the app does not
+  know can never come back silently, and a renamed category asks for a refit. The client refuses any slug it
+  did not send. The alternative, mapping names to slugs in Rails, would put a second copy of the matching
+  in the app and still need the same refusal.
+- **Where suggestions live.** On the transaction line (`transaction_lines.suggested_category_id`,
+  probability, runner-up, source, `suggestion_model_version`, time), filled by a job that scores the whole
+  uncategorised queue in batches of 200 (a few thousand lines are a few dozen requests, never one per row)
+  and refreshes every line whose suggestion came from another artefact. Computing them per page on demand
+  would have been simpler, but a bulk action over thousands of rows needs them all at hand, and a stored
+  suggestion can say which artefact made it.
+- **Card slips** get their category from their merchant: the payee it matches and that payee's booked
+  history first (`PayeeHistory`, the label memory's rule), the model otherwise (`docs/domain.md`, "Card slip
+  suggestions").
+
+### Self-training
+
+The model learns from the ledger, and from now on the ledger holds categories that came from its own
+suggestions. Fitted on them unmarked, a later model would be graded, and trained, on its own output: its
+errors would come back as labels, and its confidence would grow on rows nobody looked at. So every category
+set from the transactions list records its provenance on the line: `category_origin` `person` (chosen by
+hand), `suggestion` (a suggestion taken one line at a time) or `bulk` (taken by a bulk acceptance), with the
+taken suggestion's probability and artefact (`category_origin_probability`, `category_origin_model_version`;
+a database check makes them required for a taken suggestion). A retraining should leave `suggestion` and
+`bulk` lines out, or at least count and evaluate them apart; the training reads the previous app's history
+export, which has no such rows; an export of this app's ledger for a retraining must carry the column. Limits: a person who chooses the suggested category in
+the picker is recorded as taking the suggestion (it was on screen, so the label is not independent of it);
+a category set elsewhere (a receipt, manual entry, the import) has no origin.
+
 ## Limitations
 
 - **Some recent labels were assigned by rules, not by hand.** Part of the recent history was categorised
@@ -247,11 +312,13 @@ version; the selection JSON holds the whole table and every tuning grid.
 ## Consequences
 
 - `ml/` gains scikit-learn, SciPy, joblib, PyYAML and their dependencies (NumPy among them); the HTTP
-  service does not import them yet. The `embeddings` group (torch and transformers 5, which the `mlx` group
+  service imports them lazily, for `/categorise/transaction` only. The `embeddings` group (torch and transformers 5, which the `mlx` group
   needs too) installs on macOS on Apple silicon only, through platform markers, so Linux CI resolves and
   installs without it.
 - A trained model is a file on the owner's machine, named by the export's manifest hash and the time of
   the run. The first version's one-step command (`categoriser.train`, which fitted and scored in one go)
   is replaced by the two steps above; its configuration is the `tfidf` candidate, and the final step
-  reproduces its test numbers exactly for the same seed. Serving it over HTTP and showing suggestions in
-  the app are separate changes; they read the model file from the same private folder.
+  reproduces its test numbers exactly for the same seed. Serving it is a separate artefact
+  (`<stamp>.serving.joblib`, see "Serving"), in the same private folder; the HTTP service imports
+  scikit-learn only when a transaction is first categorised, and the sentence encoder only for its first
+  `POST`.

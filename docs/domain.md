@@ -15,7 +15,9 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `categories` | A group (root) or a category (child of a group) | `parent_id`, `name`, `slug` (unique), `position`, `description` |
 | `payees` | The other side of a transaction: shop, service or person | `name`, `normalized_name` (unique) |
 | `transactions` | One movement of money on one account | `account_id`, `occurred_on`, `occurred_at`, signed `amount`, `original_amount` + `original_currency`, `payee_id`, `comment`, `mcc`, `bank_description`, `merchant`, `source`, `source_system`, `external_id`, `status`, `transfer_id`, `lock_version`, `import_digest` |
-| `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment` |
+| `transaction_lines` | A category share of a transaction (the split) | `transaction_id`, `category_id` (nullable), `amount`, `legacy_category_path`, `comment`, the stored suggestion (`suggested_category_id`, `suggestion_probability`, `runner_up_category_id`, `runner_up_probability`, `suggestion_source`, `suggestion_model_version`, `suggested_at`), the category's provenance (`category_origin`, `category_origin_probability`, `category_origin_model_version`) |
+| `transaction_suggestion_runs` | One refresh of the stored transaction suggestions | `status`, `model_version`, `total_count`, `scored_count`, `skipped_count`, `error`, `started_at`, `finished_at` |
+| `bulk_acceptances`, `bulk_acceptance_items` | "Accept suggestions at or above N %" for a list filter, and one transaction of it as previewed | `filter`, `threshold_percent`, `status`, the counts; per item `transaction_id`, `lock_version`, `line_ids`, `category_id`, `probability`, `model_version`, `outcome` |
 | `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `categorised_at`, `categoriser_error`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
 | `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `categories_known`, `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `suggested_by`, `name_key`, `accepted_by_user` |
@@ -73,7 +75,10 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   - `lock_version` is Active Record's optimistic lock counter (see "Concurrent writers").
 - **Transaction line.** `category_id` nil means "not categorised yet". `legacy_category_path` keeps the old
   app's category path ("Food / Snacks") when the history importer brings the line in, so the original label
-  is never lost.
+  is never lost. A line with no category or with the taxonomy's Uncategorised is **uncategorised**
+  (`TransactionLine.uncategorised`); such a line may carry the transaction categoriser's stored suggestion,
+  and `category_origin` says how a person set its category from the transactions list (see "Transaction
+  suggestions").
 - **Receipt.** `status` moves `uploaded` -> `processing` -> `extracted` -> `reviewed`, or ends in `failed`
   (see "OCR" below). `extracted` means the items are filled in and wait for a person; `reviewed` means the
   receipt was accepted into the ledger. `ocr_raw` keeps the OCR service's full answer, or the reason of a
@@ -101,8 +106,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   queued for the receipt, nil when no request waits (see "Who enqueues OCR").
   `category` is a card slip's one category: a slip has no items and is booked as one line, its `total` in
   this category; a person chooses it at review, and only a `card_slip` keeps one. `suggested_category` and
-  `suggested_category_confidence` (0..1) are room for the categoriser's guess for a slip; nothing fills them
-  yet: the item categoriser leaves a slip alone, and a transaction-level categoriser fills them later. `lock_version` is the receipt's version, which the review form carries (see "Review").
+  `suggested_category_confidence` (0..1) are the guess for a slip, from its payee's history or the transaction
+  categoriser (see "Card slip suggestions"); the item categoriser leaves a slip alone. `lock_version` is the receipt's version, which the review form carries (see "Review").
 - **Receipt item.** `amount` is what was paid for the item after its `discount`. It is normally positive,
   but it can be negative (a bottle deposit returned) or zero (a free item). `suggested_category` and
   `confidence` (0..1) are the categoriser's guess, and `suggested_by` where it came from: `memory` (the
@@ -150,6 +155,11 @@ listed, the model gives a readable error and the database is the safety net for 
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
 | A receipt item's `suggested_by` is `memory`, `model` or nil; its `name_key` is `ItemName.key(name)`, never null | Model; DB for the values and the null (`receipt_items_suggested_by_known`) |
 | Filling suggestions never writes an item's `category_id` or `accepted_by_user`, nor the receipt's `lock_version` | `Receipts::SuggestCategories` (tested) |
+| Filling a slip's suggestion never writes its `category_id` or `lock_version` | `Receipts::SuggestSlipCategory` (tested) |
+| Filling a line's suggestion never writes its category or amount, nor the transaction's `lock_version` | `Transactions::SuggestCategories` (tested) |
+| Categorising from the list writes only an uncategorised line, never over a newer version of its transaction | `Transactions::Categorise` (row lock and `lock_version`, tested) |
+| A suggestion's probabilities are in 0..1, its source is `model`, `history` or `mix`, a category's origin is `person`, `suggestion` or `bulk`, and a taken suggestion records its probability and artefact | Model + DB (`transaction_lines_*` checks) |
+| A bulk acceptance item is applied at most once and has one outcome (`accepted`, `stale`, `changed`) | Model (`BulkAcceptanceItem#apply!` under a row lock); DB for the values and the one item per transaction (unique index) |
 | A receipt's `card_last4` is exactly four digits when present | Model + DB (`receipts_card_last4_format`) |
 | A receipt's `ingest_id` is `rcpt_` and six or more digits, and unique when present | Model + DB (`receipts_ingest_id_format`, partial unique index) |
 | A receipt's `incomplete` is never nil | Model + DB (not null, default false) |
@@ -592,7 +602,7 @@ behind the items instead of behind every other queued read. "Suggest categories 
 page queues `ReceiptCategoriseJob`, which asks again without reading the receipt; its queue
 (`receipt_categorise`) is worked by the OCR capsule's one thread before the OCR queue, so a request does
 not wait behind hundreds of queued reads. Only an `extracted` receipt with items gets suggestions; a card
-slip has none (its own `suggested_category` is left for the transaction-level categoriser).
+slip has none (it gets its own `suggested_category`, see "Card slip suggestions").
 
 **What never overwrites what.**
 
@@ -632,6 +642,37 @@ the memory on labels it did not pre-fill. The stub categoriser (the ML service's
 categories: set `CATEGORISE_BACKEND` (to `mlx`, or `off`) when OCR runs on a real model; the page names the
 categoriser (`stub-categoriser`) in its summary line. The confidence is stored as a number only: whether
 the service calibrated it is in its answer (`calibrated`) but not on the item yet.
+
+### Card slip suggestions
+
+A card slip has no items: it is booked as one line, its total in one category (`receipts.category`). Its
+suggestion (`suggested_category`, `suggested_category_confidence`) comes from its merchant, as a
+transaction's would. `Receipts::SuggestSlipCategory` fills it:
+
+1. **The payee's history** (`PayeeHistory`): the payee the merchant name matches by the payee normalisation
+   (see Decisions), and the categories its booked transactions (not transfer legs) have lines in, each
+   transaction counted once per category. The label memory's rule decides: the category of a strict
+   majority (a tie suggests nothing), with the confidence (agreeing + 1) / (transactions + 1.25), used only
+   from 0.75 up ("consistent enough": one booking 0.89, two that agree 0.92, 3 of 4 0.76; 2 of 3 is 0.71 and
+   goes to the model). `categoriser_model_name` becomes `payee-history`.
+2. **The transaction categoriser** otherwise (`/categorise/transaction`, local only), given the merchant name
+   as payee and merchant and the total as an expense; its best category and probability, and the model's
+   name in `categoriser_model_name`.
+
+**When.** Right after OCR reads a receipt as a slip (in `ReceiptOcrJob`), when a review save turns a receipt
+into a card slip (`ReceiptCategoriseJob`), and on "Suggest a category again". Only an `extracted` slip with a
+merchant; the written suggestion must still match the merchant asked about.
+
+**What never overwrites what.** As for items: it never writes `category_id` or `lock_version`; a failure of
+the service never fails the receipt (the code goes to `categoriser_error`, an earlier suggestion stays). The
+review form shows the suggestion under the slip's category with its source; "Use" (or Enter in the empty
+field) takes it, and the save stores it.
+
+**The pre-fill rule.** `categoriser_model_name` is what `categories_prefilled_by` records for a slip saved as
+ground truth (`payee-history` or the model's name), so a categoriser is not evaluated on a slip it
+pre-filled; when the source changes on a slip whose category a person already chose, the receipt records
+`source:unknown`, as for items. With `CATEGORISE_BACKEND=off` slip suggestions are off too: the switch exists
+to label receipts with no suggestion on screen, and a slip's category is part of that label.
 
 ### Label memory
 
@@ -755,6 +796,71 @@ browser as the person types, on integer hundredths (`BigInt`), never floating po
 **One document per receipt.** Everything the form edits lives on the receipt row and its items, so "Save as
 ground truth" snapshots the corrected receipt as one document without touching `ocr_raw` (see "Manual ground
 truth").
+
+## Transaction suggestions
+
+The ledger's uncategorised lines (no category, or the taxonomy's Uncategorised; most came from the history
+import) get a suggestion from the transaction categoriser (`docs/decisions/0006-transaction-categoriser.md`,
+"Serving"), and the transactions list (`/transactions`) is where a person takes or corrects them.
+
+**The list.** Newest first, paginated, filtered by the URL (`Transaction::Filter` over `TransactionsQuery`:
+dates, account, category or group, status, source, payee name, text, "uncategorised only", currency). Each row
+links to the transaction's page. The dashboard's "needs review" figure links to `status=needs_review`, its
+uncategorised spending to `uncategorised=1` with the period and currency.
+
+**Where suggestions live.** On the line: the best category and its probability, the runner-up and its
+probability, the source (`model`; `mix` when the payee's or the MCC's history weighed in; `history` when it
+decided), the artefact (`suggestion_model_version`: its fit date and file hash) and the time.
+`Transactions::SuggestCategories`, run by `TransactionSuggestionsJob` from "Refresh suggestions" (one run at a
+time, `TransactionSuggestionRun` records its progress and failure), sends every transaction with an
+uncategorised line whose suggestion is missing or from another artefact to the ML service in batches of 200,
+and writes the suggestion columns of the lines still uncategorised with `update_all`: never a category, an
+amount or a `lock_version`, so it cannot disturb a person's edit. A new artefact therefore refreshes every
+suggestion; the same artefact asks nothing again. A transaction with no text and no MCC is skipped. Lines a
+person categorised keep their last suggestion, for the record. Suggestions here are independent of
+`CATEGORISE_BACKEND`: that switch is about receipt labelling.
+
+**Taking one.** Under each transaction with uncategorised lines the list shows, per line, the suggestion with
+its probability and source, the runner-up, "Take", and the category picker with "Save" (a split transaction
+line by line; transfer legs have no lines and never appear). The keys: j / k (or the arrows) move between
+lines, t takes, c opens the picker; focus moves to the next waiting line. `Transactions::Categorise` does the
+write:
+
+- only an uncategorised line is written: a category already set (by anyone) is never overwritten, the answer
+  is "has a category by now";
+- the form carries the transaction's `lock_version`; under the transaction's row lock a newer version saves
+  nothing ("changed somewhere else") and the row is shown as it is now;
+- the lines are saved through their transaction (nested autosave), so the line rules hold and the version
+  moves;
+- **status:** `needs_review` becomes `confirmed` when no line is uncategorised any more and nothing else
+  needs a look (a receipt whose items do not sum to its printed total keeps it); a draft stays a draft
+  (categorising books nothing); a confirmed one stays confirmed (`Transaction#status_after_categorising`);
+- **provenance:** `category_origin` is `suggestion` when the chosen category is the stored suggestion (taken
+  with "Take" or picked by hand: it was on screen), `person` otherwise, and `bulk` from a bulk acceptance;
+  a taken suggestion records its probability and artefact (required by a check). A retraining tells the
+  model's own accepted output from a person's labels by this (`docs/decisions/0006-transaction-categoriser.md`,
+  "Self-training"). Categories set elsewhere (receipts, manual entry, the import) have no origin.
+
+**The bulk action.** "Accept suggestions from N %" for the list's current filter:
+
+1. **Preview** (`BulkAcceptance.preview!`): a snapshot, one item per transaction of the filter with
+   uncategorised lines whose stored suggestion reaches N % (a transaction whose qualifying lines carry
+   different suggestions is left out): its `lock_version`, those lines, the suggestion (category,
+   probability, artefact). The page shows how many transactions, per category, and which artefacts. Nothing
+   is written to the ledger.
+2. **Confirmation** by a person (`confirm!`, once: a second click is told it is applied once). A preview
+   nobody confirmed is never applied and can be dropped.
+3. **The job** (`BulkAcceptanceJob`) applies each item at most once: under the item's row lock, an item with
+   an outcome is skipped, and the categorising (`Transactions::Categorise`, origin `bulk`) and the outcome are
+   written in one database transaction. An item whose transaction was edited after the preview (a newer
+   `lock_version`) is `stale`, one whose lines have a category by now or carry another suggestion (a refresh
+   by a new artefact) is `changed`: both are skipped and counted, never overwritten. A second acceptance over
+   the same rows finds them stale or changed. The page follows the progress live; an unexpected error marks
+   it `failed`, and "Resume" carries on where it stopped.
+
+**Limits, accepted.** The probabilities are the model's own, not calibrated on the ledger; the selection
+JSON has the precision at each threshold on the validation slice. Suggestions refresh only on "Refresh
+suggestions" (or the job), not when a new uncategorised line appears.
 
 ## Manual entry
 
@@ -1274,18 +1380,19 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
 - Recording which suggestion a person took for each item, should the evaluation need more than
   "suggestions were on the form" (the source of each suggestion is on the item, `suggested_by`, but not in
   the ground-truth snapshot).
-- A card slip's category suggestion (`receipts.suggested_category_id`), from a transaction-level
-  categoriser; and a model trained on the collected item labels (nearest neighbours or logistic regression
+- A model trained on the collected item labels (nearest neighbours or logistic regression
   on embeddings), once labels exist: it would be one more `CATEGORISE_BACKEND`, or a step between the label
   memory and the zero-shot model.
-- A transactions list, editing a booked transaction in the app (its amount, date or account), and
-  entering an income or a transfer by hand.
+- Editing a booked transaction in the app (its amount, date or account), and entering an income or a
+  transfer by hand. Category suggestions while typing a manual expense (the transaction categoriser could
+  suggest a row's category from the payee; left out to keep the form as it is).
+- Refreshing transaction suggestions on their own when a new uncategorised line appears (today: "Refresh
+  suggestions"), and calibrating their probabilities on the ledger.
 - A slip's category and suggestion in the read API and the MCP tools (the booked line already carries the
   category).
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view (the dashboard shows one currency at a time until then).
-- Top payees and receipt counts over the REST API and the MCP server (their query objects are ready), and
-  a transactions list for the dashboard's "needs review" and "uncategorised" figures to link to.
+- Top payees and receipt counts over the REST API and the MCP server (their query objects are ready).
 - Payee merging and categorisation rules.
 - Budgets and other planning features.

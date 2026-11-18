@@ -37,7 +37,9 @@ decision model categorises items, checks another model's answer and is combined 
 Phase 1: the skeleton and the data model. The Rails app boots with a dashboard and the UI helpers, the
 owner signs in, sees the ledger at a glance, sees the receipts, uploads new ones and has them read by OCR,
 gets a category suggestion with a confidence for every item (the owner's own earlier labels first, then a
-zero-shot model), corrects them in a review form and accepts them into the ledger, enters an expense by hand, AI agents authenticate with personal API tokens and read the ledger through a read-only
+zero-shot model), corrects them in a review form and accepts them into the ledger, enters an expense by hand,
+browses the ledger and categorises what is still uncategorised with the local transaction categoriser's
+suggestions (one by one or in bulk), AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
 with a local vision model (`OCR_BACKEND=mlx`, Apple silicon) or a hosted one through OpenRouter
 (`OCR_BACKEND=openrouter`, zero-data-retention endpoints only), and CI checks both. The domain model is described in
@@ -393,6 +395,24 @@ installed only on Apple silicon). The model file and the embedding cache hold pe
 the JSON files go to folders outside the repository (the commands refuse one inside a git repository);
 the console prints counts and metrics only. Details: [`ml/README.md`](ml/README.md); reasons and the
 protocol: [`docs/decisions/0006-transaction-categoriser.md`](docs/decisions/0006-transaction-categoriser.md).
+
+### Serving it
+
+```sh
+cd ml
+uv run python -m categoriser.serving /path/to/export --selection ~/Documents/money_bin_data/models/<run>.selection.json
+```
+
+fits the chosen configuration on every labelled row of the export (the test period's included; the served fit
+has no test score of its own) into `~/Documents/money_bin_data/models/<stamp>.serving.joblib`, which the ML
+service serves at `/categorise/transaction` (it takes the newest one there, or `TRANSACTION_CATEGORISER_MODEL`;
+restart it after a new fit). It loads on the first request and needs the e5-base weights in the local Hugging
+Face cache; it never sends transaction data anywhere. In the app, **Transactions** (`/transactions`) lists the
+ledger with filters in the URL; **Refresh suggestions** scores every uncategorised line in a background job;
+each uncategorised line can be categorised in one step (Take, or another category; keys j / k / t / c), and
+**Accept suggestions from N %** previews, then (once confirmed) categorises in bulk, skipping any row edited
+meanwhile. Card slips get a category suggestion from the payee's history or this model. Rules:
+[`docs/domain.md`](docs/domain.md), "Transaction suggestions" and "Card slip suggestions".
 
 ## The dashboard
 
