@@ -19,7 +19,7 @@ from typing import Any, TextIO
 
 from app.backends import create_backend
 from app.backends.mlx_worker import MlxWorker
-from app.categorise import CATEGORISERS, CategoriseInput, create_categoriser
+from app.categorise import SUGGESTING, CategoriseInput, create_categoriser
 from app.config import Settings
 from evaluation.common import UsageError, read_categories
 
@@ -32,7 +32,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         description="Run a categoriser over the invented sanity set and print counts.",
     )
     parser.add_argument("--categories", required=True, type=Path, help="the exported categories")
-    parser.add_argument("--backend", default="mlx", choices=sorted(CATEGORISERS))
+    parser.add_argument("--backend", default="mlx", choices=SUGGESTING)
     parser.add_argument("--model", help="the model id (MLX_CATEGORISE_MODEL, or the hosted one)")
     parser.add_argument(
         "--no-merchant", action="store_true", help="leave the shop's name out, as a hosted model"

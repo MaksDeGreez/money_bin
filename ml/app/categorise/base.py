@@ -66,10 +66,27 @@ def top_candidates(scores: Mapping[str, float], limit: int = MAX_CANDIDATES) -> 
 
 
 class Categoriser(ABC):
-    """A model that suggests categories for receipt items.
+    """A model that suggests categories for receipt items. The whole interface:
 
-    `start()` runs when the service starts and `stop()` when it shuts down.
-    `model_version` may be known only after `start()`.
+        categorise(CategoriseInput(categories, texts, merchant)) -> Categorisation
+
+    - in: the items of one receipt (`texts`, in printed order), the taxonomy to
+      choose from (`categories`, `CategoryOption`s as `app.categorise.taxonomy`
+      reads them from a request or an exported file) and the context
+      (`merchant`, which a hosted categoriser must not send);
+    - out: per item 1 to 3 `Candidate`s (a listed slug and a score), best
+      first, scores adding up to at most 1; the `score_kind` saying what the
+      scores are; the `prompt_version` (None without a prompt); and
+      `diagnostics`, the accounting: `model_calls`, tokens, `seconds`, and for a
+      paid call `cost_usd` (a decimal string, None when unknown), never text;
+    - errors: `BackendError` with a status (a 5xx other than 501 is retried by
+      the app, a 4xx or 501 is not), `BackendNotImplementedError` (501).
+
+    `name`, `model_name` and `model_version` say who answered. `start()` runs
+    when the service starts and `stop()` when it shuts down; `model_version` may
+    be known only after `start()`. A new categoriser is a subclass registered in
+    `app.categorise.CATEGORISERS`; the service checks every answer against the
+    request's slugs, and calibration is applied outside it.
     """
 
     name: str

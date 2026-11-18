@@ -8,6 +8,7 @@ from app.categorise.base import (
     Categoriser,
 )
 from app.categorise.mlx import MlxCategoriser
+from app.categorise.off import OffCategoriser
 from app.categorise.openrouter import OpenRouterCategoriser
 from app.categorise.stub import StubCategoriser
 from app.config import Settings
@@ -16,7 +17,10 @@ CATEGORISERS: dict[str, type[Categoriser]] = {
     StubCategoriser.name: StubCategoriser,
     MlxCategoriser.name: MlxCategoriser,
     OpenRouterCategoriser.name: OpenRouterCategoriser,
+    OffCategoriser.name: OffCategoriser,
 }
+# The categorisers that suggest anything (`off` is the switch, not a model).
+SUGGESTING = tuple(sorted(name for name in CATEGORISERS if name != OffCategoriser.name))
 
 
 class UnknownCategoriserError(ValueError):
@@ -41,6 +45,7 @@ def create_categoriser(
 
 __all__ = [
     "CATEGORISERS",
+    "SUGGESTING",
     "Candidate",
     "Categorisation",
     "CategoriseInput",

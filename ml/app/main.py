@@ -16,7 +16,8 @@ from app.backends import Backend, ImageInput, create_backend
 from app.backends.mlx_worker import MlxWorker
 from app.categorise import CategoriseInput, Categoriser, create_categoriser
 from app.categorise.calibration import Calibration, CalibrationError, calibrate, load_calibration
-from app.categorise.prompt import CategoryOption, categories_version
+from app.categorise.prompt import categories_version
+from app.categorise.taxonomy import parse_categories
 from app.config import Settings
 from app.decimals import exact_sum
 from app.errors import ApiError, register_error_handlers
@@ -255,15 +256,8 @@ def create_app(
     async def categorise(
         request: Request, categoriser: CategoriserDep, body: CategoriseRequest
     ) -> CategoriseResponse:
-        options = tuple(
-            CategoryOption(
-                slug=category.slug,
-                name=category.name.strip(),
-                description=category.description.strip(),
-                group=category.group.strip(),
-            )
-            for category in body.categories
-        )
+        # The same hand-over parser offline scripts use; the schema has already checked the shape.
+        options = parse_categories(category.model_dump() for category in body.categories)
         texts = tuple(" ".join(text.split()) for text in body.texts)
         merchant = " ".join(body.merchant.split()) if body.merchant else None
         started = time.perf_counter()

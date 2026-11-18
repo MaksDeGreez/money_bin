@@ -1,7 +1,7 @@
 / Where the items' category suggestions came from, why there are none, and "Suggest categories again"
 / (ReceiptCategoriseJob; docs/domain.md, "Category suggestions"). Outside the review form: it is a form of its
 / own, and asking again never touches typed work (suggestions fill no field).
-- if receipt.extracted? && receipt.reviewable? && !receipt.card_slip? && receipt.items.any?
+- if item_suggestions_shown? && receipt.extracted? && receipt.reviewable? && !receipt.card_slip? && receipt.items.any?
   - again = capture do
     = ui_button_to suggest_categories_receipt_path(receipt, filter.to_params), variant: :ghost, size: :sm do
       = ui_icon "sparkles"

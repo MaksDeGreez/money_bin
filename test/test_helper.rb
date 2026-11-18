@@ -41,5 +41,14 @@ module ActiveSupport
     ensure
       original ? klass.define_method(name, original) : klass.remove_method(name)
     end
+
+    # Sets environment variables (nil removes one) for the duration of the block and restores them.
+    def with_env(values)
+      saved = values.keys.index_with { |key| ENV[key] }
+      values.each { |key, value| ENV[key] = value }
+      yield
+    ensure
+      saved&.each { |key, value| ENV[key] = value }
+    end
   end
 end

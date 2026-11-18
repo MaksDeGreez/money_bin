@@ -120,7 +120,9 @@ class ReceiptsController < ApplicationController
   # "Suggest categories again": the items of a receipt under review get fresh suggestions, without OCR
   # (ReceiptCategoriseJob). Suggestions never replace a category a person chose.
   def suggest_categories
-    if !@receipt.reviewable? || !@receipt.extracted? || !@receipt.items.exists?
+    if !ItemSuggestions.enabled?
+      flash[:alert] = "Category suggestions are switched off (CATEGORISE_BACKEND=off)."
+    elsif !@receipt.reviewable? || !@receipt.extracted? || !@receipt.items.exists?
       flash[:alert] = "Not suggested: only the items of a receipt waiting for review get suggestions."
     elsif enqueue_suggestions
       flash[:notice] = "Asked for category suggestions. This page updates when they are in."

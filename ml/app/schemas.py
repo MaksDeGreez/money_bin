@@ -100,6 +100,7 @@ def _not_blank(text: str) -> str:
 
 ItemText = Annotated[str, AfterValidator(_not_blank), Field(max_length=MAX_TEXT_LENGTH)]
 # A category slug as the Rails app builds it: "group-part/category-part" (a category, not a group).
+# The same pattern as app.categorise.taxonomy.CATEGORY_SLUG (a test keeps them equal).
 CATEGORY_SLUG = r"^[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*$"
 NotBlank = Annotated[str, AfterValidator(_not_blank)]
 

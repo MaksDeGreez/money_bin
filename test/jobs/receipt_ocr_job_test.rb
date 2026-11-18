@@ -416,4 +416,17 @@ class ReceiptOcrJobTest < ActiveJob::TestCase
 
     assert_turbo_stream_broadcasts receipt, count: 2
   end
+
+  test "with suggestions switched off, the read stores no suggestion and names no categoriser" do
+    stub_ml_ocr
+    receipt = new_receipt
+
+    with_env("CATEGORISE_BACKEND" => "off") { ReceiptOcrJob.perform_now(receipt) }
+
+    receipt.reload
+    assert receipt.extracted?
+    assert receipt.items.none?(&:suggested_category_id)
+    assert_nil receipt.categoriser_model_name
+    assert_empty ml_requests(:categorise)
+  end
 end

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.categorise import CATEGORISERS, UnknownCategoriserError, create_categoriser
 from app.categorise.mlx import MlxCategoriser
+from app.categorise.off import OffCategoriser
 from app.categorise.openrouter import OpenRouterCategoriser
 from app.categorise.prompt import categories_version
 from app.categorise.stub import StubCategoriser
@@ -225,6 +226,7 @@ def test_registry_lists_every_categoriser() -> None:
         "stub": StubCategoriser,
         "mlx": MlxCategoriser,
         "openrouter": OpenRouterCategoriser,
+        "off": OffCategoriser,
     } == CATEGORISERS
 
 
@@ -234,7 +236,7 @@ def test_create_categoriser_accepts_valid_names(name: str) -> None:
 
 
 def test_an_unknown_categoriser_stops_the_app() -> None:
-    with pytest.raises(UnknownCategoriserError, match="mlx, openrouter, stub"):
+    with pytest.raises(UnknownCategoriserError, match="mlx, off, openrouter, stub"):
         create_app(Settings(categorise_backend="nope"))
 
 
@@ -249,3 +251,15 @@ def test_the_categoriser_is_chosen_apart_from_the_ocr_backend(
     assert health["backend"] == "openrouter"
     assert health["categoriser"]["backend"] == "stub"
     assert Settings().categorise_backend == "stub"
+
+
+def test_switched_off_categorisation_answers_501(make_client: ClientFactory) -> None:
+    client = TestClient(create_app(Settings(categorise_backend="off")))
+
+    response = client.post("/categorise", json=body())
+    health = client.get("/health").json()
+
+    assert response.status_code == 501
+    assert response.json()["error"]["code"] == "backend_not_implemented"
+    assert "switched off" in response.json()["error"]["message"]
+    assert health["categoriser"]["backend"] == "off"

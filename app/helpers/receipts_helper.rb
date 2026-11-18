@@ -58,6 +58,11 @@ module ReceiptsHelper
     number_to_percentage(confidence * 100, precision: 0) if confidence
   end
 
+  # False while suggestions are switched off (ItemSuggestions): the form then shows none and no control.
+  def item_suggestions_shown?
+    ItemSuggestions.enabled?
+  end
+
   # Where an item's suggestion came from (ReceiptItem#suggested_by), in words.
   def receipt_suggestion_source(item)
     { "memory" => "from your labels", "model" => "from the model" }[item.suggested_by] if item.suggested_category_id

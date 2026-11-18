@@ -798,4 +798,22 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
 
     assert_select "form[action=?]", suggest_categories_receipt_path(receipts(:market_receipt)), false
   end
+
+  test "with suggestions switched off the form shows none and no control, and none can be asked for" do
+    receipt = receipts(:corner_receipt)
+
+    with_env("CATEGORISE_BACKEND" => "off") do
+      get receipt_path(receipt)
+
+      assert_select ".line-suggestion", false
+      assert_select "button", text: /Accept suggestions/, count: 0
+      assert_select "form[action=?]", suggest_categories_receipt_path(receipt), false
+      assert_select "[data-suggestion-id]", false
+
+      post suggest_categories_receipt_path(receipt)
+    end
+
+    assert_match "switched off", flash[:alert]
+    assert_empty categorise_jobs
+  end
 end
