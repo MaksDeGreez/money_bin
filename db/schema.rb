@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -143,13 +143,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_160000) do
     t.boolean "accepted_by_user", default: false, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "name_key", null: false
+    t.string "suggested_by"
     t.index ["category_id"], name: "index_receipt_items_on_category_id"
+    t.index ["name_key", "category_id"], name: "index_receipt_items_on_label_memory", where: "(accepted_by_user AND (category_id IS NOT NULL))"
     t.index ["receipt_id", "position"], name: "index_receipt_items_on_receipt_id_and_position", unique: true
     t.index ["suggested_category_id"], name: "index_receipt_items_on_suggested_category_id"
     t.check_constraint "\"position\" >= 0", name: "receipt_items_position_non_negative"
     t.check_constraint "confidence >= 0::double precision AND confidence <= 1::double precision", name: "receipt_items_confidence_range"
     t.check_constraint "discount >= 0::numeric", name: "receipt_items_discount_non_negative"
     t.check_constraint "quantity > 0::numeric", name: "receipt_items_quantity_positive"
+    t.check_constraint "suggested_by::text = ANY (ARRAY['memory'::character varying, 'model'::character varying]::text[])", name: "receipt_items_suggested_by_known"
   end
 
   create_table "receipts", force: :cascade do |t|
@@ -185,6 +189,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_160000) do
     t.string "ocr_prompt_version"
     t.string "filled_from"
     t.string "categoriser_model_name"
+    t.timestamptz "categorised_at"
+    t.string "categoriser_error"
     t.index "COALESCE(issued_at, (created_at AT TIME ZONE 'UTC'::text)) DESC, id DESC", name: "index_receipts_on_sort_time_and_id"
     t.index ["batch"], name: "index_receipts_on_batch"
     t.index ["category_id"], name: "index_receipts_on_category_id"

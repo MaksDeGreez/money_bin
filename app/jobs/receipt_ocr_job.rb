@@ -12,6 +12,10 @@
 #   `extracted`, replacing its items.
 # - It leaves other `extracted` receipts and every `reviewed` one alone: they already have a result, and a
 #   person may be working on it. So running the job twice does the work once.
+# - Once the result is stored, the items get their category suggestions (Receipts::SuggestCategories) in the
+#   same job, so they arrive right after the items rather than behind every other queued read. A failure
+#   there never fails the receipt: OCR's result stays, the receipt is `extracted` without suggestions and
+#   records why (`categoriser_error`); "Suggest categories again" (ReceiptCategoriseJob) can ask later.
 # - A receipt deleted before the job ran is discarded quietly.
 # - Every change of status is pushed to the open pages (Receipts::LiveUpdate).
 #
@@ -62,6 +66,7 @@ class ReceiptOcrJob < ApplicationJob
 
     result = MlClient.new.ocr(images_of(receipt))
     Receipts::ApplyOcr.call(receipt, result)
+    suggest_categories(receipt)
   rescue Receipts::ApplyOcr::AlreadyReviewed
     # A person accepted the receipt while the service was reading it; their result wins.
   end
@@ -82,6 +87,15 @@ class ReceiptOcrJob < ApplicationJob
   end
 
   private
+    # Errors of the ML service are recorded by the service itself; anything else is a bug, reported and recorded
+    # here, never raised: a retry of this job would find the receipt read and do nothing.
+    def suggest_categories(receipt)
+      Receipts::SuggestCategories.call(receipt)
+    rescue StandardError => error
+      Rails.error.report(error, handled: true, source: "receipt_ocr_job.suggest_categories")
+      receipt.update_columns(categoriser_error: "internal_error", categorised_at: Time.current)
+    end
+
     def start(receipt)
       started = receipt.with_lock do
         unless startable?(receipt)

@@ -239,7 +239,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_select "form##{dom_id(receipt, :review_form)}", false
     assert_select "##{dom_id(receipt, :data)}" do
       assert_select ".data-row", text: /Merchant\s*Corner Shop/
-      assert_select "tbody tr", text: /Sandwich.*Suggested: Takeaway & fast food\s*\(62%\)/m
+      assert_select "tbody tr", text: /Sandwich.*Suggested: Takeaway & fast food\s*\(62%, from the model\)/m
       assert_select ".data-row", text: /Items sum\s*152.50 UAH/
     end
   end
@@ -733,4 +733,69 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
       Pagination.send(:remove_const, :PER_PAGE)
       Pagination.const_set(:PER_PAGE, original)
     end
+
+  # --- category suggestions
+
+  def categorise_jobs
+    enqueued_jobs.select { |job| job["job_class"] == "ReceiptCategoriseJob" }
+  end
+
+  test "Suggest categories again queues the suggestion job for a receipt under review" do
+    receipt = receipts(:corner_receipt)
+
+    post suggest_categories_receipt_path(receipt, batch: "b1")
+
+    assert_redirected_to receipt_path(receipt, batch: "b1")
+    assert_equal "Asked for category suggestions. This page updates when they are in.", flash[:notice]
+    assert_equal 1, categorise_jobs.size
+    assert_empty enqueued_jobs.select { |job| job["job_class"] == "ReceiptOcrJob" }
+  end
+
+  test "suggestions are not asked for a reviewed, unread or failed receipt, or one without items" do
+    [ :market_receipt, :new_receipt, :failed_receipt ].each do |name|
+      post suggest_categories_receipt_path(receipts(name))
+
+      assert_match "Not suggested", flash[:alert]
+    end
+    receipt = receipts(:corner_receipt)
+    receipt.items.delete_all
+    post suggest_categories_receipt_path(receipt)
+    assert_match "Not suggested", flash[:alert]
+    assert_empty categorise_jobs
+  end
+
+  test "a queue that cannot be reached is said so" do
+    with_singleton_method(ReceiptCategoriseJob.queue_adapter, :enqueue, ->(*) { raise RedisClient::CannotConnectError, "down" }) do
+      post suggest_categories_receipt_path(receipts(:corner_receipt))
+    end
+
+    assert_equal ReceiptsController::SUGGESTIONS_UNAVAILABLE, flash[:alert]
+  end
+
+  test "the review page says where suggestions came from and offers to suggest again" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(categoriser_model_name: "example/model")
+
+    get receipt_path(receipt)
+
+    assert_select "p", text: /Category suggestions for 2 of 3 items: 2 from example\/model/
+    assert_select "form[action=?]", suggest_categories_receipt_path(receipt), text: /Suggest categories again/
+    assert_select ".line-suggestion", text: /Takeaway & fast food · 62% · from the model/
+  end
+
+  test "the review page says when the categoriser could not answer" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(categoriser_error: "backend_not_implemented")
+
+    get receipt_path(receipt)
+
+    assert_select ".callout", text: /No suggestions from the categoriser.*backend_not_implemented/m
+    assert_select "form[action=?]", suggest_categories_receipt_path(receipt)
+  end
+
+  test "a reviewed receipt offers no new suggestions" do
+    get receipt_path(receipts(:market_receipt))
+
+    assert_select "form[action=?]", suggest_categories_receipt_path(receipts(:market_receipt)), false
+  end
 end

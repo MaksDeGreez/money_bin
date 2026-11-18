@@ -21,7 +21,7 @@
       = row.category_select :category_id, category_choices, "aria-label": "Category, #{label}", suggestion: item.suggested_category, class: "combobox-compact"
       - if item.suggested_category
         p.line-suggestion
-          span = "Suggested: #{item.suggested_category.name}#{" · #{receipt_confidence(item.confidence)}" if item.confidence}"
+          span = [ "Suggested: #{item.suggested_category.name}", receipt_confidence(item.confidence), receipt_suggestion_source(item) ].compact.join(" · ")
           = ui_button "Use", variant: :link, size: :sm, tabindex: -1, data: { action: "receipt-review#useSuggestion" }
     .line-cell.line-cell-remove
       = ui_button variant: :ghost, size: :icon, class: "h-9 w-9", "aria-label": "Remove #{label}", data: { action: "line-items#remove" } do

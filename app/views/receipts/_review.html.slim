@@ -26,6 +26,7 @@ ruby:
   fill = (ground_truth_fill_data(dps_record) if dps_record && editable && !receipt.reviewed?)
 section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
   = render "receipts/ocr_state", receipt: receipt
+  = render("receipts/suggestions_state", receipt:, filter:)
   = form_with model: form_receipt, scope: :receipt, url: receipt_path(receipt, filter.to_params), method: :patch,
     id: dom_id(receipt, :review_form), class: "review-form", novalidate: true,
     data: { controller: "form-guard receipt-review money-totals",

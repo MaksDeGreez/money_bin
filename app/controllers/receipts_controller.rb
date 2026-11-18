@@ -1,6 +1,7 @@
 # The receipts: the list with its filter, one receipt with its photos and its review form, the upload, OCR
 # requests (docs/domain.md, "Who enqueues OCR"), saving and accepting a review and saving it as ground truth
-# (Receipts::Review), and "Enter by hand" (Receipts::EnterByHand).
+# (Receipts::Review), "Enter by hand" (Receipts::EnterByHand) and "Suggest categories again"
+# (ReceiptCategoriseJob).
 #
 # The list filter lives in the URL (Receipt::Filter). A receipt page carries the same parameters, so its
 # previous / next links walk the filtered list and "Back" returns to it.
@@ -16,9 +17,11 @@ class ReceiptsController < ApplicationController
     unchanged_booked: "Nothing changed: the ground truth already says exactly this."
   }.freeze
   QUEUE_UNAVAILABLE = "OCR could not be queued: the job queue (Redis) cannot be reached. Try again later."
+  SUGGESTIONS_UNAVAILABLE = "Category suggestions could not be asked for: the job queue (Redis) cannot be reached. " \
+    "Try again later."
 
-  before_action :set_filter, only: %i[ index show read_all update enter_by_hand ]
-  before_action :set_receipt, only: %i[ show read update enter_by_hand ]
+  before_action :set_filter, only: %i[ index show read_all update enter_by_hand suggest_categories ]
+  before_action :set_receipt, only: %i[ show read update enter_by_hand suggest_categories ]
 
   def index
     @pagination = Pagination.new(@filter.scope, page: params[:page])
@@ -114,6 +117,19 @@ class ReceiptsController < ApplicationController
     redirect_back_or_to receipt_path(@receipt), status: :see_other
   end
 
+  # "Suggest categories again": the items of a receipt under review get fresh suggestions, without OCR
+  # (ReceiptCategoriseJob). Suggestions never replace a category a person chose.
+  def suggest_categories
+    if !@receipt.reviewable? || !@receipt.extracted? || !@receipt.items.exists?
+      flash[:alert] = "Not suggested: only the items of a receipt waiting for review get suggestions."
+    elsif enqueue_suggestions
+      flash[:notice] = "Asked for category suggestions. This page updates when they are in."
+    else
+      flash[:alert] = SUGGESTIONS_UNAVAILABLE
+    end
+    redirect_back_or_to receipt_path(@receipt, @filter.to_params), status: :see_other
+  end
+
   # "Read all in this filter": every unread receipt the filter shows (all pages), and every failed one
   # without items, except those already queued.
   def read_all
@@ -161,6 +177,14 @@ class ReceiptsController < ApplicationController
       @queue_unavailable = QUEUE_UNAVAILABLE
       @queue_unavailable += " #{helpers.pluralize(error.queued.size, 'receipt')} were queued before it stopped." if error.queued.any?
       nil
+    end
+
+    # False when the job queue (Redis) cannot be reached, as Receipts::RequestOcr treats it.
+    def enqueue_suggestions
+      ReceiptCategoriseJob.new(@receipt).enqueue
+    rescue StandardError => error
+      Rails.logger.warn("ReceiptsController: the suggestion queue cannot be reached (#{error.class})")
+      false
     end
 
     def prefetch?

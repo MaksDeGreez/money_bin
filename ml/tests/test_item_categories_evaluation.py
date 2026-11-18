@@ -28,6 +28,7 @@ def gt_line(ingest_id: str, items: list[dict[str, Any]], **extra: Any) -> dict[s
         "ingest_id": ingest_id,
         "source": "manual",
         "items_known": True,
+        "categories_known": True,
         "schema_version": 2,
         "document": {"merchant": "Магазин", "issued_at": None, "items": items},
     }
@@ -68,10 +69,15 @@ def files(tmp_path: Path) -> dict[str, Path]:
                 ],
             },
         ),
-        # An imported record of the same receipt: the person's record wins.
-        gt_line("rcpt_000001", [item("other", "other/other-spending")], source="dps_xml"),
-        # No labels at all: left out unless asked for.
-        gt_line("rcpt_000003", [item("Гвинт", None)]),
+        # An imported record of the same receipt without categories: the record with them wins.
+        gt_line(
+            "rcpt_000001",
+            [item("other", "other/other-spending")],
+            source="dps_xml",
+            categories_known=False,
+        ),
+        # No labels: left out unless asked for (a slug in a record without categories is no label).
+        gt_line("rcpt_000003", [item("Гвинт", "other/other-spending")], categories_known=False),
         # Not in the receipt set.
         gt_line("rcpt_999999", [item("Мол900г", "groceries/groceries")]),
         # Items not known: never run.

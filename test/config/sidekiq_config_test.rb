@@ -13,16 +13,19 @@ class SidekiqConfigTest < ActiveSupport::TestCase
     @capsules = @cli.config.capsules
   end
 
-  test "OCR jobs have a capsule of their own with one thread" do
+  test "OCR and category suggestion jobs have a capsule of their own with one thread, suggestions first" do
     ocr = @capsules.fetch("ocr")
 
-    assert_equal [ ReceiptOcrJob::QUEUE.to_s ], ocr.queues
+    assert_equal [ ReceiptCategoriseJob::QUEUE.to_s, ReceiptOcrJob::QUEUE.to_s ], ocr.queues
     assert_equal 1, ocr.concurrency
+    assert_not ocr.weights.values.any?(&:positive?), "unweighted queues are strictly ordered" if ocr.respond_to?(:weights)
   end
 
-  test "the OCR job's queue is the OCR capsule's and no other" do
-    assert_equal ReceiptOcrJob::QUEUE.to_s, ReceiptOcrJob.new.queue_name
-    assert_equal [ "ocr" ], @capsules.select { |_name, capsule| capsule.queues.include?(ReceiptOcrJob::QUEUE.to_s) }.keys
+  test "the OCR and suggestion jobs' queues are the OCR capsule's and no other" do
+    [ ReceiptOcrJob, ReceiptCategoriseJob ].each do |job|
+      assert_equal job::QUEUE.to_s, job.new.queue_name
+      assert_equal [ "ocr" ], @capsules.select { |_name, capsule| capsule.queues.include?(job::QUEUE.to_s) }.keys
+    end
   end
 
   test "the default capsule works the other queues" do

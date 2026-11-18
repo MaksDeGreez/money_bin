@@ -71,6 +71,9 @@ TASK = "item_categories"
 # Per-item shares of a call's cost are rounded to this; run.json keeps the exact total.
 ITEM_COST_PLACES = Decimal("0.000000000001")
 SOURCE_PREFERENCE = {"manual": 0, "dps_xml": 1}
+# What a receipt records as its categoriser when the label memory filled its suggestions
+# (`categories_prefilled_by` in the ground truth; LabelMemory::CATEGORISER_NAME in the app).
+MEMORY_CATEGORISER = "label-memory"
 
 
 @dataclass(frozen=True)
@@ -119,7 +122,11 @@ def _text(value: Any) -> str | None:
 
 
 def read_ground_truth(path: Path) -> list[Receipt]:
-    """One receipt per ingest id, from the preferred record that gives items."""
+    """One receipt per ingest id, from the preferred record that gives items.
+
+    A record that gives categories (`categories_known`) is preferred, then a person's
+    (`manual`) to an imported one. Item labels are read only from a record with `categories_known`.
+    """
     if not path.is_file():
         raise UsageError(f"ground-truth file not found: {path}")
     chosen: dict[str, tuple[int, dict[str, Any]]] = {}
@@ -130,11 +137,12 @@ def read_ground_truth(path: Path) -> list[Receipt]:
             continue
         if line.get("items_known") is not True:
             continue
-        rank = SOURCE_PREFERENCE.get(str(line.get("source")), 9)
+        known = line.get("categories_known") is True
+        rank = (0 if known else 1, SOURCE_PREFERENCE.get(str(line.get("source")), 9))
         if ingest_id not in chosen or rank < chosen[ingest_id][0]:
             chosen[ingest_id] = (rank, document)
     receipts = []
-    for ingest_id, (_, document) in chosen.items():
+    for ingest_id, ((unknown, _), document) in chosen.items():
         items = []
         for index, item in enumerate(document.get("items") or [], start=1):
             if not isinstance(item, dict) or _text(item.get("name")) is None:
@@ -142,7 +150,8 @@ def read_ground_truth(path: Path) -> list[Receipt]:
             position = item.get("position")
             if isinstance(position, bool) or not isinstance(position, int):
                 position = index
-            items.append(Item(position, item["name"], _text(item.get("category_slug"))))
+            label = None if unknown else _text(item.get("category_slug"))
+            items.append(Item(position, item["name"], label))
         if items:
             receipts.append(
                 Receipt(
@@ -360,6 +369,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             "enabled": memory is not None,
             "rule": "strict majority of earlier labels with the same name key; "
             "confidence (k + 1) / (n + 1.25)",
+            "categoriser_name": MEMORY_CATEGORISER,
             "prior_agreeing": PRIOR_AGREEING,
             "prior_disagreeing": PRIOR_DISAGREEING,
         },
