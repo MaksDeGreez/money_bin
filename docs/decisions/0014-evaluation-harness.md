@@ -37,11 +37,15 @@ Field accuracy cannot say whether the items are right. Items have no stable key:
 split, merge, duplicate or misspell them. So items are matched one to one by the Hungarian method on a
 score that combines the similarity of normalised names (a character-level Levenshtein ratio; the
 normalisation folds case, punctuation, Ukrainian and Latin look-alike letters and units, in one module)
-with the agreement of the amounts (`0.6 name + 0.4 amount`). Only pairs with a name similarity of at
-least 0.6 may match. A pair counts as a match at a score of 0.76, which an exact amount reaches with a
-name similarity of 0.6 and an exactly right name reaches with an amount up to 40% off. Two variants
-show what drives the number: `strict` (name match and exact amount) and `lenient` (name match only);
-`strict` ⊆ `main` ⊆ `lenient` by construction. Precision, recall and F1 are reported micro (over items)
+with the agreement of the amounts (`0.5 name + 0.5 amount`). A pair counts as a match (`main`) at a
+score of 0.8, which an exact amount reaches with a name similarity of 0.6 and an exactly right name
+reaches with an amount up to 40% off the larger one; the weights are equal so the two limits mirror
+each other. Two variants show what drives the number: `strict` (name similarity 0.6 and an exact
+amount) and `lenient` (name similarity 0.6 only). Each variant takes its own assignment: the largest
+number of qualifying pairs, then the highest total score. A single assignment by total score was
+tried first and rejected in review: adding a junk line could make it swap partners and lose a correct
+match. With one assignment per variant an extra prediction never takes a match away, and since every
+`strict` pair qualifies for `main` and every `main` pair for `lenient`, the counts nest. Precision, recall and F1 are reported micro (over items)
 and macro (the mean of per-receipt F1), with the character error rate of matched names.
 
 The thresholds were chosen by reasoning about the hand-built cases in the tests (a typo, a split line,
@@ -62,10 +66,32 @@ sources exist the register's own record (`dps_xml`) wins over a person's (`manua
 A person correcting a form a model filled in leans towards that model's answer, so a record whose
 `prefilled_by` (or, for categories, `categories_prefilled_by`) names the model a run evaluates is not
 ground truth for that run. The receipt is left out of that run's ground-truth metrics and counted, and
-paired comparisons use only the receipts left in both runs. "The same model" ignores the prompt
-version, case, a backend prefix and a variant suffix, and also matches on the last path segment, so the
-rule errs towards leaving a receipt out. The rule does not look at the record's source, so a record from
-any source cannot slip past it.
+paired comparisons use only the receipts left in both runs. The rule does not look at the record's
+source, so a record from any source cannot slip past it. The export's fixed values are honoured:
+`source:hand` and `source:dps_xml` count for every model, `source:unknown-model` for none, and
+`categories_prefilled_by: source:unknown` for no categoriser.
+
+### Model identity
+
+The app records model names exactly as the ML service reports them, and one model has several: a
+local quantised build (`mlx-community/Qwen3-VL-8B-Instruct-4bit`), the hosted id
+(`qwen/qwen3-vl-8b-instruct`), a dated slug as the version (`anthropic/claude-4.6-sonnet-20260217`).
+Exact comparison would let a person's corrections of the hosted model's answer test the local build
+of the same weights. So the harness maps every name to an identity in one module
+(`ml/evaluation/models.py`): the last path segment, without case, backend prefix, routing suffix,
+trailing date, quantisation and packaging words or the word "instruct", as a sorted list of tokens.
+The same base model is one model whatever its quantisation, host, publisher or dated slug; another
+size of the family (8B against 235B-A22B), another generation (Qwen2.5 against Qwen3) or another tier
+(`gpt-4.1` against `gpt-4.1-mini`) is another model, since its answers differ enough to be measured
+apart. Both the run's name and version and the record's `prefilled_by` and `prefilled_model_version`
+are compared. When in doubt the receipt is left out: a name that is a path on disk (a local folder
+says nothing reliable about its weights) or leaves no token is unknown, and a record pre-filled by an
+unknown name, or by any model when the run's own model is unknown, is left out of the run. Every run
+reports how many receipts the rule left out and how many of those for an unknown model.
+
+Rejected: exact names (misses the same weights under another name); family-level identity, all Qwen-VL
+sizes as one model (would empty the test set of the comparison the chapter needs most, local 8B against
+hosted 235B, for little gain: a different size answers differently).
 
 ### What `eval/results/` may contain, and why it is enforced
 
