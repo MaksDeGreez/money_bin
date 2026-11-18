@@ -14,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.backends import Backend, ImageInput, create_backend
 from app.backends.mlx_worker import MlxWorker
+from app.batch.routes import batch_router
 from app.categorise import CategoriseInput, Categoriser, create_categoriser
 from app.categorise.calibration import Calibration, CalibrationError, calibrate, load_calibration
 from app.categorise.prompt import categories_version
@@ -221,6 +222,8 @@ def create_app(
     app.state.transaction_categoriser = transaction_categoriser or TransactionCategoriser(settings)
     app.include_router(transactions_router)
     register_error_handlers(app)
+    # Batch mode (app/batch/): off unless explicitly allowed; the photos are checked as for /ocr.
+    app.include_router(batch_router(_read_images, max_image_bytes))
 
     @app.get("/health")
     def health(

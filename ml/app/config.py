@@ -94,3 +94,16 @@ class Settings(BaseSettings):
     # zero-retention endpoints support it. Turn off only to compare against free
     # generation, or when a provider refuses the schema.
     openrouter_structured_output: bool = True
+
+    # Batch mode (app/batch/, docs/decisions/0017-ocr-batch-mode.md): many receipts in
+    # one provider batch at about half the price. A batch is NOT zero-retention: the
+    # photos and answers stay at OpenRouter and the provider until the batch is
+    # deleted (at most 30 days). Off unless this is set to true; nothing else turns
+    # it on, and no setting of the synchronous path above reaches it.
+    openrouter_batch_allow_retention: bool = False
+    # The model to read receipts with in a batch (a plain slug whose `:batch`
+    # variant exists, for example "vendor/model"). No default.
+    openrouter_batch_model: str | None = None
+    # The providers a batch may run on, as OpenRouter's endpoint slugs separated
+    # by commas (for example "anthropic"). No default: they are named, never picked.
+    openrouter_batch_providers: str | None = None

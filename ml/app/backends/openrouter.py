@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from io import BytesIO
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 from PIL import Image
@@ -70,6 +70,10 @@ from app.ocr.images import prepare_images
 from app.ocr.parsing import OcrParseError, read_with_repair
 from app.ocr.postprocess import postprocess
 from app.ocr.prompt import ANSWER_SCHEMA, PROMPT_VERSION, Repair, build_messages
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.batch.base import OcrBatches
+    from app.batch.openrouter import BatchTransport
 
 logger = logging.getLogger(__name__)
 
@@ -336,8 +340,46 @@ def encode_jpeg(image: Image.Image) -> bytes:
 
 
 def image_part(image: Image.Image) -> dict[str, Any]:
-    data = base64.b64encode(encode_jpeg(image)).decode("ascii")
+    return jpeg_part(encode_jpeg(image))
+
+
+def jpeg_part(jpeg: bytes) -> dict[str, Any]:
+    """A JPEG as an inline data URL part: no file name, no URL anyone else can open."""
+    data = base64.b64encode(jpeg).decode("ascii")
     return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{data}"}}
+
+
+def receipt_request_body(
+    model: str,
+    messages: Sequence[Mapping[str, str]],
+    image_parts: Sequence[Mapping[str, Any]],
+    *,
+    max_tokens: int,
+    structured: bool,
+) -> dict[str, Any]:
+    """One receipt's chat request without routing: the fixed prompt, the photos, the limits.
+
+    The synchronous call adds its zero-retention `provider` preferences; a batch
+    request carries its routing at the batch's top level (`app.batch.openrouter`).
+    Nothing else goes in: no user, session, metadata or trace field.
+    """
+    system, user = messages
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system["content"]},
+            {"role": "user", "content": [*image_parts, {"type": "text", "text": user["content"]}]},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    if structured:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": ANSWER_SCHEMA},
+        }
+    return body
 
 
 def _decode(text: str) -> Any:
@@ -933,11 +975,14 @@ class OpenRouterBackend(Backend):
         settings: Settings | None = None,
         transport: Transport | None = None,
         clock: Callable[[], float] = time.monotonic,
+        batch_transport: "BatchTransport | None" = None,
     ) -> None:
         super().__init__(settings)
         self._client = OpenRouterClient(
             self.settings, OCR_MODEL_SETTING, needs_images=True, transport=transport, clock=clock
         )
+        self._batch_transport = batch_transport
+        self._batches: OcrBatches | None = None
         self._model = self._client.model
         self.model_name = self._client.model_name
 
@@ -974,31 +1019,28 @@ class OpenRouterBackend(Backend):
 
         Nothing else goes in: no user, session, metadata or trace field.
         """
-        structured = bool(catalogue.structured_endpoints)
-        system, user = messages
-        body: dict[str, Any] = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": system["content"]},
-                {
-                    "role": "user",
-                    "content": [
-                        *(image_part(image) for image in images),
-                        {"type": "text", "text": user["content"]},
-                    ],
-                },
-            ],
-            "temperature": 0,
-            "max_tokens": self.settings.openrouter_max_tokens,
-            "stream": False,
-            "provider": _provider_preferences(catalogue),
-        }
-        if structured:
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": ANSWER_SCHEMA},
-            }
+        assert self._model is not None
+        body = receipt_request_body(
+            self._model,
+            messages,
+            [image_part(image) for image in images],
+            max_tokens=self.settings.openrouter_max_tokens,
+            structured=bool(catalogue.structured_endpoints),
+        )
+        body["provider"] = _provider_preferences(catalogue)
         return body
+
+    def batches(self) -> "OcrBatches":
+        """Batch mode (`app.batch.openrouter`): refused there unless explicitly allowed."""
+        if self._batches is None:
+            from app.batch.openrouter import OpenRouterBatches
+
+            self._batches = OpenRouterBatches(
+                self.settings,
+                transport=self._batch_transport,
+                halted=self._client.check_not_halted,
+            )
+        return self._batches
 
     def extract_receipt(self, images: Sequence[ImageInput]) -> Extraction:
         """Read one receipt within `OPENROUTER_TIMEOUT` seconds, catalogue and repair included."""
