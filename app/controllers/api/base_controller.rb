@@ -12,11 +12,18 @@ module Api
   # - 401 `unauthorized`: no bearer token; 401 `invalid_token`: an unknown, malformed or revoked token
   #   (one answer for all three, so a caller learns nothing about which). Both carry `WWW-Authenticate`.
   # - 403 `insufficient_scope`: a read token on a method that changes data.
-  # - 404 `not_found` and 400 `bad_request` for the subclasses' missing records and parameters.
+  # - 404 `not_found` and 400 `bad_request` for the subclasses' missing records and required parameters.
+  # - 422 `invalid_parameter` for a query parameter that is unknown, malformed or names nothing
+  #   (Api::QueryParameters), and for a cursor the API did not hand out.
   #
   # On success Current.api_token is set (Current.user is its owner), and its last_used_at is recorded at
   # most once a minute (ApiToken#record_use!).
   class BaseController < ActionController::API
+    include QueryParameters
+
+    # The API reads no request bodies yet (Api::QueryParameters refuses one), so nothing is wrapped.
+    wrap_parameters false
+
     REALM = "Money Bin".freeze
 
     before_action :authenticate_api_token
@@ -28,6 +35,15 @@ module Api
 
     rescue_from ActionController::ParameterMissing do |error|
       render_error :bad_request, "bad_request", "The parameter '#{error.param}' is missing."
+    end
+
+    rescue_from QueryParameters::InvalidParameter do |error|
+      render_error :unprocessable_entity, "invalid_parameter", error.message
+    end
+
+    rescue_from KeysetCursor::Invalid do
+      render_error :unprocessable_entity, "invalid_parameter",
+        "The parameter 'cursor' is not one this API handed out; pass next_cursor from the previous page as it is."
     end
 
     private
@@ -63,6 +79,15 @@ module Api
         value = %(Bearer realm="#{REALM}")
         value += %(, error="#{error}") if error
         response.headers["WWW-Authenticate"] = value
+      end
+
+      # The `:id` of the URL, refused as not found unless it is a plain positive integer. Active Record would
+      # read "12abc" as 12.
+      def path_id
+        id = params[:id].to_s
+        raise ActiveRecord::RecordNotFound unless QueryParameters::ID_FORMAT.match?(id)
+
+        id.to_i
       end
 
       def render_error(status, code, message)

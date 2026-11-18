@@ -1,16 +1,16 @@
 # Money Bin
 
 A personal finance tracker for one person and an AI agent. The core flow: take a photo of a receipt, a
-local ML service reads it (OCR), the items get categories, and they land in a ledger. A REST API and an
-MCP server for AI agents come later. The history kept by the previous version of the app is loaded with
-an importer (see "Importing the history"). It is a master's capstone project (MSc Data Science,
-engineering project). It is local-first: everything runs on the owner's machine, and the data and photos
-stay there.
+local ML service reads it (OCR), the items get categories, and they land in a ledger. AI agents read the
+ledger through a REST API (read-only for now); an MCP server comes later. The history kept by the
+previous version of the app is loaded with an importer (see "Importing the history"). It is a master's
+capstone project (MSc Data Science, engineering project). It is local-first: everything runs on the
+owner's machine, and the data and photos stay there.
 
 ```
   browser ─┐                       ┌─> PostgreSQL (ledger)
            ├─> Rails app :3100 ────┼─> Redis (Sidekiq queues, cache, Action Cable)
-  AI agent ┘   (UI, later API/MCP) ├─> local disk (Active Storage: receipt photos)
+  AI agent ┘   (UI, API, later MCP)├─> local disk (Active Storage: receipt photos)
                      │             │
                      └─> Sidekiq ──┴─> ML service :8100 (FastAPI, ml/)
                                          OCR + categorisation; backend: stub now,
@@ -26,8 +26,8 @@ How coding agents share the work is in
 ## Status
 
 Phase 1: the skeleton and the data model. The Rails app boots with a home page and the UI helpers, the
-owner signs in, AI agents authenticate with personal API tokens, the ML service answers with its stub
-backend, and CI checks both. The domain model is described in
+owner signs in, AI agents authenticate with personal API tokens and read the ledger through a read-only
+JSON API, the ML service answers with its stub backend, and CI checks both. The domain model is described in
 [`docs/domain.md`](docs/domain.md).
 
 ## Requirements
@@ -65,7 +65,8 @@ processes in `Procfile.dev` with foreman:
 
 Without `uv` (or without `ml/`), `bin/dev` starts everything except the ML service. Useful URLs:
 `/` (home), `/session/new` (sign in), `/settings/api_tokens` (API tokens), `/sidekiq` (background jobs,
-signed in only), `/api/v1/status` (API check), `/up` (health check), <http://127.0.0.1:8100/docs> (ML
+signed in only), `/api/v1/status` (API check; the whole read API is under `/api/v1`, see "The read
+API"), `/up` (health check), <http://127.0.0.1:8100/docs> (ML
 service API docs).
 
 ## Signing in and API tokens
@@ -106,6 +107,74 @@ curl -s -H "Authorization: Bearer $MONEY_BIN_TOKEN" http://localhost:3100/api/v1
 Errors have one shape, `{"error": {"code": "...", "message": "..."}}`: 401 `unauthorized` (no token) or
 `invalid_token` (unknown, malformed or revoked), 403 `insufficient_scope` (a `read` token on a request
 that changes data).
+
+## The read API
+
+Agents and scripts read the ledger under `/api/v1` with a token of either scope. Every endpoint, parameter
+and response is described in [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.0.3), and the request
+tests check every response against it. The design is in
+[`docs/decisions/0007-read-api.md`](docs/decisions/0007-read-api.md).
+
+- Money and quantities are decimal strings (`"-1250.40"`, `"0.850"`), never JSON numbers. Amounts are
+  signed in the account currency: expenses negative, incomes positive.
+- Dates are `YYYY-MM-DD`; times carry the Kyiv offset (`2026-10-03T18:40:00+03:00`).
+- An unknown or repeated parameter, a malformed value, an id that names nothing or a request body is a
+  422 `invalid_parameter` whose message names the parameter; a missing record is a 404 `not_found`.
+  Send every parameter in the query string.
+- Lists come a page at a time (`limit`, 50 by default, at most 200): pass the answer's `next_cursor` as
+  `cursor` for the next page, until it is `null`.
+
+The examples below use invented data and are shortened (`…`).
+
+```sh
+H="Authorization: Bearer $MONEY_BIN_TOKEN"
+API=http://localhost:3100/api/v1
+
+# Transactions, newest first. Filters: from, to (dates on occurred_on, inclusive), account_id,
+# category_id (a category, or a group for all its categories), status, payee_id, q (text search), source.
+curl -s -H "$H" "$API/transactions?from=2026-10-01&to=2026-10-31&category_id=12&limit=2"
+# {"transactions":[{"id":81,"occurred_on":"2026-10-03","occurred_at":"2026-10-03T18:40:00+03:00",
+#   "amount":"-1250.40","currency":"UAH","status":"confirmed","source":"receipt",
+#   "account":{"id":2,"name":"Everyday card","currency":"UAH"},"payee":{"id":5,"name":"Example Market"},
+#   "transfer_id":null,"has_receipt":true,"receipt_id":7,
+#   "lines":[{"id":140,"category":{"id":12,"slug":"groceries/groceries","name":"Groceries"},
+#             "amount":"-1000.40","comment":null}, …], …}, …],
+#  "next_cursor":"WyIyMDI2LTEwLTAzIiw4MV0"}
+
+# One transaction.
+curl -s -H "$H" "$API/transactions/81"
+
+# Accounts with their balances (booked transactions only).
+curl -s -H "$H" "$API/accounts"
+# {"accounts":[{"id":2,"name":"Everyday card","kind":"debit","currency":"UAH","archived":false,
+#   "balance":"4334.60"}, …]}
+
+# The category tree.
+curl -s -H "$H" "$API/categories"
+# {"groups":[{"id":3,"slug":"eating-out","name":"Eating out","position":2,"description":null,
+#   "categories":[{"id":12,"slug":"eating-out/cafes-bars-restaurants","name":"Cafes, bars & restaurants",
+#   "position":1,"description":"Meals and drinks at cafes, bars and restaurants."}, …]}, …]}
+
+# Expenses and incomes by category, group and month, per currency (from and to are required;
+# currency=UAH keeps one currency). Booked transactions only, transfers left out.
+curl -s -H "$H" "$API/summary?from=2026-10-01&to=2026-10-31"
+# {"from":"2026-10-01","to":"2026-10-31","currencies":[{"currency":"UAH",
+#   "expenses":{"total":"-2225.40","transactions":4,
+#     "by_category":[{"category":{…},"group":{…},"amount":"-1000.40","transactions":1}, …],
+#     "by_group":[{"group":{…},"amount":"-1000.40"}, …],
+#     "by_month":[{"month":"2026-10","amount":"-2225.40","by_category":[…]}]},
+#   "incomes":{"total":"50000.00", …}}]}
+
+# Receipts, newest first (status filters them), and one receipt with its items.
+curl -s -H "$H" "$API/receipts?limit=1"
+# {"receipts":[{"id":7,"status":"reviewed","kind":"fiscal","incomplete":false,"merchant":"Example Market",
+#   "issued_at":"2026-10-03T18:40:00+03:00","issued_on":"2026-10-03","total":"1250.40",
+#   "currency":"UAH","transaction_id":81,"items_count":3}],"next_cursor":"…"}
+curl -s -H "$H" "$API/receipts/7"
+# {"id":7, …,"items_total":"1250.40","items":[{"id":20,"position":1,"name":"Rye bread",
+#   "quantity":"2.000","unit_price":"20.20","amount":"40.40","discount":"0.00",
+#   "category":{…},"suggested_category":{…},"confidence":0.97,"accepted_by_user":true}, …]}
+```
 
 ## Importing the history
 
@@ -211,6 +280,10 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
+API request tests check every response against `docs/openapi.yaml` with committee
+(`test/support/openapi_test_helper.rb`), and `test/integration/api_contract_test.rb` fails when a documented
+path or status has no test or an endpoint is not documented.
+
 No test reaches the network (WebMock on the Rails side, the stub backend on the Python side), and no
 test needs model weights, real receipts or personal data. Fixtures are invented, and the receipt tool's
 tests generate every image they use.
@@ -255,14 +328,15 @@ the numbers and names.
 
 ```
 app/              Rails app: models, controllers, Slim views, UI helpers (app/helpers/ui_helper.rb,
-                  app/views/ui/, app/form_builders/ui_form_builder.rb), jobs
+                  app/views/ui/, app/form_builders/ui_form_builder.rb), jobs, query objects
+                  (app/queries/, the API's reading logic) and the API's JSON builders (app/serializers/)
 bin/              setup, dev, ci, services, worktree and pull request scripts, leak-check, codex-review,
                   favicon
 config/           Rails config; ci.rb (the bin/ci steps), redis_url.rb, worktree_isolation.rb
 db/               migrations, schema, seeds
 design/           favicon/source.png, the artwork behind the logo and the favicons
-docs/             domain.md (the data model), import-contract.md (the history export) and decisions/
-                  (architecture decision records)
+docs/             domain.md (the data model), import-contract.md (the history export), openapi.yaml
+                  (the REST API) and decisions/ (architecture decision records)
 ml/               the Python ML service (FastAPI, uv) and the categoriser training (ml/categoriser/);
                   see ml/README.md
 test/             Minitest tests and invented fixtures; test/support/coverage.rb is the coverage gate

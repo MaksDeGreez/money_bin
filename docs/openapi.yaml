@@ -1,0 +1,850 @@
+openapi: 3.0.3
+# 3.0.3, not 3.1: the request tests check every response against this file with the committee gem, and
+# committee 5.6 refuses 3.1 documents (docs/decisions/0007-read-api.md).
+#
+# House rules, checked by test/integration/api_contract_test.rb:
+# - every object schema has `additionalProperties: false` and lists every property in `required` (a key
+#   that may be empty is `nullable`, never left out), so a test fails when an endpoint adds a field this
+#   file does not describe or drops one it does;
+# - every documented path, method and status has an example request in that test.
+info:
+  title: Money Bin API
+  version: "1"
+  description: |
+    The read API of Money Bin, a local-first personal finance tracker, for AI agents and scripts.
+
+    Authentication: a personal API token (created at /settings/api_tokens) in `Authorization: Bearer <token>`.
+    The `read` scope is enough for every endpoint here. Browser cookies never authenticate the API.
+
+    Formats: money and quantities are decimal strings ("-1250.40", "0.850"), never JSON numbers. Amounts are
+    signed in the account currency: expenses are negative, incomes positive. Dates are ISO 8601
+    (YYYY-MM-DD); times are ISO 8601 with the Kyiv offset. Every error has the shape
+    `{"error": {"code": "...", "message": "..."}}`.
+
+    Query parameters: an unknown parameter, a malformed value, or an id that names nothing is a 422
+    `invalid_parameter` whose message names the parameter. Nothing is ignored silently: a request body is
+    refused the same way (every endpoint reads only the query string), and a format suffix such as `.xml` is
+    not routed.
+
+    Lists are read a page at a time: pass `next_cursor` from one page as `cursor` to get the next, until it is
+    null. A cursor is opaque; keep the same filters while following it.
+servers:
+  - url: http://localhost:3100
+security:
+  - bearerToken: []
+
+paths:
+  /api/v1/status:
+    get:
+      operationId: getStatus
+      summary: Check the token
+      description: Tells an agent that its token works and what scope it has.
+      responses:
+        "200":
+          description: The token works.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/transactions:
+    get:
+      operationId: listTransactions
+      summary: List transactions
+      description: |
+        Ledger transactions, newest first (`occurred_on` descending, then `id` descending), a page at a time.
+        All filters are optional and combine with AND. Drafts are included unless `status` says otherwise;
+        each row carries its `status` (only `needs_review` and `confirmed` count in balances and reports).
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: account_id
+          in: query
+          description: Only transactions on this account.
+          schema:
+            type: integer
+            minimum: 1
+        - name: category_id
+          in: query
+          description: |
+            A category, or a group meaning any of its categories. A transaction matches when one of its lines is
+            in it, so a split transaction is found under each of its categories. Transfer legs have no lines.
+          schema:
+            type: integer
+            minimum: 1
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TransactionStatus"
+        - name: payee_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: q
+          in: query
+          description: Text found, case-insensitively, in the payee name, the merchant, the comment or the bank description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+        - name: source
+          in: query
+          schema:
+            $ref: "#/components/schemas/TransactionSource"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of transactions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/transactions/{id}:
+    get:
+      operationId: getTransaction
+      summary: Get one transaction
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The transaction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/accounts:
+    get:
+      operationId: listAccounts
+      summary: List accounts with balances
+      description: |
+        Every account, open ones first, then by name. The balance is the sum of the account's booked transactions
+        (drafts left out), in the account currency.
+      responses:
+        "200":
+          description: The accounts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/categories:
+    get:
+      operationId: listCategories
+      summary: The category tree
+      description: |
+        Groups with their categories, each level in its display order. Transaction lines and receipt items point
+        at categories, never at groups. Slugs are stable keys; names may change.
+      responses:
+        "200":
+          description: The tree.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CategoryTree"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/summary:
+    get:
+      operationId: getSummary
+      summary: Expenses and incomes by category and month
+      description: |
+        Sums for a date range, one entry per currency (two currencies are never added together). Only booked
+        transactions count (drafts are left out); transfer legs are left out. A transaction with a negative amount
+        is an expense, a positive one an income; its lines are summed per category, so a split transaction gives
+        each category its share. Amounts keep the ledger's sign (expense figures are negative). A group's figure
+        is the sum of its categories. Lines with no category have `category` and `group` null. Months with nothing
+        in them are absent.
+      parameters:
+        - $ref: "#/components/parameters/FromRequired"
+        - $ref: "#/components/parameters/ToRequired"
+        - name: currency
+          in: query
+          description: Only this currency (an ISO 4217 code that an account uses).
+          schema:
+            $ref: "#/components/schemas/Currency"
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Summary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/receipts:
+    get:
+      operationId: listReceipts
+      summary: List receipts
+      description: |
+        Receipts, newest first: by the time printed on the receipt, or the upload time while OCR has not read one,
+        then by id. Items are in the single-receipt answer. Photos are not served by the API.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ReceiptStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of receipts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+  /api/v1/receipts/{id}:
+    get:
+      operationId: getReceipt
+      summary: Get one receipt with its items
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The receipt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Receipt"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/InvalidParameter"
+
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: A personal API token, `mbt_` followed by 44 base58 characters.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    From:
+      name: from
+      in: query
+      description: The first date (YYYY-MM-DD), inclusive.
+      schema:
+        type: string
+        format: date
+    To:
+      name: to
+      in: query
+      description: The last date (YYYY-MM-DD), inclusive. Not before `from`.
+      schema:
+        type: string
+        format: date
+    FromRequired:
+      name: from
+      in: query
+      required: true
+      description: The first date (YYYY-MM-DD), inclusive.
+      schema:
+        type: string
+        format: date
+    ToRequired:
+      name: to
+      in: query
+      required: true
+      description: The last date (YYYY-MM-DD), inclusive. Not before `from`.
+      schema:
+        type: string
+        format: date
+    Limit:
+      name: limit
+      in: query
+      description: Rows per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page, as it was given.
+      schema:
+        type: string
+        maxLength: 200
+
+  responses:
+    Unauthorized:
+      description: |
+        No bearer token (`unauthorized`), or an unknown, malformed or revoked one (`invalid_token`).
+      headers:
+        WWW-Authenticate:
+          description: '`Bearer realm="Money Bin"`, with `error="invalid_token"` for a token that does not work.'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Nothing has this id (`not_found`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: A required parameter is missing (`bad_request`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InvalidParameter:
+      description: |
+        A query parameter is unknown, malformed or names nothing, or the cursor is not one the API handed out
+        (`invalid_parameter`; the message names the parameter).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Money:
+      type: string
+      description: A decimal amount with two places, signed.
+      pattern: '^-?[0-9]+\.[0-9]{2}$'
+      example: "-1250.40"
+    NullableMoney:
+      type: string
+      nullable: true
+      description: A decimal amount with two places, signed, or null when unknown.
+      pattern: '^-?[0-9]+\.[0-9]{2}$'
+    NullableQuantity:
+      type: string
+      nullable: true
+      description: A decimal quantity with three places, or null when unknown.
+      pattern: '^[0-9]+\.[0-9]{3}$'
+      example: "0.850"
+    Currency:
+      type: string
+      description: An ISO 4217 code.
+      pattern: "^[A-Z]{3}$"
+      example: UAH
+    NullableCurrency:
+      type: string
+      nullable: true
+      pattern: "^[A-Z]{3}$"
+    Date:
+      type: string
+      format: date
+      example: "2026-10-03"
+    NullableDate:
+      type: string
+      format: date
+      nullable: true
+    NullableTime:
+      type: string
+      format: date-time
+      nullable: true
+      description: An ISO 8601 time with the Kyiv offset, or null when unknown.
+      example: "2026-10-03T18:40:00+03:00"
+    NextCursor:
+      type: string
+      nullable: true
+      description: Pass it as `cursor` for the next page; null on the last page.
+    TransactionStatus:
+      type: string
+      enum: [draft, needs_review, confirmed]
+      description: |
+        `draft`: a proposal, not counted in balances and reports. `needs_review`: counted, a person should
+        still look. `confirmed`: counted and complete.
+    TransactionSource:
+      type: string
+      enum: [legacy, receipt, manual, api, bank]
+    ReceiptStatus:
+      type: string
+      enum: [uploaded, processing, extracted, reviewed, failed]
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [unauthorized, invalid_token, insufficient_scope, not_found, bad_request, invalid_parameter]
+            message:
+              type: string
+
+    Status:
+      type: object
+      additionalProperties: false
+      required: [status, token]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        token:
+          type: object
+          additionalProperties: false
+          required: [name, scope]
+          properties:
+            name:
+              type: string
+            scope:
+              type: string
+              enum: [read, read_write]
+
+    CategoryRef:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name]
+      properties:
+        id:
+          type: integer
+        slug:
+          type: string
+          example: eating-out/cafes-bars-restaurants
+        name:
+          type: string
+    NullableCategoryRef:
+      type: object
+      nullable: true
+      description: A category (or a group), or null for none.
+      additionalProperties: false
+      required: [id, slug, name]
+      properties:
+        id:
+          type: integer
+        slug:
+          type: string
+        name:
+          type: string
+
+    TransactionLine:
+      type: object
+      additionalProperties: false
+      required: [id, category, amount, comment]
+      properties:
+        id:
+          type: integer
+        category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        amount:
+          $ref: "#/components/schemas/Money"
+        comment:
+          type: string
+          nullable: true
+
+    Transaction:
+      type: object
+      additionalProperties: false
+      required: [id, occurred_on, occurred_at, amount, currency, original_amount, original_currency, status, source,
+        account, payee, merchant, comment, bank_description, mcc, transfer_id, has_receipt, receipt_id, lines]
+      properties:
+        id:
+          type: integer
+        occurred_on:
+          $ref: "#/components/schemas/Date"
+        occurred_at:
+          $ref: "#/components/schemas/NullableTime"
+        amount:
+          $ref: "#/components/schemas/Money"
+        currency:
+          $ref: "#/components/schemas/Currency"
+        original_amount:
+          $ref: "#/components/schemas/NullableMoney"
+        original_currency:
+          $ref: "#/components/schemas/NullableCurrency"
+        status:
+          $ref: "#/components/schemas/TransactionStatus"
+        source:
+          $ref: "#/components/schemas/TransactionSource"
+        account:
+          type: object
+          additionalProperties: false
+          required: [id, name, currency]
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            currency:
+              $ref: "#/components/schemas/Currency"
+        payee:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [id, name]
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+        merchant:
+          type: string
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+        bank_description:
+          type: string
+          nullable: true
+        mcc:
+          type: string
+          nullable: true
+          pattern: "^[0-9]{4}$"
+        transfer_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Shared by the two legs of a transfer between own accounts; null otherwise.
+        has_receipt:
+          type: boolean
+        receipt_id:
+          type: integer
+          nullable: true
+        lines:
+          type: array
+          description: The category shares; they sum to the amount. Empty for a transfer leg.
+          items:
+            $ref: "#/components/schemas/TransactionLine"
+
+    TransactionPage:
+      type: object
+      additionalProperties: false
+      required: [transactions, next_cursor]
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        next_cursor:
+          $ref: "#/components/schemas/NextCursor"
+
+    Account:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, currency, archived, balance]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [cash, debit, credit, savings, ewallet, business]
+        currency:
+          $ref: "#/components/schemas/Currency"
+        archived:
+          type: boolean
+        balance:
+          $ref: "#/components/schemas/Money"
+
+    AccountList:
+      type: object
+      additionalProperties: false
+      required: [accounts]
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Account"
+
+    Category:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name, position, description]
+      properties:
+        id:
+          type: integer
+        slug:
+          type: string
+        name:
+          type: string
+        position:
+          type: integer
+        description:
+          type: string
+          nullable: true
+
+    CategoryGroup:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name, position, description, categories]
+      properties:
+        id:
+          type: integer
+        slug:
+          type: string
+        name:
+          type: string
+        position:
+          type: integer
+        description:
+          type: string
+          nullable: true
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Category"
+
+    CategoryTree:
+      type: object
+      additionalProperties: false
+      required: [groups]
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategoryGroup"
+
+    SummarySide:
+      type: object
+      additionalProperties: false
+      required: [total, transactions, by_category, by_group, by_month]
+      properties:
+        total:
+          $ref: "#/components/schemas/Money"
+        transactions:
+          type: integer
+          description: How many transactions.
+        by_category:
+          type: array
+          description: Largest magnitude first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [category, group, amount, transactions]
+            properties:
+              category:
+                $ref: "#/components/schemas/NullableCategoryRef"
+              group:
+                $ref: "#/components/schemas/NullableCategoryRef"
+              amount:
+                $ref: "#/components/schemas/Money"
+              transactions:
+                type: integer
+                description: How many transactions have a line here; a split transaction counts in each of its categories.
+        by_group:
+          type: array
+          description: The categories rolled up into their groups, largest magnitude first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [group, amount]
+            properties:
+              group:
+                $ref: "#/components/schemas/NullableCategoryRef"
+              amount:
+                $ref: "#/components/schemas/Money"
+        by_month:
+          type: array
+          description: Calendar months of `occurred_on`, oldest first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [month, amount, by_category]
+            properties:
+              month:
+                type: string
+                pattern: "^[0-9]{4}-[0-9]{2}$"
+                example: "2026-10"
+              amount:
+                $ref: "#/components/schemas/Money"
+              by_category:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [category, amount]
+                  properties:
+                    category:
+                      $ref: "#/components/schemas/NullableCategoryRef"
+                    amount:
+                      $ref: "#/components/schemas/Money"
+
+    Summary:
+      type: object
+      additionalProperties: false
+      required: [from, to, currencies]
+      properties:
+        from:
+          $ref: "#/components/schemas/Date"
+        to:
+          $ref: "#/components/schemas/Date"
+        currencies:
+          type: array
+          description: One entry per currency that has booked transactions in the range, by code.
+          items:
+            type: object
+            additionalProperties: false
+            required: [currency, expenses, incomes]
+            properties:
+              currency:
+                $ref: "#/components/schemas/Currency"
+              expenses:
+                $ref: "#/components/schemas/SummarySide"
+              incomes:
+                $ref: "#/components/schemas/SummarySide"
+
+    ReceiptSummary:
+      type: object
+      additionalProperties: false
+      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, items_count]
+      properties:
+        id:
+          type: integer
+        status:
+          $ref: "#/components/schemas/ReceiptStatus"
+        kind:
+          type: string
+          nullable: true
+          enum: [fiscal, card_slip, null]
+          description: A cash register receipt (`fiscal`) or a card terminal slip (`card_slip`); null when not known yet.
+        incomplete:
+          type: boolean
+          description: A torn or cut-off receipt whose total or date cannot be read.
+        merchant:
+          type: string
+          nullable: true
+        issued_at:
+          $ref: "#/components/schemas/NullableTime"
+        issued_on:
+          $ref: "#/components/schemas/NullableDate"
+        total:
+          $ref: "#/components/schemas/NullableMoney"
+        currency:
+          $ref: "#/components/schemas/NullableCurrency"
+        transaction_id:
+          type: integer
+          nullable: true
+          description: The transaction the receipt was booked as; null until it is accepted.
+        items_count:
+          type: integer
+
+    ReceiptItem:
+      type: object
+      additionalProperties: false
+      required: [id, position, name, quantity, unit_price, amount, discount, category, suggested_category, confidence,
+        accepted_by_user]
+      properties:
+        id:
+          type: integer
+        position:
+          type: integer
+        name:
+          type: string
+        quantity:
+          $ref: "#/components/schemas/NullableQuantity"
+        unit_price:
+          $ref: "#/components/schemas/NullableMoney"
+        amount:
+          $ref: "#/components/schemas/Money"
+        discount:
+          $ref: "#/components/schemas/Money"
+        category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        suggested_category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        confidence:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: The categoriser's confidence in the suggestion (a probability, not money).
+        accepted_by_user:
+          type: boolean
+
+    Receipt:
+      type: object
+      additionalProperties: false
+      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, items_count, items_total,
+        items]
+      properties:
+        id:
+          type: integer
+        status:
+          $ref: "#/components/schemas/ReceiptStatus"
+        kind:
+          type: string
+          nullable: true
+          enum: [fiscal, card_slip, null]
+          description: A cash register receipt (`fiscal`) or a card terminal slip (`card_slip`); null when not known yet.
+        incomplete:
+          type: boolean
+          description: A torn or cut-off receipt whose total or date cannot be read.
+        merchant:
+          type: string
+          nullable: true
+        issued_at:
+          $ref: "#/components/schemas/NullableTime"
+        issued_on:
+          $ref: "#/components/schemas/NullableDate"
+        total:
+          $ref: "#/components/schemas/NullableMoney"
+        currency:
+          $ref: "#/components/schemas/NullableCurrency"
+        transaction_id:
+          type: integer
+          nullable: true
+        items_count:
+          type: integer
+        items_total:
+          $ref: "#/components/schemas/Money"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceiptItem"
+
+    ReceiptPage:
+      type: object
+      additionalProperties: false
+      required: [receipts, next_cursor]
+      properties:
+        receipts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceiptSummary"
+        next_cursor:
+          $ref: "#/components/schemas/NextCursor"
