@@ -14,8 +14,9 @@ the writer checks every value against a schema before anything is written:
   read from a `run.json` (`run_id`, `backend`, `model_name`, `model_version`, `prompt_version`).
 
 Anything else raises `ResultsShapeError`, whose message names the place in the structure, never the
-value. Tables (`tables.py`) are written through the same gate: every cell is a number, a formatted
-number, a known label or a run parameter.
+value. Tables (`tables.py`) are built only from results that passed this check, and are written
+through a second gate: every cell is a number, a known word, a category slug or a run parameter (no
+date, no free text).
 
 Output is deterministic: keys sorted, floats rounded to 6 places, UTF-8, a final newline.
 """
@@ -33,9 +34,9 @@ from typing import Any
 RESULTS_VERSION = 1
 FLOAT_PLACES = 6
 
-SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)?"
+SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*"
 LABEL = re.compile(rf"\A(?:{SLUG}|_none|_other)\Z")
-RUN_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,159}\Z")
+RUN_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:@+-]{0,159}\Z")
 PARAMETER = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}\Z")
 HEX = re.compile(r"\A[0-9a-f]{7,64}\Z")
 ISO_TIME = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\Z")
@@ -472,9 +473,11 @@ INDEX = obj(
     }
 )
 
-# Table cells: a formatted number (digits, a sign, a point, a percent sign, an interval in
-# brackets, a dollar sign), a fixed word, a category slug, or a run parameter.
-CELL = re.compile(r"\A[0-9.,+%$\[\] <>()-]*\Z")
+# Table cells: a number (an int, a float, an `Est` estimate, or a plain decimal string such as
+# seconds, dollars or a p-value), a fixed word, a category slug, or a run parameter. No dates, no
+# free text. A cell cannot tell an aggregate from one receipt's amount; that is why tables are only
+# ever built from results JSON that passed the schema above.
+CELL = re.compile(r"\A(?:-?\d{1,12}(?:\.\d{1,6})?|<0\.001)\Z")
 CELL_WORDS = frozenset(
     {"", "n/a", "yes", "no", "full", "crops", "model", "backend", "declared", *SEGMENTS, *TASKS}
 )
@@ -554,28 +557,31 @@ def check_cell(value: Any, ctx: Context) -> None:
 
 
 class ResultsWriter:
-    """Writes checked files under one results folder and remembers which it wrote."""
+    """Checks files for one results folder, then writes them all at once.
+
+    `write_json` and `write_table` check their content and keep it in memory; `commit` writes every
+    kept file and removes the stale ones. So a refused value leaves the folder as it was, and a
+    dry run (`--check`) runs every check without writing."""
 
     def __init__(self, root: Path, run_values: Iterable[str]) -> None:
         self.root = root
         self.ctx = Context(frozenset(value for value in run_values if isinstance(value, str)))
-        self.written: set[Path] = set()
+        self.staged: dict[str, str] = {}
 
-    def _write(self, relative: str, text: str) -> None:
+    def _stage(self, relative: str, text: str) -> None:
         path = (self.root / relative).resolve()
         if self.root.resolve() not in path.parents:
             raise ResultsShapeError("results: a file name leaves the results folder")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
-        self.written.add(path)
+        self.staged[relative] = text
 
-    def write_json(self, relative: str, value: Any, spec: Check) -> None:
+    def write_json(self, relative: str, value: Any, spec: Check) -> str:
+        """Check `value` and keep it; returns the JSON text that will be written."""
         if not FILE_NAME.match(relative) and relative != "index.json":
             raise ResultsShapeError("results: a file name has not the allowed form")
         check(value, spec, self.ctx)
-        self._write(relative, dumps(value))
+        text = dumps(value)
+        self._stage(relative, text)
+        return text
 
     def write_table(
         self, name: str, title: str, headers: list[str], rows: list[list[Any]], note: str
@@ -593,11 +599,23 @@ class ResultsWriter:
                 raise ResultsShapeError("results: a table row has the wrong number of cells")
             for cell in row:
                 check_cell(cell, self.ctx)
-        self._write(f"tables/{name}.md", _markdown(title, headers, rows, note))
-        self._write(f"tables/{name}.csv", _csv(headers, rows))
+        self._stage(f"tables/{name}.md", _markdown(title, headers, rows, note))
+        self._stage(f"tables/{name}.csv", _csv(headers, rows))
 
-    def remove_stale(self) -> int:
-        """Delete files in the harness's own subfolders that this run did not write."""
+    def commit(self) -> int:
+        """Write every kept file (through a temporary file each) and delete the files in the
+        harness's own subfolders that are not among them; returns how many were deleted."""
+        written: set[Path] = set()
+        for relative, text in sorted(self.staged.items()):
+            path = (self.root / relative).resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + ".tmp")
+            try:
+                temporary.write_text(text, encoding="utf-8")
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            written.add(path)
         removed = 0
         for folder, suffixes in (
             ("runs", (".json",)),
@@ -608,7 +626,7 @@ class ResultsWriter:
             if not directory.is_dir():
                 continue
             for path in sorted(directory.iterdir()):
-                if path.suffix in suffixes and path.resolve() not in self.written:
+                if path.suffix in suffixes and path.resolve() not in written:
                     path.unlink()
                     removed += 1
         return removed

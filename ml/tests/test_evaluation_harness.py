@@ -34,7 +34,7 @@ from evaluation.results import (
     check,
     check_cell,
 )
-from evaluation.truth import GroundTruth, same_model
+from evaluation.truth import GroundTruth
 from tests import evaluation_fixtures as fx
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -96,10 +96,11 @@ def test_ocr_metrics_worked_by_hand(inputs: dict[str, Path]) -> None:
         assert value(all_["fields"][name]) == pytest.approx(2 / 3)
     # Merchant: r1 (legal form dropped) and r3 (case) right; r2 pre-filled; r4 excluded.
     assert (all_["merchant"]["numerator"], all_["merchant"]["denominator"]) == (2, 2)
-    # Kind: r1 right, r2 right against its QR (its record is pre-filled), r3 wrong, r4 failed.
-    assert value(all_["kind"]["accuracy"]) == 0.5
+    # Kind: r1 right; r2 left out (its record is pre-filled by the run's model, and the QR
+    # stand-in is not used for it); r3 wrong; r4 (no usable record, a tax QR) failed.
+    assert value(all_["kind"]["accuracy"]) == pytest.approx(1 / 3)
     assert all_["kind"]["confusion"] == {
-        "fiscal": {"fiscal": 2, "card_slip": 0, "none": 1},
+        "fiscal": {"fiscal": 1, "card_slip": 0, "none": 1},
         "card_slip": {"fiscal": 1, "card_slip": 0, "none": 0},
     }
     items = all_["items"]
@@ -116,11 +117,9 @@ def test_ocr_metrics_worked_by_hand(inputs: dict[str, Path]) -> None:
     assert value(items["cer_normalised"]) == pytest.approx(1 / 27)
     # Plain: "," for ".", " г" for "g" (2 edits) and the missing "a": 4 over 14 + 13.
     assert value(items["cer_plain"]) == pytest.approx(4 / 27)
-    # Sums: r2 only (r1 adds to 100.00, r3 has no items, r4 failed).
-    assert (all_["items_sum_to_total"]["numerator"], all_["items_sum_to_total"]["denominator"]) == (
-        1,
-        4,
-    )
+    # Sums: r2 only (r1 adds to 100.00, r4 failed); r3 is a card slip, not counted.
+    sums = all_["items_sum_to_total"]
+    assert (sums["numerator"], sums["denominator"]) == (1, 3)
     assert value(all_["parse_failed"]) == 0.25
     assert all_["seconds_per_receipt"] == {"count": 4, "mean": 25.0, "median": 25.0, "p90": 40.0}
     # Nothing is checked, so the checked-only variant has no receipt.
@@ -176,25 +175,6 @@ def test_prefill_rule_does_not_touch_another_model(inputs: dict[str, Path]) -> N
     items = b["segments"]["all"]["items"]
     # r2's record now counts: 1 more reference and 1 more matched item.
     assert (items["receipts"], items["reference_items"], items["predicted_items"]) == (3, 4, 3)
-
-
-@pytest.mark.parametrize(
-    ("prefilled_by", "expected"),
-    [
-        ("mlx-community/Model-A", True),
-        ("  MLX-COMMUNITY/model-a ", True),
-        ("Model-A", True),
-        ("mlx:mlx-community/Model-A", True),
-        ("other/Model-A:free", True),
-        ("0123456789abcdef", True),  # the run's model_version (a dated slug for a hosted run)
-        ("mlx-community/Model-B", False),
-        ("", False),
-        (None, False),
-    ],
-)
-def test_same_model(prefilled_by: str | None, expected: bool, tmp_path: Path) -> None:
-    folder = fx.write_run(tmp_path, "run", [], model="mlx-community/Model-A")
-    assert same_model(prefilled_by, read_run(folder)) is expected
 
 
 def test_prefill_applies_whatever_the_source(inputs: dict[str, Path]) -> None:
@@ -515,6 +495,11 @@ def category_inputs(inputs: dict[str, Path]) -> dict[str, Path]:
         fx.truth_line(
             "rcpt_000001",
             "dps_xml",
+            fx.document("fiscal", [fx.item("SentinelBread", "40.00")]),
+        ),
+        fx.truth_line(
+            "rcpt_000001",
+            "manual",
             fx.document(
                 "fiscal",
                 [
@@ -568,6 +553,7 @@ def test_item_category_metrics_worked_by_hand(category_inputs: dict[str, Path]) 
         "receipts": 2,
         "receipts_not_in_receipt_set": 0,
         "receipts_excluded_prefilled": 1,
+        "receipts_excluded_prefilled_unknown": 0,
         "receipts_without_category_truth": 0,
         "unlabelled_items": 1,
         "unlabelled_card_slips": 0,
@@ -857,10 +843,18 @@ def test_the_writer_refuses_bad_file_names(scored: tuple[dict, set], tmp_path: P
 
 def test_table_cells_are_gated(tmp_path: Path) -> None:
     ctx = Context(frozenset({"vendor/model"}))
-    for cell in (None, 3, 0.5, "66.7 [50.0, 80.0]", "n/a", "<0.001", "vendor/model", G, "_none"):
+    for cell in (None, 3, 0.5, "12.34", "-0.5", "n/a", "<0.001", "vendor/model", G, "_none"):
         check_cell(cell, ctx)
     check_cell(Est(0.5, 0.1, 0.9), ctx)
-    for cell in ("SentinelBread", "Хліб", "vendor/other model", Est(float("nan"), None, None)):
+    for cell in (
+        "SentinelBread",
+        "Хліб",
+        "vendor/other model",
+        "sentinelshop",
+        "2026-01-15",
+        "66.7 [50.0, 80.0]",
+        Est(float("nan"), None, None),
+    ):
         with pytest.raises(ResultsShapeError):
             check_cell(cell, ctx)
     writer = ResultsWriter(tmp_path, ["vendor/model"])
@@ -933,3 +927,181 @@ def test_scoring_directly(inputs: dict[str, Path]) -> None:
     run = read_run(inputs["runs"] / "run-a")
     scores = score_run(run, receipts, GroundTruth(records, receipts), seed=1, resamples=10)
     assert len(scores.outcomes) == 4
+
+
+# --- the export's pre-fill values, model identity, review fixes ------------------------------
+
+
+def manual_r1(prefilled_by: str, **extra: Any) -> list[dict[str, Any]]:
+    """The standard truth with r1's record replaced by a manual one pre-filled by `prefilled_by`."""
+    lines = fx.standard_truth()
+    lines[0] = fx.truth_line(
+        "rcpt_000001", "manual", lines[0]["document"], prefilled_by=prefilled_by, **extra
+    )
+    return lines
+
+
+@pytest.mark.parametrize(
+    ("prefilled_by", "extra", "excluded", "unknown"),
+    [
+        ("source:hand", {}, 1, 0),  # r2 (Model-A) only
+        ("source:dps_xml", {}, 1, 0),
+        ("source:unknown-model", {}, 2, 1),
+        ("qwen/model-a", {}, 2, 0),  # the hosted id of the run's model
+        ("vendor/other", {"prefilled_model_version": "Model-A-2026-01-01"}, 2, 0),
+        ("vendor/model-a-70b", {}, 1, 0),  # another size
+        ("/Users/someone/models/a", {}, 2, 1),
+    ],
+)
+def test_prefill_values_of_the_export(
+    inputs: dict[str, Path], prefilled_by: str, extra: dict, excluded: int, unknown: int
+) -> None:
+    fx.write_truth(inputs["truth"], manual_r1(prefilled_by, **extra))
+    _, console = run_harness(inputs)
+    counts = result(inputs, "run-a")["counts"]
+    assert counts["excluded_prefilled_items"] == excluded
+    assert counts["excluded_prefilled_items_unknown"] == unknown
+    assert f"left out by the pre-fill rule: {excluded} ({unknown} for an unknown model)" in console
+
+
+def test_unknown_categoriser_is_left_out_of_every_category_run(
+    category_inputs: dict[str, Path],
+) -> None:
+    text = (category_inputs["truth"] / "ground_truth.jsonl").read_text(encoding="utf-8")
+    lines = [json.loads(line) for line in text.splitlines()]
+    lines[1]["categories_prefilled_by"] = "source:unknown"
+    fx.write_truth(category_inputs["truth"], lines)
+    run_harness(category_inputs)
+    counts = result(category_inputs, "cats")["counts"]
+    assert counts["receipts_excluded_prefilled"] == 2
+    assert counts["receipts_excluded_prefilled_unknown"] == 1
+
+
+def test_imported_records_never_give_categories(tmp_path: Path) -> None:
+    lines = [
+        fx.truth_line("rcpt_000001", "dps_xml", fx.document("fiscal", [fx.item("A", "1.00")])),
+        fx.truth_line("rcpt_000001", "manual", fx.document("fiscal", [fx.item("A", "1.00", G)])),
+    ]
+    truth = truth_for(tmp_path, lines)
+    chosen = truth.categories("rcpt_000001", a_run(tmp_path))
+    assert chosen.record is not None and chosen.record.source == "manual"
+    assert truth.items("rcpt_000001", a_run(tmp_path)).record.source == "dps_xml"
+
+
+def test_an_older_export_without_categories_known(tmp_path: Path) -> None:
+    with_slug = fx.truth_line(
+        "rcpt_000001", "manual", fx.document("fiscal", [fx.item("A", "1.00", G)])
+    )
+    without = fx.truth_line("rcpt_000002", "manual", fx.document("fiscal", [fx.item("A", "1.00")]))
+    for line in (with_slug, without):
+        del line["categories_known"]
+        line["schema_version"] = 1
+    records, _ = read_ground_truth(fx.write_truth(tmp_path, [with_slug, without]))
+    assert [record.categories_known for record in records] == [True, False]
+
+
+def test_a_failed_card_slip_scores_zero(inputs: dict[str, Path]) -> None:
+    records = fx.standard_predictions()
+    records[2] = fx.prediction("rcpt_000003", status="parse_failed")
+    fx.write_run(inputs["runs"], "run-a", records)
+    run_harness(inputs)
+    slip = result(inputs, "run-a")["segments"]["card_slip"]["items"]["main"]["f1_macro"]
+    assert slip["value"] == 0.0
+
+
+def test_a_merchant_of_legal_forms_only_is_not_scored(inputs: dict[str, Path]) -> None:
+    lines = fx.standard_truth()
+    lines[2]["document"]["merchant"] = "ФОП"
+    fx.write_truth(inputs["truth"], lines)
+    run_harness(inputs)
+    merchant = result(inputs, "run-a")["segments"]["all"]["merchant"]
+    assert (merchant["numerator"], merchant["denominator"]) == (1, 1)
+
+
+def test_free_text_never_becomes_a_category_label(category_inputs: dict[str, Path]) -> None:
+    folder = category_inputs["runs"] / "cats"
+    lines = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    lines[0]["candidates"][0]["category_slug"] = "sentinelshop-kyiv"
+    lines[1]["candidates"][0]["category_slug"] = "sentinel/shop"
+    (folder / "predictions.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+    run_harness(category_inputs)
+    assert "sentinel" not in all_text(category_inputs["out"])
+    assert result(category_inputs, "cats")["confusion"][G] == {"_other": 2}
+
+
+def test_run_ids_with_odd_characters_and_local_models(inputs: dict[str, Path]) -> None:
+    fx.write_run(
+        inputs["runs"],
+        "20261118T000000Z-openrouter-model:free",
+        fx.standard_predictions(),
+        backend="openrouter",
+        model="vendor/model:free",
+    )
+    fx.write_run(
+        inputs["runs"],
+        "local-run",
+        fx.standard_predictions(),
+        model="/Users/someone/models/my-model",
+        model_version="local",
+    )
+    _, console = run_harness(inputs)
+    assert (inputs["out"] / "runs" / "20261118T000000Z-openrouter-model_free.json").is_file()
+    local = result(inputs, "local-run")
+    assert local["run"]["model_name"] == "local-folder"
+    # Its model cannot be identified: every record a model pre-filled is left out.
+    assert local["counts"]["excluded_prefilled_items_unknown"] == 1
+    assert "/Users/someone" not in all_text(inputs["out"]) + console
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"model_name": None}, "no model_name"),
+        ({"backend": ""}, "no backend"),
+    ],
+)
+def test_runs_need_a_model_and_a_backend(tmp_path: Path, change: dict, message: str) -> None:
+    folder = fx.write_run(tmp_path, "r", [])
+    meta = json.loads((folder / "run.json").read_text())
+    meta.update(change)
+    (folder / "run.json").write_text(json.dumps(meta))
+    with pytest.raises(UsageError, match=message):
+        discover_runs(tmp_path)
+
+
+def test_non_finite_numbers_are_refused(tmp_path: Path) -> None:
+    fx.write_run(tmp_path / "a", "a", [{**fx.prediction("rcpt_000001"), "seconds": float("nan")}])
+    with pytest.raises(UsageError, match="seconds"):
+        discover_runs(tmp_path / "a")
+    line = fx.category_line("rcpt_000001", 1, [(G, float("inf"))])
+    fx.write_run(tmp_path / "b", "b", [line], task="item_categories")
+    with pytest.raises(UsageError, match="score"):
+        discover_runs(tmp_path / "b")
+
+
+def test_a_negative_seed_is_refused() -> None:
+    with pytest.raises(SystemExit):
+        harness.parse_args(["--seed", "-1"])
+
+
+def test_a_refused_value_writes_nothing_and_check_finds_it(
+    inputs: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_harness(inputs)
+    before = {p: p.read_bytes() for p in inputs["out"].rglob("*") if p.is_file()}
+    fx.write_run(inputs["runs"], "run-z", fx.standard_predictions(), model="v/z")
+    original = harness.run_section
+
+    def leaky(run: Any) -> dict[str, Any]:
+        section = original(run)
+        if run.run_id == "run-z":
+            section["stopped"] = "Bought SentinelBread"
+        return section
+
+    monkeypatch.setattr(harness, "run_section", leaky)
+    with pytest.raises(ResultsShapeError):
+        run_harness(inputs, "--check")
+    with pytest.raises(ResultsShapeError):
+        run_harness(inputs)
+    after = {p: p.read_bytes() for p in inputs["out"].rglob("*") if p.is_file()}
+    assert after == before

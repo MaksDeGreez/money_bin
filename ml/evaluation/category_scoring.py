@@ -21,7 +21,9 @@ a number; `cost_usd` a decimal string or null.
 is not scored (`unlabelled_items`). A row without a prediction line counts as wrong, with the label
 `_none` and confidence 0. A line for another source or a position the record does not have is not
 scored (`unmatched_lines`). Card slips are not item rows: their receipt-level category is scored
-apart (`card_slips`). A category slug that is not in the app's slug form becomes `_other`.
+apart (`card_slips`). A predicted slug that is not in the app's `group/category` form, or that no
+ground-truth record uses, becomes `_other`: a model's free text never becomes a label (and it would
+be wrong anyway).
 
 **Metrics** reuse `categoriser.metrics`: macro-F1 (the main one: the mean F1 over categories that
 are a true label or a top-1 prediction), weighted F1, accuracy, top-3 accuracy, with 95% intervals
@@ -54,17 +56,21 @@ from evaluation.common import COST_PER_1000_PLACES, COST_PER_RECEIPT_PLACES, tim
 from evaluation.inputs import ReceiptInfo, Run
 from evaluation.truth import GroundTruth
 
-SLUG = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)?\Z")
+SLUG = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 NONE_LABEL = "_none"
 OTHER_LABEL = "_other"
 AUTO_ACCEPT_PRECISION = 0.95
 SOURCES = ("memory", "model")
 
 
-def clean_slug(value: Any) -> str:
-    return (
-        value if isinstance(value, str) and len(value) <= 120 and SLUG.match(value) else OTHER_LABEL
-    )
+def clean_slug(value: Any, known: frozenset[str] | None = None) -> str:
+    """A category slug (`group/category`) as a label; `_other` for anything else, and for a slug
+    the ground truth never uses when `known` is given (free text never becomes a label)."""
+    if not isinstance(value, str) or len(value) > 120 or not SLUG.match(value):
+        return OTHER_LABEL
+    if known is not None and value not in known:
+        return OTHER_LABEL
+    return value
 
 
 @dataclass(frozen=True)
@@ -90,11 +96,17 @@ def seed_for(seed: int, *labels: str) -> int:
     return int(rng_for(seed, *labels).integers(0, 2**31 - 1))
 
 
-def _row(receipt_id: str, position: int | None, label: str, line: dict[str, Any] | None) -> Row:
+def _row(
+    receipt_id: str,
+    position: int | None,
+    label: str,
+    line: dict[str, Any] | None,
+    known: frozenset[str],
+) -> Row:
     if line is None:
         return Row(receipt_id, position, label, (NONE_LABEL,), 0.0, None, None)
     candidates = line.get("candidates") or []
-    ranked = tuple(clean_slug(c["category_slug"]) for c in candidates) or (NONE_LABEL,)
+    ranked = tuple(clean_slug(c["category_slug"], known) for c in candidates) or (NONE_LABEL,)
     score = candidates[0].get("score") if candidates else None
     confidence = float(score) if isinstance(score, int | float) else 0.0
     return Row(receipt_id, position, label, ranked, confidence, line.get("source"), line)
@@ -116,6 +128,7 @@ def build_rows(
     items: list[Row] = []
     slips: list[Row] = []
     scored: set[str] = set()
+    known = truth.category_slugs()
 
     def take(receipt_id: str, source: str, position: int | None) -> dict[str, Any] | None:
         for key in ((receipt_id, source, position), (receipt_id, None, position)):
@@ -131,6 +144,7 @@ def build_rows(
         chosen = truth.categories(receipt_id, run)
         if chosen.excluded_prefilled:
             counts["receipts_excluded_prefilled"] += 1
+            counts["receipts_excluded_prefilled_unknown"] += chosen.reason == "unknown"
             continue
         record = chosen.record
         if record is None:
@@ -144,7 +158,7 @@ def build_rows(
             if label is None:
                 counts["unlabelled_card_slips"] += 1
             else:
-                slips.append(_row(receipt_id, None, clean_slug(label), line))
+                slips.append(_row(receipt_id, None, clean_slug(label), line, known))
             continue
         for position, item in enumerate(record.items, start=1):
             label = item.get("category_slug") if isinstance(item, dict) else None
@@ -154,12 +168,13 @@ def build_rows(
                 continue
             if line is None:
                 counts["items_without_prediction"] += 1
-            items.append(_row(receipt_id, position, clean_slug(label), line))
+            items.append(_row(receipt_id, position, clean_slug(label), line, known))
     counts["unmatched_lines"] = sum(1 for key in lines if key not in used and key[0] in scored)
     keys = (
         "receipts",
         "receipts_not_in_receipt_set",
         "receipts_excluded_prefilled",
+        "receipts_excluded_prefilled_unknown",
         "receipts_without_category_truth",
         "unlabelled_items",
         "unlabelled_card_slips",

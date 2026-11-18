@@ -23,6 +23,7 @@ outside any git repository, readable by the owner only. The console shows aggreg
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -45,6 +46,7 @@ from evaluation.inputs import (
     read_receipt_set,
 )
 from evaluation.matching import AMOUNT_WEIGHT, MATCH_THRESHOLD, NAME_THRESHOLD, NAME_WEIGHT
+from evaluation.models import is_path
 from evaluation.results import (
     CATEGORY_COMPARISON,
     CATEGORY_RUN_RESULT,
@@ -96,6 +98,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.resamples < 1:
         parser.error("--resamples must be 1 or more")
+    if args.seed < 0:
+        parser.error("--seed must be 0 or more")
     return args
 
 
@@ -146,8 +150,8 @@ def run_section(run: Run) -> dict[str, Any]:
         "run_id": run.run_id,
         "task": run.task,
         "backend": run.backend,
-        "model_name": run.model_name,
-        "model_version": run.model_version,
+        "model_name": public_name(run.model_name),
+        "model_version": public_name(run.model_version),
         "prompt_version": meta.get("prompt_version"),
         "git_sha": git.get("sha"),
         "git_dirty": git.get("dirty"),
@@ -185,12 +189,21 @@ def run_values(runs: list[Run]) -> set[str]:
             run.meta.get("prompt_version"),
         ):
             if isinstance(value, str) and value:
-                values.add(value)
+                values.add(public_name(value))
     return values
 
 
 def file_stem(run_id: str) -> str:
-    return run_id
+    """A run id as a file name: anything but letters, digits, `.`, `_` and `-` becomes `_`."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", run_id)
+
+
+def public_name(name: Any) -> Any:
+    """A model name for the results: a local folder's path becomes `local-folder` (a path on the
+    owner's machine never enters the results)."""
+    if isinstance(name, str) and is_path(name):
+        return "local-folder"
+    return name
 
 
 def check_report(
@@ -225,20 +238,25 @@ def _share(metric: dict[str, Any]) -> str:
 
 def print_run(result: dict[str, Any], out: TextIO) -> None:
     run = result["run"]
+    counts = result["counts"]
     if run["task"] == "ocr":
         seg = result["segments"]["all"]
         print(
             f"{run['run_id']}: {seg['receipts']} receipts; total {_share(seg['fields']['total'])}"
             f" (n={int(seg['fields']['total']['denominator'])}), date "
             f"{_share(seg['fields']['date'])}, item F1 "
-            f"{_share(seg['items']['main']['f1_micro'])} (n={seg['items']['receipts']})",
+            f"{_share(seg['items']['main']['f1_micro'])} (n={seg['items']['receipts']}); "
+            f"left out by the pre-fill rule: {counts['excluded_prefilled_items']} "
+            f"({counts['excluded_prefilled_items_unknown']} for an unknown model)",
             file=out,
         )
     else:
         head = result["headline"]
         print(
             f"{run['run_id']}: {head['items']} items; macro-F1 {_share(head['macro_f1'])}, "
-            f"accuracy {_share(head['accuracy'])}",
+            f"accuracy {_share(head['accuracy'])}; left out by the pre-fill rule: "
+            f"{counts['receipts_excluded_prefilled']} receipt(s) "
+            f"({counts['receipts_excluded_prefilled_unknown']} for an unknown categoriser)",
             file=out,
         )
 
@@ -258,6 +276,9 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
     if comparison_file.is_file():
         declared.extend(read_comparison_file(comparison_file))
     planned = plan_comparisons(runs, declared, automatic=not args.no_auto_compare)
+    diagnostics_dir = args.diagnostics.expanduser().resolve() if args.diagnostics else None
+    if diagnostics_dir is not None and inside_git_repository(diagnostics_dir):
+        raise UsageError("--diagnostics is inside a git repository; it holds receipt detail")
 
     print(
         f"receipt set: {len(receipts)} receipts; ground truth: {len(records)} records"
@@ -267,19 +288,14 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
     )
     if args.check:
         check_report(runs, receipts, truth, out)
-        for a, b, dimension, _ in planned:
-            print(f"compare ({dimension}): {a.run_id} - {b.run_id}", file=out)
-        return None
 
+    # Score everything and check every file before anything is written.
     out_dir = args.out.expanduser().resolve()
-    diagnostics_dir = args.diagnostics.expanduser().resolve() if args.diagnostics else None
-    if diagnostics_dir is not None and inside_git_repository(diagnostics_dir):
-        raise UsageError("--diagnostics is inside a git repository; it holds receipt detail")
-
     writer = ResultsWriter(out_dir, run_values(runs))
     scored: dict[str, Any] = {}
     run_results: list[dict[str, Any]] = []
     index_runs = []
+    details: dict[str, Any] = {}
     for run_item in runs:
         if run_item.task == "ocr":
             scores = ocr_scoring.score_run(
@@ -293,7 +309,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
                 "cost_usd": scores.cost_usd,
             }
             spec = OCR_RUN_RESULT
-            detail = ocr_scoring.diagnostics(scores)
+            details[run_item.run_id] = ocr_scoring.diagnostics(scores)
         else:
             scores = category_scoring.score_run(
                 run_item, receipts, truth, seed=args.seed, resamples=args.resamples
@@ -304,26 +320,23 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
                 **scores.result,
             }
             spec = CATEGORY_RUN_RESULT
-            detail = category_scoring.diagnostics(scores)
+            details[run_item.run_id] = category_scoring.diagnostics(scores)
         scored[run_item.run_id] = scores
         relative = f"runs/{file_stem(run_item.run_id)}.json"
-        writer.write_json(relative, result, spec)
-        run_results.append(json.loads((out_dir / relative).read_text(encoding="utf-8")))
+        run_results.append(json.loads(writer.write_json(relative, result, spec)))
+        section = result["run"]
         index_runs.append(
             {
                 "run_id": run_item.run_id,
                 "task": run_item.task,
-                "backend": run_item.backend,
-                "model_name": run_item.model_name,
-                "model_version": run_item.model_version,
-                "prompt_version": run_item.meta.get("prompt_version"),
+                "backend": section["backend"],
+                "model_name": section["model_name"],
+                "model_version": section["model_version"],
+                "prompt_version": section["prompt_version"],
                 "crops": run_item.crops,
                 "file": relative,
             }
         )
-        if diagnostics_dir is not None:
-            ensure_private_folder(diagnostics_dir)
-            write_private_json(diagnostics_dir / f"{file_stem(run_item.run_id)}.json", detail)
         print_run(run_results[-1], out)
 
     comparison_results: list[dict[str, Any]] = []
@@ -352,8 +365,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
             **body,
         }
         relative = f"comparisons/{file_stem(a.run_id)}__vs__{file_stem(b.run_id)}.json"
-        writer.write_json(relative, comparison, spec)
-        comparison_results.append(json.loads((out_dir / relative).read_text(encoding="utf-8")))
+        comparison_results.append(json.loads(writer.write_json(relative, comparison, spec)))
         index_comparisons.append(
             {
                 "a": a.run_id,
@@ -392,7 +404,18 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
     }
     writer.write_json("index.json", index, INDEX)
     table_names = tables.write_tables(writer, run_results, comparison_results)
-    removed = writer.remove_stale()
+    if args.check:
+        print(
+            f"check passed: {len(writer.staged)} file(s) would be written; nothing written",
+            file=out,
+        )
+        return None
+
+    removed = writer.commit()
+    if diagnostics_dir is not None:
+        ensure_private_folder(diagnostics_dir)
+        for run_id, detail in details.items():
+            write_private_json(diagnostics_dir / f"{file_stem(run_id)}.json", detail)
     print(
         f"wrote {len(index_runs)} run file(s), {len(index_comparisons)} comparison file(s), "
         f"{len(table_names)} table(s); removed {removed} stale file(s)",

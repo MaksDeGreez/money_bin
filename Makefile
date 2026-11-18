@@ -13,13 +13,18 @@ GROUND_TRUTH_DIR ?= $(DATA_DIR)/ground_truth
 RESULTS_DIR ?= $(CURDIR)/eval/results
 EVAL_ARGS ?=
 
+# The harness runs in ml/: a relative folder is taken from the repository root; `~` is expanded by
+# the harness itself.
+from_root = $(if $(filter /% ~%,$(1)),$(1),$(CURDIR)/$(1))
+
 HARNESS = cd ml && uv run python -m evaluation.harness \
-	--receipts "$(RECEIPTS_DIR)" --runs "$(RUNS_DIR)" --ground-truth "$(GROUND_TRUTH_DIR)"
+	--receipts "$(call from_root,$(RECEIPTS_DIR))" --runs "$(call from_root,$(RUNS_DIR))" \
+	--ground-truth "$(call from_root,$(GROUND_TRUTH_DIR))"
 
 .PHONY: eval eval-check
 
 eval:
-	$(HARNESS) --out "$(abspath $(RESULTS_DIR))" $(EVAL_ARGS)
+	$(HARNESS) --out "$(call from_root,$(RESULTS_DIR))" $(EVAL_ARGS)
 
 eval-check:
 	$(HARNESS) --check $(EVAL_ARGS)

@@ -70,7 +70,7 @@ NOTES = {
     ),
     "ocr_items": (
         "Items against the ground truth, one-to-one matching (Hungarian method): main = "
-        "name and amount score >= 0.76, strict = name similarity >= 0.6 and exact amount, "
+        "name and amount score >= 0.8, strict = name similarity >= 0.6 and exact amount, "
         "lenient = name similarity >= 0.6. Micro over items, macro = mean per receipt. CER: "
         "character error rate of the names of matched items. Percent with 95% intervals. "
         "Receipts whose ground truth was pre-filled by the run's model are left out."

@@ -71,7 +71,7 @@ class ReceiptOutcome:
     record: dict[str, Any] = field(repr=False)
     ratios: dict[str, tuple[float, float]] = field(default_factory=dict)
     kind_pair: tuple[str, str] | None = None
-    excluded_prefilled: dict[str, bool] = field(default_factory=dict)
+    excluded_prefilled: dict[str, str | None] = field(default_factory=dict)
 
 
 def _item_ratios(
@@ -143,7 +143,7 @@ def score_receipt(
         ratios[f"fields.{name}"] = (float(present and predicted[name] == qr[name]), float(present))
 
     merchant = truth.field(info.receipt_id, run, "merchant")
-    outcome.excluded_prefilled["merchant"] = merchant.excluded_prefilled
+    outcome.excluded_prefilled["merchant"] = merchant.reason
     reference_merchant = (
         normalise_merchant(merchant.record.document["merchant"]) if merchant.record else ""
     )
@@ -156,7 +156,7 @@ def score_receipt(
         ratios["merchant"] = (0, 0)
 
     kind = truth.field(info.receipt_id, run, "kind")
-    outcome.excluded_prefilled["kind"] = kind.excluded_prefilled
+    outcome.excluded_prefilled["kind"] = kind.reason
     if kind.record is not None:
         kind_truth: str | None = str(kind.record.document["kind"])
     elif kind.excluded_prefilled:
@@ -175,7 +175,7 @@ def score_receipt(
     for prefix, checked_only in (("items", False), ("items_checked_only", True)):
         chosen = truth.items(info.receipt_id, run, checked_only=checked_only)
         if prefix == "items":
-            outcome.excluded_prefilled["items"] = chosen.excluded_prefilled
+            outcome.excluded_prefilled["items"] = chosen.reason
         if chosen.record is not None:
             ratios.update(
                 _item_ratios(
@@ -304,9 +304,9 @@ def score_run(
             continue
         outcomes.append(score_receipt(record, info, run, truth))
     for key in ("items", "merchant", "kind"):
-        counts[f"excluded_prefilled_{key}"] = sum(
-            o.excluded_prefilled.get(key, False) for o in outcomes
-        )
+        reasons = [o.excluded_prefilled.get(key) for o in outcomes]
+        counts[f"excluded_prefilled_{key}"] = sum(reason is not None for reason in reasons)
+        counts[f"excluded_prefilled_{key}_unknown"] = sum(reason == "unknown" for reason in reasons)
     segments = {}
     for segment in SEGMENTS:
         if segment == "crop_failed" and not run.crops:
@@ -321,8 +321,11 @@ def score_run(
         "skipped",
         "not_in_receipt_set",
         "excluded_prefilled_items",
+        "excluded_prefilled_items_unknown",
         "excluded_prefilled_merchant",
+        "excluded_prefilled_merchant_unknown",
         "excluded_prefilled_kind",
+        "excluded_prefilled_kind_unknown",
     )
     return OcrRunScores(
         run=run,
