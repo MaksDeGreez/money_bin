@@ -1,10 +1,14 @@
 """Evaluation metrics: F1, accuracy, top-3, precision by coverage, bootstrap intervals, McNemar.
 
-Macro-F1 averages the F1 of the categories that occur in the evaluated rows' true labels, so a
-category a system predicts but that never occurs counts only through the precision it costs the true
-categories (it is not averaged in as a zero). Weighted F1 weights each category by its true support.
-F1 is computed from integer-coded labels with `numpy.bincount`, which keeps a thousand bootstrap
-resamples fast; the tests check it against scikit-learn.
+Macro-F1 is scikit-learn's default: the mean F1 over every category that is a true label or a top-1
+prediction in the evaluated rows (a category that is only ever predicted counts with F1 0). Weighted
+F1 weights each category by its true support. Both are computed from integer-coded labels with
+`numpy.bincount`, which keeps a thousand bootstrap resamples fast; the tests check them against
+scikit-learn.
+
+Precision at a coverage level keeps whole groups of equal confidence: when the k-th most confident
+row ties with others, all of them are kept and the coverage actually reached is reported, so the
+result does not depend on the order of the rows.
 """
 
 from __future__ import annotations
@@ -65,7 +69,7 @@ def headline(
     true: np.ndarray, pred: np.ndarray, in_top3: np.ndarray, n_labels: int
 ) -> dict[str, float]:
     f1, support = per_class_f1(true, pred, n_labels)
-    present = support > 0
+    present = (support > 0) | (np.bincount(pred, minlength=n_labels) > 0)
     return {
         "macro_f1": float(f1[present].mean()),
         "weighted_f1": float((f1 * support).sum() / support.sum()),
@@ -77,18 +81,20 @@ def headline(
 def coverage_curve(correct: np.ndarray, confidence: np.ndarray) -> dict[str, Any]:
     """Precision when only the most confident rows are kept, by coverage level and by threshold."""
     n = len(correct)
-    order = np.argsort(-confidence, kind="stable")
-    sorted_correct = correct[order]
-    sorted_confidence = confidence[order]
+    sorted_confidence = np.sort(confidence)[::-1]
     at_coverage = []
     for level in COVERAGE_LEVELS:
         k = max(1, math.ceil(level * n))
+        threshold = sorted_confidence[k - 1]
+        kept = confidence >= threshold  # the whole tie group at the boundary
+        count = int(kept.sum())
         at_coverage.append(
             {
-                "coverage": level,
-                "rows": k,
-                "precision": float(sorted_correct[:k].mean()),
-                "min_confidence": float(sorted_confidence[k - 1]),
+                "target_coverage": level,
+                "coverage": count / n,
+                "rows": count,
+                "precision": float(correct[kept].mean()),
+                "min_confidence": float(threshold),
             }
         )
     at_threshold = []
@@ -119,7 +125,7 @@ def mcnemar(correct_a: np.ndarray, correct_b: np.ndarray) -> dict[str, Any]:
             "chi2_corrected": 0.0,
             "chi2_p_value": 1.0,
         }
-    statistic = (abs(a_only - b_only) - 1) ** 2 / discordant
+    statistic = max(abs(a_only - b_only) - 1, 0) ** 2 / discordant
     return {
         "a_only_correct": a_only,
         "b_only_correct": b_only,
@@ -171,20 +177,60 @@ def evaluate(
     return result
 
 
+def day_block_intervals(
+    encoded: Encoded, days: Sequence[Any], *, resamples: int, seed: int
+) -> dict[str, dict[str, list[float]]]:
+    """Bootstrap intervals that resample whole days instead of rows.
+
+    Rows of the same day (and the same payee over nearby days) are not independent, so the row
+    bootstrap is likely too narrow; resampling days is a sensitivity check on it.
+    """
+    groups: dict[Any, list[int]] = {}
+    for i, day in enumerate(days):
+        groups.setdefault(day, []).append(i)
+    blocks = [np.array(rows, dtype=np.int64) for rows in groups.values()]
+    rng = np.random.default_rng(seed)
+    n_labels = len(encoded.labels)
+    samples = {
+        name: {metric: np.empty(resamples) for metric in HEADLINE} for name in encoded.systems
+    }
+    for i in range(resamples):
+        chosen = rng.integers(0, len(blocks), size=len(blocks))
+        index = np.concatenate([blocks[j] for j in chosen])
+        for name in encoded.systems:
+            values = headline(
+                encoded.true[index],
+                encoded.top1[name][index],
+                encoded.in_top3[name][index],
+                n_labels,
+            )
+            for metric in HEADLINE:
+                samples[name][metric][i] = values[metric]
+    return {
+        name: {metric: _interval(values) for metric, values in boot.items()}
+        for name, boot in samples.items()
+    }
+
+
 def difference(samples: dict[str, dict[str, np.ndarray]], a: str, b: str) -> dict[str, Any]:
     """The bootstrap interval of `a` minus `b` for each headline metric (paired resamples)."""
     return {metric: _interval(samples[a][metric] - samples[b][metric]) for metric in HEADLINE}
 
 
 def per_class(encoded: Encoded, train_support: Mapping[str, int]) -> list[dict[str, Any]]:
-    """Support (training and test) and F1 of every category, per system."""
+    """Support (training and test) and F1 of every category that is true or a top-1 prediction."""
     n_labels = len(encoded.labels)
     f1s = {
         name: per_class_f1(encoded.true, encoded.top1[name], n_labels) for name in encoded.systems
     }
     support = np.bincount(encoded.true, minlength=n_labels)
+    listed = support > 0
+    for name in encoded.systems:
+        listed |= np.bincount(encoded.top1[name], minlength=n_labels) > 0
     out = []
     for i, label in enumerate(encoded.labels):
+        if not listed[i]:
+            continue
         out.append(
             {
                 "category": label,

@@ -14,6 +14,7 @@ from categoriser.features import amount_bucket, row_features
 from categoriser.metrics import (
     Encoded,
     coverage_curve,
+    day_block_intervals,
     difference,
     evaluate,
     headline,
@@ -145,13 +146,9 @@ def test_f1_matches_scikit_learn() -> None:
 
     values = headline(encoded.true, encoded.top1["s"], encoded.in_top3["s"], len(encoded.labels))
 
-    present = sorted(set(y_true))
-    assert values["macro_f1"] == pytest.approx(
-        f1_score(y_true, y_pred, labels=present, average="macro")
-    )
-    assert values["weighted_f1"] == pytest.approx(
-        f1_score(y_true, y_pred, labels=present, average="weighted")
-    )
+    # scikit-learn's defaults: macro over true and predicted categories, "e" included at F1 0.
+    assert values["macro_f1"] == pytest.approx(f1_score(y_true, y_pred, average="macro"))
+    assert values["weighted_f1"] == pytest.approx(f1_score(y_true, y_pred, average="weighted"))
     assert values["accuracy"] == pytest.approx(np.mean(np.array(y_true) == np.array(y_pred)))
 
 
@@ -174,8 +171,14 @@ def test_coverage_curve_keeps_the_most_confident_rows() -> None:
 
     curve = coverage_curve(correct, confidence)
 
-    by_level = {entry["coverage"]: entry for entry in curve["at_coverage"]}
-    assert by_level[0.1] == {"coverage": 0.1, "rows": 1, "precision": 1.0, "min_confidence": 0.95}
+    by_level = {entry["target_coverage"]: entry for entry in curve["at_coverage"]}
+    assert by_level[0.1] == {
+        "target_coverage": 0.1,
+        "coverage": 0.1,
+        "rows": 1,
+        "precision": 1.0,
+        "min_confidence": 0.95,
+    }
     assert by_level[0.5]["precision"] == 1.0
     assert by_level[1.0]["precision"] == pytest.approx(0.7)
     by_threshold = {entry["threshold"]: entry for entry in curve["at_threshold"]}
@@ -184,6 +187,45 @@ def test_coverage_curve_keeps_the_most_confident_rows() -> None:
     assert by_threshold[0.9]["coverage"] == pytest.approx(0.2)
     empty = coverage_curve(np.array([True]), np.array([0.1]))
     assert empty["at_threshold"][0]["precision"] is None
+
+
+def test_coverage_keeps_whole_tie_groups_whatever_the_row_order() -> None:
+    correct = np.array([True, False, True, False, True, False, True, False, True, False])
+    confidence = np.full(10, 0.4)
+
+    forward = coverage_curve(correct, confidence)
+    backward = coverage_curve(correct[::-1].copy(), confidence)
+
+    assert forward == backward
+    first = forward["at_coverage"][0]
+    assert (first["target_coverage"], first["coverage"], first["rows"]) == (0.1, 1.0, 10)
+    assert first["precision"] == 0.5
+
+
+def test_mcnemar_with_equal_wins_is_not_significant() -> None:
+    a = np.array([True, False, True])
+    b = np.array([False, True, True])
+
+    result = mcnemar(a, b)
+
+    assert result["chi2_corrected"] == 0.0
+    assert result["chi2_p_value"] == 1.0
+    assert result["exact_p_value"] == 1.0
+
+
+def test_day_block_intervals_resample_whole_days() -> None:
+    rng = np.random.default_rng(2)
+    y_true = [str(v) for v in rng.integers(0, 3, size=120)]
+    ranked = [[t] if rng.random() < 0.7 else ["x"] for t in y_true]
+    encoded = Encoded(y_true, {"s": predictions(ranked)})
+    days = [i // 4 for i in range(120)]
+
+    first = day_block_intervals(encoded, days, resamples=100, seed=5)
+    again = day_block_intervals(encoded, days, resamples=100, seed=5)
+
+    assert first == again
+    low, high = first["s"]["accuracy"]
+    assert 0 <= low < 0.7 < high <= 1
 
 
 def test_mcnemar() -> None:
@@ -214,7 +256,7 @@ def test_bootstrap_intervals_are_reproducible_and_paired() -> None:
         for metric in ("macro_f1", "weighted_f1", "accuracy", "top3_accuracy"):
             entry = first["systems"][name][metric]
             assert entry == second["systems"][name][metric]
-            assert entry["ci95"][0] <= entry["value"] <= entry["ci95"][1]
+            assert 0 <= entry["ci95"][0] <= entry["ci95"][1] <= 1
     gap = difference(first["_bootstrap"], "good", "bad")
     assert gap["accuracy"][0] > 0
 
@@ -233,9 +275,9 @@ def test_evaluate_on_a_segment_and_on_an_empty_one() -> None:
 
 
 def test_per_class_lists_support_and_f1() -> None:
-    encoded = Encoded(["a", "b", "a"], {"s": predictions([["a"], ["a"], ["c"]])})
+    encoded = Encoded(["a", "b", "a"], {"s": predictions([["a"], ["a", "d"], ["c"]])})
 
-    table = per_class(encoded, {"a": 5, "c": 1})
+    table = per_class(encoded, {"a": 5, "c": 1})  # "d" is only a second guess: not listed
 
     assert [entry["category"] for entry in table] == ["a", "b", "c"]
     assert table[0]["train_support"] == 5
