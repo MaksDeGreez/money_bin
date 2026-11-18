@@ -57,7 +57,12 @@ import numpy as np
 from app.decimals import exact_sum
 from evaluation.common import UsageError, inside_git_repository, read_jsonl, write_private_json
 from evaluation.item_categories_calibrate import UNKNOWN_CATEGORISER
-from evaluation.item_categories_run import TASK, read_ground_truth, run_categorisers
+from evaluation.item_categories_run import (
+    TASK,
+    categoriser_entries,
+    read_ground_truth,
+    run_categorisers,
+)
 from evaluation.item_categories_run import _time_order as receipt_time_order
 from evaluation.item_scores import Scored
 from evaluation.item_scores import summary as score_summary
@@ -495,9 +500,14 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             for one in inputs
         ],
         "categorisers": categorisers,
+        # Every categoriser behind every input, for the harness's pre-fill rule.
+        "combined_from": [
+            entry for one in inputs for entry in categoriser_entries(dict(one.summary))
+        ],
         "score_kinds": {"combined": len(keys)},
         # A learned combination's probabilities are fitted to the labels (out of fold).
         "calibrated": args.method == "learned",
+        "scores_calibrated": args.method == "learned",
         "git": git_commit(),
         "started_at": started_at.isoformat(),
         "counts": {

@@ -94,11 +94,12 @@ receipt fitted on. Training only on the past is also what the app does. The
 first block, with no past, gets the plain average; items not scored get a fit on every usable label.
 
 The pre-fill rule applies: an item whose labels were chosen with one of the combined categorisers' suggestions
-on screen (`categories_prefilled_by`) is neither fitted on nor counted. Every run's `run.json` lists the
-categorisers that shaped it: its model; the label memory when it answered first or supplied examples; and for a
-verification run the categorisers of the run it checked, since its candidates are that run's suggestions,
-re-scored. The combined run lists them all, so a scorer applies the same rule, and the calibration fit reads
-the same list. `run.json` also reports how
+on screen (`categories_prefilled_by`) is neither fitted on nor counted. Every run's `run.json` names the
+categorisers that shaped it, in the fields the evaluation harness (`0014-evaluation-harness.md`) reads: its
+`model_name`; the label memory when it answered first (`memory`); and in `combined_from` the label memory when
+it only supplied examples, and every categoriser of a verified run, since a verification's candidates are that
+run's suggestions, re-scored. A combined run's `combined_from` lists every categoriser behind every input, so the
+harness, the combiner and the calibration fit apply the same rule. `run.json` also reports how
 often the methods agree and the precision of "all agree", the simplest auto-accept rule.
 
 ### What is sent, and what never is
@@ -153,8 +154,8 @@ compare, not how well it will do on real receipts.
 
 ## How it will be judged
 
-On the labelled items, with the same table as every other categoriser (the evaluation harness, in its own
-pull request): macro-F1,
+On the labelled items, with the same table as every other categoriser (the evaluation harness,
+`make eval`): macro-F1,
 top-3 accuracy, the share auto-accepted at 95% precision, calibration (reliability and its error), seconds and
 dollars per 1,000 items; alone, with the label memory first and with examples, as the verifier of the local
 model's answers, and in the cascade, average and learned combinations with the local model. The commands are

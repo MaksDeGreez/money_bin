@@ -796,8 +796,10 @@ categorising, ask one yes/no question per candidate of that run's items; the
 yes-probability becomes the score, so a local model's answer gets a confidence
 from an independent model). `run.json` then has a `decisions` block (strategy,
 context, examples, the verified run and how many of its items had no
-candidates, the zero-retention endpoints used), `categorisers` (every
-categoriser that shaped the answers, for the pre-fill rule) and the answers'
+candidates, the zero-retention endpoints used), `combined_from` when another
+categoriser shaped the answers (the label memory that supplied the examples;
+every categoriser of the verified run), which the harness's pre-fill rule reads,
+and the answers'
 `prompt_versions` (`prompt_version` is null when they differ, as in a run with
 examples, whose first receipt has none to show; such a run is not calibrated). The
 key comes from the environment: `uv run --env-file ../.env ...`.
@@ -825,11 +827,13 @@ combined run folder in the same format (`source: combined`):
   on every usable label.
 
 Items whose labels were chosen with one of the combined categorisers on screen
-(`categories_prefilled_by` names one of a run's `categorisers`: its model, the
-label memory when it answered first or supplied examples, and for a `--verify`
-run the categorisers of the run it checked; or is `source:unknown`) are neither
-fitted on nor counted (`item_categories_calibrate` applies the same list);
-`run.json` lists the combined `categorisers` so a scorer applies the same rule,
+(`categories_prefilled_by` names a categoriser behind one of the runs: its
+model, the label memory when it answered first, and every `combined_from`
+entry, which names the memory that supplied examples and the categorisers of a
+verified run; or is `source:unknown`) are neither fitted on nor counted
+(`item_categories_calibrate` applies the same list). The combined run's
+`run.json` has `combined_from` with every categoriser behind every input, so
+the harness applies the same rule,
 and reports `agreement` (how often all runs agree on the best category and how
 precise that is, the combined accuracy where they disagree, each pair's
 agreement) and the combined run's scores on the usable items.
@@ -864,8 +868,8 @@ uv run python -m evaluation.item_categories_combine --ground-truth $GT --out $RU
   --run $RUNS/<run 1> --run $RUNS/<run 2, flat> --method cascade --thresholds 0.95
 ```
 
-Each run and combination is then scored by the evaluation harness (in progress
-in its own pull request) with the same table: macro-F1, top-3, the share auto-accepted at 95% precision, calibration,
+Each run and combination is then scored by the evaluation harness (`make eval`,
+"The evaluation harness" below) with the same table: macro-F1, top-3, the share auto-accepted at 95% precision, calibration,
 seconds and dollars per 1,000 items.
 
 `item_categories_calibrate` fits on the model items of a run that have a label

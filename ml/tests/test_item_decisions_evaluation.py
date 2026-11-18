@@ -12,12 +12,19 @@ from app.categorise.decisions import DecisionsCategoriser, prompt_version
 from evaluation import item_categories_calibrate, item_categories_run, item_sanity
 from evaluation import item_categories_combine as combine
 from evaluation.common import UsageError
+from evaluation.inputs import Run
 from evaluation.item_scores import Scored, accepted_at_precision, reliability, summary
 from evaluation.label_memory import LabelMemory
 from tests.categorise_helpers import CATEGORIES
 from tests.decisions_helpers import DECIDER, FakeDecisions, decision_settings
 from tests.test_item_categories_evaluation import files, gt_line, item, predictions  # noqa: F401
 from tests.test_openrouter_backend import Clock
+
+
+def harness_names(summary: dict[str, Any]) -> set[str]:
+    """The categoriser names the evaluation harness applies the pre-fill rule to."""
+    run = Run(summary["run_id"], "item_categories", summary, [], Path("."))
+    return {name for name, *_ in run.categoriser_names() if name}
 
 
 def decisions_args(files: dict[str, Path], *extra: str) -> Any:  # noqa: F811
@@ -96,8 +103,10 @@ def test_examples_come_from_earlier_receipts_only(
 
     first, second = (post["body"]["state"] for post in fake.posts)
     summary = json.loads(next(files["out"].glob("*/run.json")).read_text())
-    # Examples come from the memory's store: the label memory shaped the answers too.
-    assert summary["categorisers"] == sorted(["label-memory", DECIDER])
+    # Examples come from the memory's store: the label memory shaped the answers too, and the
+    # harness's pre-fill rule must know it.
+    assert summary["combined_from"] == [{"backend": "label-memory", "model_name": "label-memory"}]
+    assert harness_names(summary) >= {"label-memory", DECIDER}
     # Without earlier labels the first receipt had no examples: two prompt versions.
     assert summary["prompt_version"] is None and len(summary["prompt_versions"]) == 2
     # The first receipt (in time order) has no earlier labels; the second is shown the earlier
@@ -139,7 +148,8 @@ def test_the_runner_verifies_another_runs_candidates(
     assert summary["decisions"]["verified_run"] == proposer["run_id"]
     assert summary["decisions"]["items_without_proposal"] == 0
     # The checked run's categoriser shaped these candidates: the pre-fill rule must know it.
-    assert summary["categorisers"] == sorted({DECIDER, proposer["model_name"]})
+    assert summary["combined_from"][0]["run_id"] == proposer["run_id"]
+    assert harness_names(summary) >= {DECIDER, proposer["model_name"]}
     assert summary["prompt_version"] == prompt_version("verify", True)
     assert summary["prompt_version"] != proposer["prompt_version"]
     questions = [q for post in fake.posts for q in post["body"]["questions"].values()]
@@ -357,6 +367,7 @@ def test_a_cascade_takes_the_first_confident_run(combo: dict[str, Any]) -> None:
     assert summary["counts"]["excluded_by_prefill"] == 3
     assert summary["counts"]["scored_items"] == 27
     assert summary["categorisers"] == ["label-memory", "model-a", "model-b"]
+    assert harness_names(summary) >= {"label-memory", "model-a", "model-b"}
     lines = predictions(combo["out"] / summary["run_id"])
     assert all(line["source"] == "combined" for line in lines)
     assert lines[0]["seconds"] == "0.200" and lines[0]["cost_usd"] == "0.00002"
@@ -509,10 +520,18 @@ def test_calibration_refuses_mixed_prompt_versions_and_knows_every_categoriser(
     with pytest.raises(UsageError, match="more than one prompt version"):
         item_categories_calibrate.read_run(run)
     assert item_categories_run.run_categorisers(
-        {"model_name": "m", "categorisers": ["v", ""], "memory": {"enabled": True}}
+        {
+            "model_name": "m",
+            "combined_from": [{"model_name": "v"}, {"model_name": ""}, "x"],
+            "memory": {"enabled": True},
+        }
     ) == ["label-memory", "m", "v"]
     with pytest.raises(UsageError, match=r"run\.json"):
-        item_categories_run.read_categorisers(tmp_path / "missing")
+        item_categories_run.read_summary(tmp_path / "missing")
+    (tmp_path / "list").mkdir()
+    (tmp_path / "list" / "run.json").write_text("[]")
+    with pytest.raises(UsageError, match=r"run\.json"):
+        item_categories_run.read_summary(tmp_path / "list")
 
 
 def test_a_cascade_keeps_the_deciding_runs_order(combo: dict[str, Any], tmp_path: Path) -> None:
@@ -535,3 +554,20 @@ def test_the_combiner_refuses_non_finite_numbers(combo: dict[str, Any], value: s
         combine.run(
             combine_args(combo, "--method", "average", "--weights", f"1,{value}"), io.StringIO()
         )
+
+
+def test_the_harness_reads_decision_and_combined_runs(
+    combo: dict[str, Any],
+    files: dict[str, Path],  # noqa: F811
+    fake: FakeDecisions,
+) -> None:
+    from evaluation.inputs import read_run as harness_read_run
+
+    decided = item_categories_run.run(decisions_args(files), io.StringIO())
+    combined = combine.run(combine_args(combo, "--method", "average"), io.StringIO())
+
+    for folder in (files["out"] / decided["run_id"], combo["out"] / combined["run_id"]):
+        run = harness_read_run(folder)
+        assert run.task == "item_categories"
+        assert run.records
+    assert harness_read_run(combo["out"] / combined["run_id"]).is_combined

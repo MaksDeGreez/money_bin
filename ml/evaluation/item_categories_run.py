@@ -263,24 +263,45 @@ def read_proposals(run_dir: Path) -> dict[tuple[str, int], list[str]]:
     return proposals
 
 
-def read_categorisers(run_dir: Path) -> list[str]:
-    """The categorisers a run's suggestions came from (`categorisers` in its `run.json`, or its
-    model and, with the memory on, the label memory)."""
+def read_summary(run_dir: Path) -> dict[str, Any]:
+    """A run folder's `run.json` (for `--verify`)."""
     path = run_dir.expanduser() / "run.json"
     try:
         summary = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise UsageError(f"--verify: no readable run.json in {run_dir.name}") from None
-    return run_categorisers(summary)
+    if not isinstance(summary, dict):
+        raise UsageError(f"--verify: no readable run.json in {run_dir.name}")
+    return summary
+
+
+MEMORY_ENTRY = {"backend": MEMORY_CATEGORISER, "model_name": MEMORY_CATEGORISER}
+
+
+def categoriser_entries(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every categoriser behind a run, as `combined_from` entries (`run_id`, `backend`,
+    `model_name`, `model_version`): the run's own model, the label memory when it answered first,
+    and whatever the run itself combined. The evaluation harness applies the pre-fill rule to
+    every `model_name` in a run's `combined_from` (`evaluation/inputs.py`)."""
+    own = {
+        key: summary.get(key)
+        for key in ("run_id", "backend", "model_name", "model_version")
+        if isinstance(summary.get(key), str) and summary.get(key)
+    }
+    entries = [own] if own.get("model_name") else []
+    if (summary.get("memory") or {}).get("enabled"):
+        entries.append(dict(MEMORY_ENTRY))
+    entries += [entry for entry in summary.get("combined_from") or [] if isinstance(entry, dict)]
+    return entries
 
 
 def run_categorisers(summary: dict[str, Any]) -> list[str]:
-    """Every categoriser a run's `run.json` names, for the pre-fill rule."""
-    names = {name for name in summary.get("categorisers") or [] if isinstance(name, str)}
-    if isinstance(summary.get("model_name"), str):
-        names.add(summary["model_name"])
-    if (summary.get("memory") or {}).get("enabled"):
-        names.add(MEMORY_CATEGORISER)
+    """Every categoriser name a run's `run.json` names, for the pre-fill rule."""
+    names = {
+        entry["model_name"]
+        for entry in categoriser_entries(summary)
+        if isinstance(entry.get("model_name"), str)
+    }
     return sorted(names - {""})
 
 
@@ -421,7 +442,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
         if args.max_questions is not None:
             overrides["decisions_max_questions"] = args.max_questions
     proposals = read_proposals(args.verify) if args.verify else None
-    verified_categorisers = read_categorisers(args.verify) if args.verify else []
+    verified = read_summary(args.verify) if args.verify else None
     try:
         settings = Settings(**overrides)
     except ValidationError as error:
@@ -513,13 +534,16 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any]:
             "prior_agreeing": PRIOR_AGREEING,
             "prior_disagreeing": PRIOR_DISAGREEING,
         },
-        # Every categoriser whose answers shaped this run's, for the pre-fill rule: the model,
-        # the label memory when it answered first or supplied examples, and the categorisers of
-        # a verified run (a verified run's candidates are its suggestions, re-scored).
-        "categorisers": sorted(
-            {categoriser.model_name}
-            | ({MEMORY_CATEGORISER} if memory is not None or store is not None else set())
-            | set(verified_categorisers)
+        # The other categoriser behind this run's answers, for the pre-fill rule (the harness
+        # reads `combined_from`): the label memory when it supplied examples, and every
+        # categoriser of a verified run (its candidates are that run's suggestions, re-scored).
+        **(
+            {"combined_from": extra}
+            if (
+                extra := ([dict(MEMORY_ENTRY)] if store is not None and memory is None else [])
+                + (categoriser_entries(verified) if verified is not None else [])
+            )
+            else {}
         ),
         "decisions": None
         if not isinstance(categoriser, DecisionsCategoriser)
