@@ -400,7 +400,7 @@ This repository will be public. No secrets and no personal data may enter it.
   The `CI` job passes only when all four passed; it is the check that decides a merge. The leak check
   does not run on GitHub, because the terms file only exists on the owner's machine.
 - **Dependabot** opens weekly, grouped updates for gems, GitHub Actions and the Python packages of `ml/`
-  and `tools/receipt_ingest/`. MLX, mlx-vlm and transformers come one pull request each, outside the
+  and `tools/receipt_ingest/`. MLX, mlx-vlm, transformers and llguidance come one pull request each, outside the
   groups: CI cannot run the local model, so each is checked by hand on the Mac.
 
 ## Git worktrees

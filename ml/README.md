@@ -166,7 +166,7 @@ The receipt:
 - `amount` is the price of the line after the discount.
 - `sum_matches_total`: whether the item amounts add up exactly to `total`;
   null when there is no total or no item, or an item was left out because its
-  amount was unreadable.
+  amount or its discount was unreadable.
 - `currency` is an ISO 4217 code.
 
 The rest of the answer:
@@ -280,8 +280,11 @@ use the same prompt and rules and the two differ only in the model:
   thousands separators (only in groups of three), currency signs and the tax
   letter after an amount (`12,50 А`); a quantity line (`2 x 34.50`) the model
   listed as an item of its own is merged into the item it belongs to (above
-  or below, when the numbers fit its amount); a discount line (`Знижка
-  -5.00`) is folded into the item above; the date and time become Kyiv time;
+  or below, when the numbers fit its amount); a discount line with a negative
+  amount (`Знижка -5.00`) is folded into the item above, while a positive one
+  (`Акційний набір 20.00`) stays an item; an item whose printed discount cannot
+  be read is left out rather than given no discount; a number with more than
+  10 digits before the point is refused; the date and time become Kyiv time;
   a fiscal number that is not 10 digits is refused; `sum_matches_total` is
   computed. It never rounds money: a value with more than 2 decimal places (3
   for a quantity) becomes null and is counted. Only `Decimal`, never a float.

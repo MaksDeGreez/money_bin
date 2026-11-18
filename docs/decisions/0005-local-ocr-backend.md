@@ -55,9 +55,9 @@ between releases) in the `mlx` dependency group with the markers
 `sys_platform == 'darwin' and platform_machine == 'arm64'`, and the group is in `[tool.uv]
 default-groups`. A plain `uv sync`, which `bin/setup` and therefore `bin/ci` run, installs it on the Mac,
 and the same locked `uv sync --locked` installs nothing of it on Linux. The service imports mlx-vlm only
-on the worker thread, so the stub backend and every test work without it. Dependabot keeps MLX, mlx-vlm
-and transformers out of its grouped updates: each comes as its own pull request, because CI cannot run
-the model and an update has to be tried on the Mac.
+on the worker thread, so the stub backend and every test work without it. Dependabot keeps MLX, mlx-vlm,
+transformers and llguidance out of its grouped updates: each comes as its own pull request, because CI
+cannot run the model and an update has to be tried on the Mac.
 
 ### The prompt, the parsing and the post-processing are shared
 
@@ -115,12 +115,20 @@ repository, its files are private to the owner, and both scripts print aggregate
 ## Consequences
 
 - Reading one receipt takes from about 10 seconds to over a minute (a long receipt in two photos took
-  about 75 seconds). With one receipt at a time, a receipt queued behind another can wait longer than the
-  Rails client's default OCR timeout of 120 seconds; the job's timeout and concurrency have to be sized
-  from measured timings before receipts are uploaded in bulk.
+  about 75 seconds), and a receipt whose first answer needs the repair pass takes about twice as long. A
+  single receipt can therefore exceed the Rails client's default OCR timeout of 120 seconds, and with one
+  receipt at a time a queued receipt waits for the ones ahead of it. A request whose client has timed
+  out is not cancelled: its generation keeps the worker busy, so the job's retry queues behind it. The
+  job's timeout and concurrency have to be sized from measured timings before receipts are uploaded in
+  bulk; until then `.env.example` suggests a larger `ML_SERVICE_OCR_TIMEOUT` for the mlx backend.
+- At shutdown the model is dropped and the worker thread's MLX streams are released on that thread
+  (as mlx-vlm's own server does) before the thread stops.
 - The service needs about 7 GB of memory while the model is loaded, on top of the Rails app.
 - The fiscal number and the receipt number, printed small at the bottom of the receipt, are the fields
   read least reliably in the first trials; the QR code remains the better source for them when it can be
   read.
-- An update to MLX, mlx-vlm or transformers can change the answers without any test noticing; it is
-  tried on the receipt set before it is merged.
+- An update to MLX, mlx-vlm, transformers or llguidance can change the answers without any test
+  noticing; it is tried on the receipt set before it is merged.
+- `PROMPT_VERSION` covers the prompt and the schema, not the post-processing code. An evaluation run
+  records the git commit as well, so runs stay comparable; an answer stored by the app names the model
+  and the prompt only.
