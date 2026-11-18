@@ -72,7 +72,7 @@ mlx-vlm, is left out of the coverage measurement.
 | ------------------------------ | ------------------------------------------- | --------------------------- | ------- |
 | `OCR_BACKEND`                  | `stub`                                      | `stub`, `mlx`, `openrouter` | The model backend to use. |
 | `ML_MAX_IMAGE_BYTES`           | `15728640`                                  | a whole number above 0      | The largest image file, in bytes (15 MB). |
-| `MLX_OCR_MODEL`                | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | a Hugging Face id or a folder | The `mlx` backend's model. `mlx-community/Qwen3-VL-8B-Instruct-4bit` works too. |
+| `MLX_OCR_MODEL`                | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | a Hugging Face id or a folder | The `mlx` backend's model. `mlx-community/Qwen3-VL-8B-Instruct-4bit` works too. |
 | `MLX_OCR_MAX_TOKENS`           | `3072`                                      | a whole number above 0      | The most tokens the model may write for one answer. A receipt with 40 items needs about 2,000. |
 | `MLX_OCR_IMAGE_MAX_SIDE`       | `2048`                                      | 256 to 4096                 | Each photo is scaled down so that its longer side is at most this many pixels. |
 | `MLX_OCR_CONSTRAINED_DECODING` | `true`                                      | `true`, `false`             | Constrain the model's answer to the JSON schema (see "The mlx backend"). |

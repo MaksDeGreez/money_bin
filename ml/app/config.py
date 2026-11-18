@@ -4,7 +4,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 DEFAULT_MAX_IMAGE_BYTES = 15 * 1024 * 1024
-DEFAULT_MLX_OCR_MODEL = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+DEFAULT_MLX_OCR_MODEL = "mlx-community/Qwen3-VL-8B-Instruct-4bit"
 
 
 class Settings(BaseSettings):
