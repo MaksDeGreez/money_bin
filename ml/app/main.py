@@ -31,6 +31,8 @@ from app.schemas import (
     HealthResponse,
     OcrResponse,
 )
+from app.transactions import TransactionCategoriser
+from app.transactions import router as transactions_router
 
 MAX_IMAGES = 3
 ALLOWED_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/heic"})
@@ -169,6 +171,7 @@ def create_app(
     settings: Settings | None = None,
     backend: Backend | None = None,
     categoriser: Categoriser | None = None,
+    transaction_categoriser: TransactionCategoriser | None = None,
 ) -> FastAPI:
     """Build the app. An unknown backend name fails here, before the server starts.
 
@@ -178,7 +181,8 @@ def create_app(
     (and one model, when they name the same). Their `start()` runs when the
     server starts (a model is loaded then, so the first request is not slow and
     a broken setup stops the service at once) and `stop()` when it shuts down.
-    A calibration file is read and checked at start-up too.
+    A calibration file is read and checked at start-up too. The transaction
+    categoriser (`app.transactions`) loads lazily, on its first request.
     """
     settings = settings or Settings()
     worker = MlxWorker()
@@ -214,6 +218,8 @@ def create_app(
     app.state.backend = backend
     app.state.categoriser = categoriser
     app.state.calibration = None
+    app.state.transaction_categoriser = transaction_categoriser or TransactionCategoriser(settings)
+    app.include_router(transactions_router)
     register_error_handlers(app)
 
     @app.get("/health")
