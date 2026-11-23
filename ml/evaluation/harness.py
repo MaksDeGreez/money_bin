@@ -12,7 +12,8 @@ writes:
 
 - `OUT/index.json`, `OUT/runs/<run id>.json`, `OUT/comparisons/<a>__vs__<b>.json`: aggregates only,
   through `evaluation.results` (a whitelisted structure: numbers, category slugs, model names, run
-  parameters);
+  parameters); `index.json` also records the matching weights and thresholds and the version of
+  the name normalisation (`text.NORMALISATION_VERSION`) the numbers were made with;
 - `OUT/tables/*.md` and `*.csv`, generated from those JSON files.
 
 Files in those subfolders that this run did not write are removed, so the folder always matches the
@@ -58,6 +59,7 @@ from evaluation.results import (
     ResultsShapeError,
     ResultsWriter,
 )
+from evaluation.text import NORMALISATION_VERSION
 from evaluation.truth import GroundTruth
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -426,6 +428,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> dict[str, Any] | 
                 "amount_weight": AMOUNT_WEIGHT,
                 "name_threshold": NAME_THRESHOLD,
                 "match_threshold": MATCH_THRESHOLD,
+                "normalisation_version": NORMALISATION_VERSION,
             },
         },
         "runs": index_runs,

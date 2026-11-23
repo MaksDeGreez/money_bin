@@ -27,6 +27,7 @@ from evaluation.inputs import discover_runs, read_ground_truth, read_receipt_set
 from evaluation.ocr_scoring import score_run
 from evaluation.results import (
     OCR_RUN_RESULT,
+    RESULTS_VERSION,
     Context,
     Est,
     ResultsShapeError,
@@ -34,6 +35,7 @@ from evaluation.results import (
     check,
     check_cell,
 )
+from evaluation.text import NORMALISATION_VERSION
 from evaluation.truth import GroundTruth
 from tests import evaluation_fixtures as fx
 
@@ -125,6 +127,25 @@ def test_ocr_metrics_worked_by_hand(inputs: dict[str, Path]) -> None:
     # Nothing is checked, so the checked-only variant has no receipt.
     assert all_["items_checked_only"]["receipts"] == 0
     assert value(all_["items_checked_only"]["main"]["f1_micro"]) is None
+
+
+def test_a_script_swap_counts_in_cer_plain_only(inputs: dict[str, Path]) -> None:
+    predictions = fx.standard_predictions()
+    # A Cyrillic `М` for the Latin `M` of `Milk`.
+    items = predictions[0]["receipt"]["items"]
+    assert items[0]["name"] == "Milk 2,5% 900 г"
+    items[0]["name"] = "Мilk 2,5% 900 г"
+    fx.write_run(inputs["runs"], "run-a", predictions)
+    index, _ = run_harness(inputs)
+    items = result(inputs, "run-a")["segments"]["all"]["items"]
+
+    assert value(items["main"]["f1_micro"]) == pytest.approx(0.8)
+    assert (items["cer_normalised"]["numerator"], items["cer_normalised"]["denominator"]) == (1, 27)
+    # One more edit than the 4 of the standard run: the plain figure keeps the swap.
+    assert (items["cer_plain"]["numerator"], items["cer_plain"]["denominator"]) == (5, 27)
+    assert index is not None
+    assert index["inputs"]["matching"]["normalisation_version"] == NORMALISATION_VERSION == 2
+    assert index["results_version"] == RESULTS_VERSION == 2
 
 
 def test_intervals_bracket_the_value(inputs: dict[str, Path]) -> None:

@@ -9,6 +9,10 @@ from evaluation.matching import (
     match_items,
 )
 from evaluation.text import (
+    LEGAL_FORMS,
+    LOOK_ALIKES,
+    NORMALISATION_VERSION,
+    UNITS,
     levenshtein,
     normalise_merchant,
     normalise_name,
@@ -34,6 +38,104 @@ def test_normalisation_folds_case_punctuation_units_and_look_alikes() -> None:
     assert normalise_name("Хліб  *  5 шт") == normalise_name("хліб 5 pcs")
     assert normalise_name("Ｂｒｅａｄ") == "bread"  # full-width letters (NFKC)
     assert normalise_name(None) == normalise_name("") == ""
+
+
+def test_a_whole_word_in_the_other_script_folds() -> None:
+    # Every letter of `СОСА` is Cyrillic, every letter of `COCA` Latin.
+    assert normalise_name("СОСА КОКО") == normalise_name("COCA KOKO") == "coca koko"
+    assert similarity(normalise_name("ТЕХАС"), normalise_name("TEXAC")) == 1.0
+
+
+def test_case_and_script_mix_freely() -> None:
+    # Capitals and small letters of both scripts, in any mix, end the same.
+    spellings = ["Coca", "COCA", "сОСа", "СoСa", "cOcA", "СОСА", "сoca"]
+    assert {normalise_name(spelling) for spelling in spellings} == {"coca"}
+    # `В`/`B` look alike only as capitals; small `в` still joins `b`, since case goes first.
+    assert normalise_name("ВЕВ") == normalise_name("веb") == normalise_name("BEB")
+    assert normalise_name("НОМ") == normalise_name("hом") == normalise_name("HOM")
+
+
+def test_yi_and_the_rare_cyrillic_letters_fold() -> None:
+    assert normalise_name("ЇЖАК") == normalise_name("ÏЖAK") == normalise_name("їжак")
+    assert normalise_name("ї") == normalise_name("Ï") == "ï"
+    # A combining diaeresis is composed by NFKC first.
+    assert normalise_name("ї") == normalise_name("ï") == "ï"
+    # ї is not і: the diaeresis is a letter of its own.
+    assert normalise_name("ї") != normalise_name("і")
+    assert normalise_name("ЈЅҺ") == normalise_name("јѕһ") == normalise_name("JSH") == "jsh"
+
+
+def test_letters_alike_only_in_italics_and_digits_stay_apart() -> None:
+    for cyrillic, latin in [("п", "n"), ("и", "u"), ("г", "r"), ("ь", "b"), ("т", "m")]:
+        assert normalise_name(f"x{cyrillic}x") != normalise_name(f"x{latin}x")
+    assert normalise_name("ё") != normalise_name("ë")
+    assert normalise_name("ё") != normalise_name("е")
+    # Digits are never folded: `О`/`0`, `З`/`3`, `б`/`6`.
+    assert normalise_name("1О0") == "1 o 0"
+    assert normalise_name("ЗОО") != normalise_name("300")
+    assert normalise_name("З") != normalise_name("3")
+    assert normalise_name("б") != normalise_name("6")
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("СОСА-КОЛА 0,5Л", "Coca-Кола 0.5 l"),
+        ("ЇЖАК", "Ïжак"),
+        ("Молоко 2,5%", "MOЛOKO 2.5"),
+        # Partly alike: a similarity between the threshold and 1.
+        ("СМЕТАНА 15% 400Г", "Cmetaha 15 % 40 r"),
+    ],
+)
+def test_similarity_is_symmetric(a: str, b: str) -> None:
+    assert similarity(normalise_name(a), normalise_name(b)) == similarity(
+        normalise_name(b), normalise_name(a)
+    )
+    forward = match_items([it(a, "1.00")], [it(b, "1.00")])
+    backward = match_items([it(b, "1.00")], [it(a, "1.00")])
+    assert len(forward.matched("main")) == 1
+    for variant in ("main", "strict", "lenient"):
+        assert [pair.name for pair in forward.matched(variant)] == [
+            pair.name for pair in backward.matched(variant)
+        ]
+
+
+def test_a_look_alike_swap_inside_a_unit_or_a_legal_form() -> None:
+    # Units and legal forms are recognised by their folded spelling: one Latin letter in them
+    # costs nothing, as anywhere else.
+    for cyrillic, swapped, unit in [
+        ("1 ШТ", "1 ШT", "1 pcs"),
+        ("1 УП", "1 YП", "1 pack"),
+        ("100 ГР", "100 ГP", "100 g"),
+        ("1 КГ", "1 KГ", "1 kg"),
+        ("500 МЛ", "500 MЛ", "500 ml"),
+    ]:
+        assert normalise_name(cyrillic) == normalise_name(swapped) == unit
+    assert normalise_merchant("TОВ Квітка") == normalise_merchant("ТОВ Квітка")
+    assert normalise_merchant("ФOП Іваненко") == normalise_merchant("Іваненко")
+    # A unit is still a token of its own, and no Latin word becomes one.
+    assert normalise_name("гречка") != normalise_name("g")
+    assert normalise_name("kr yn") == "kr yn"
+
+
+def test_the_tables_are_pinned_to_the_version() -> None:
+    # A change to any table is a new rule: move NORMALISATION_VERSION with it.
+    assert NORMALISATION_VERSION == 2
+    assert {chr(key): chr(value) for key, value in LOOK_ALIKES.items()} == dict(
+        zip("аеорсухікмнтвїјѕһ", "aeopcyxikmhtbïjsh", strict=True)
+    )
+    assert UNITS == {
+        "кг": "kg",
+        "г": "g",
+        "гр": "g",
+        "л": "l",
+        "мл": "ml",
+        "шт": "pcs",
+        "уп": "pack",
+    }
+    assert sorted(LEGAL_FORMS) == sorted(
+        ["тов", "фоп", "пп", "прат", "пат", "ат", "дп", "кп", "llc", "ltd", "tov", "fop"]
+    )
 
 
 def test_merchant_normalisation_drops_legal_forms() -> None:

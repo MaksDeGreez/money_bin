@@ -1328,7 +1328,7 @@ Per receipt, then summed per segment. A prediction line `skipped` is not scored;
 | `kind.accuracy`, `kind.confusion` | predicted `kind` (`none` for a missing or failed answer) against the ground truth's, else (no ground-truth kind, none left out by the pre-fill rule) `fiscal` for a receipt with a tax QR code; confusion counts truth by prediction |
 | `items.<variant>.precision`, `.recall`, `.f1_micro` | matched / predicted, matched / reference, 2 matched / (predicted + reference), each summed over receipts with item ground truth |
 | `items.<variant>.f1_macro` | the mean of per-receipt F1 over the same receipts (with no item on either side: 1 when the backend answered, such as a card slip read right, 0 when it failed) |
-| `items.cer_normalised`, `items.cer_plain` | over `main`-matched pairs: the sum of edit distances over the sum of reference name lengths, on normalised names, and on names with only NFC and collapsed spaces |
+| `items.cer_normalised`, `items.cer_plain` | over `main`-matched pairs: the sum of edit distances over the sum of reference name lengths, on normalised names, and on names with only NFC and collapsed spaces (raw: case and look-alike letters count; below) |
 | `items_sum_to_total` | the predicted amounts add up exactly (decimals) to the QR total, else the ground truth's total; card slips are not counted |
 | `parse_failed` | the share of `parse_failed` lines; `errors`, `repaired` are counts |
 | `seconds_per_receipt` | mean, median, 90th percentile (nearest rank) over `ok` and `parse_failed` lines |
@@ -1340,13 +1340,87 @@ Segments: `all`; `fiscal`, `card_slip`, `kind_unknown` (the ground truth's kind,
 else `fiscal` for a receipt with a tax QR code: the same for every run); `one_photo`, `multi_photo`;
 `crop_failed` (a run with crops: a receipt for which a full photo was sent; null without crops).
 
-**Names** (`evaluation/text.py`, the one place): NFKC and case folding; apostrophes removed;
-anything but letters and digits becomes a space (so `2,5` and `2.5` agree); a space between digits
-and letters (`900г` → `900 г`); units spelled one way (`кг`→`kg`, `г`/`гр`→`g`, `л`→`l`,
-`мл`→`ml`, `шт`→`pcs`, `уп`→`pack`); Cyrillic letters that print like Latin ones written as Latin
-(`а е о р с у х і к м н т в`); spaces collapsed. A merchant also loses legal-form words (`ТОВ`,
-`ФОП`, `ПП`, `ПрАТ`, `ПАТ`, `АТ`, `ДП`, `КП`, `LLC`, `Ltd`). Similarity: `1 - levenshtein / longer
-length` (1 for two empty names).
+**Names** (`evaluation/text.py`, the one place), in this order: (1) NFKC and case folding; (2)
+apostrophes removed; (3) anything but letters and digits becomes a space (so `2,5` and `2.5` agree);
+(4) a space between digits and letters (`900г` → `900 г`); (5) look-alike letters folded (below);
+(6) units spelled one way, per token, recognised by their folded spelling (`кг`→`kg`, `г`/`гр`→`g`,
+`л`→`l`, `мл`→`ml`, `шт`→`pcs`, `уп`→`pack`); (7) spaces collapsed. A merchant also loses legal-form
+words, also by their folded spelling (`ТОВ`, `ФОП`, `ПП`, `ПрАТ`, `ПАТ`, `АТ`, `ДП`, `КП`, `LLC`,
+`Ltd`, `TOV`, `FOP`; so `TОВ` with a Latin `T` goes, and so does a Latin `AT`). Similarity: `1 -
+levenshtein / longer length` (1 for two empty names). Ground truth and model output go through the
+same steps, for every model alike; the matching, `cer_normalised` and the merchant use it.
+
+**Look-alike letters** (normalisation version 2, `text.NORMALISATION_VERSION`, recorded in
+`index.json` under `inputs.matching.normalisation_version`; version 1 lacked `ї ј ѕ һ` and
+recognised units and legal forms before the fold, so `KГ` with a Latin `K` was not a unit). A
+receipt printed in Cyrillic often carries Latin words and the reverse, and a model may write a Latin
+`C` where the paper has a Cyrillic `С`: the same glyph, a different code point. Each class below is
+one letter after folding (internally the Latin one; choosing the Cyrillic one would give the same
+numbers, since each class still becomes exactly one letter):
+
+| Latin | Cyrillic | Alike in upright print | Note |
+| --- | --- | --- | --- |
+| `A a` | `А а` | both cases | |
+| `B b` | `В в` | capitals | `в` is a small capital |
+| `C c` | `С с` | both | |
+| `E e` | `Е е` | both | |
+| `H h` | `Н н`, `Һ һ` | `Н` capital; `Һ һ` both | `н` is a small capital; `һ` (shha) is not Ukrainian |
+| `I i` | `І і` | both | Ukrainian `і` |
+| `Ï ï` | `Ї ї` | both | Ukrainian `ї`; it stays apart from `і`/`i` (the diaeresis is part of the letter) |
+| `J j` | `Ј ј` | both | not Ukrainian |
+| `K k` | `К к` | capitals | `к` is a small capital |
+| `M m` | `М м` | capitals | `м` is a small capital |
+| `O o` | `О о` | both | |
+| `P p` | `Р р` | both | |
+| `S s` | `Ѕ ѕ` | both | not Ukrainian |
+| `T t` | `Т т` | capitals | `т` is a small capital |
+| `X x` | `Х х` | both | |
+| `Y y` | `У у` | both, roughly | |
+
+Left out on purpose: `n`/`п`, `u`/`и`, `r`/`г`, `b`/`ь`, `m`/`т`, which look alike only in italics
+(receipts are printed upright), and folding them would join letters that differ in print: `ь` would
+become `в` (both `b`), and `т`, already a `t`, cannot also be an `m`. `ё`/`ë` is a true pair, but
+neither letter belongs to the text the receipts carry (Ukrainian has no `ё`, and the Latin words on
+them have no `ë`), so there is no swap for it to absorb; the confusion that does occur, `ё` read as
+`е`, is a lost diacritic, which no look-alike fold should hide. The non-Ukrainian `ј ѕ һ` are in for
+the opposite reason: they fold into the plain `j s h` that the Latin words on receipts do use, so a
+model that writes the Cyrillic twin of an ordinary Latin letter is not charged for it. Digits are
+never folded (`0`/`О`, `3`/`З`, `6`/`б` stay apart): a digit read as a letter changes a quantity, a
+volume or a fat percentage, which is a real error.
+
+The order matters. Folding comes after case folding, so the table needs only small letters and a
+class alike only as capitals (`В`/`B`) also joins its small letters: `Coca`, `COCA`, `сОСа` and
+`СoСa` all become `coca`, and the case in which a model writes a word never decides whether two
+scripts compare equal. Units and legal forms are recognised after the fold, by their folded
+spelling, so a look-alike letter inside one (`KГ`, `ШT`, `TОВ`) does not stop it: otherwise the
+normalised figure could charge more for such a swap than the raw one. A unit is still a token of its
+own (`г` is `g`, `гречка` is not), and every folded unit keeps a Cyrillic letter no class covers (`г
+л ш п`), so no Latin word becomes a unit.
+
+The label memory (`evaluation/label_memory.py`, the app's `ItemName.key`) folds names by its own,
+older rule for its own purpose (finding earlier bookings); it is not this rule and does not follow
+its version.
+
+The fold applies to every token, not only to tokens that contain a Cyrillic letter. Folding Cyrillic
+into Latin, the two are the same thing (a token without a Cyrillic letter has nothing to fold). In
+the other direction, or for any variant that folds only some tokens, the same word is folded on one
+side and not on the other whenever only one side's spelling has the letter that triggers the fold:
+Latin into Cyrillic only in tokens with a Cyrillic letter turns `CОCA` (one Cyrillic `О`) into four
+Cyrillic letters while its all-Latin twin `COCA` stays, so one edit becomes four. Measured on the
+pilot OCR runs (11 runs over one set of 20 receipts, each run taken as the reference for each other
+run: 110 ordered pairs, 2,044 receipt pairs, 14,016 reference items; aggregates only),
+`main`-matched items were 7,860 without any fold, 8,556 with the fold on every token (in either
+direction, and equally for versions 1 and 2), 7,674 when Latin letters were folded into Cyrillic
+only in tokens that contain a Cyrillic letter, and 7,508 when only tokens mixing both scripts were
+folded: both scoped variants match fewer items than no fold at all. On the same pairs, version 2
+changed the similarity of no name pair and no merchant comparison against version 1 (`ї` occurred in
+a few tokens, alike on both sides; `ï ј ѕ һ` and units or legal forms with a look-alike swap not at
+all): it guards against confusions these runs did not make.
+
+**`cer_plain` stays raw**: only NFC and collapsed spaces, so case, punctuation, units and script
+swaps all count. It is the strict figure; the gap between `cer_plain` and `cer_normalised` shows how
+much of the error is of those kinds rather than misread letters. Its item pairs come from the
+normalised `main` matching, so it too depends on the normalisation version.
 
 **Matching** (`evaluation/matching.py`): for each predicted and reference item, `name` = the
 similarity of the normalised names, `amount` = 1 for equal amounts, else

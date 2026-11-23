@@ -31,7 +31,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-RESULTS_VERSION = 1
+# The declared structure of the files: it moves whenever a key is added, removed or changes meaning,
+# since the writer accepts exactly the declared keys. 2: `inputs.matching.normalisation_version`.
+RESULTS_VERSION = 2
 FLOAT_PLACES = 6
 
 SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*"
@@ -300,6 +302,7 @@ MATCHING = obj(
         "amount_weight": number(False),
         "name_threshold": number(False),
         "match_threshold": number(False),
+        "normalisation_version": integer(),
     }
 )
 INPUTS = obj(
