@@ -22,6 +22,8 @@ Rails.application.routes.draw do
     post :read, on: :member
     post :enter_by_hand, on: :member
     post :suggest_categories, on: :member
+    # "Undo the acceptance" (Receipts::UndoAccept): the ledger and the receipt go back to before it was accepted.
+    post :undo_accept, on: :member
     post :read_all, on: :collection
     # A person's check of the receipt's tax-service record against the print (POST records or replaces it,
     # DELETE forgets it).

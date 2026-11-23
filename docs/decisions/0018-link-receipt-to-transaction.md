@@ -1,6 +1,6 @@
 # 0018. Booking a receipt onto a ledger transaction the person chooses
 
-Status: accepted. The undo of a booking is the next change; this one stores everything it needs.
+Status: accepted. The undo of a booking (below, "Undo") came in a second change on the same decision.
 
 ## Context
 
@@ -102,6 +102,64 @@ not changed here).
 Rolling the migration back would drop the only copy of the earlier state of every linked transaction while
 the receipts' lines stay in the ledger. The rollback refuses while the table has a row.
 
+## Undo
+
+The owner's requirement: undo an acceptance so that the ledger is what it was, the receipt is back before the
+acceptance, and nothing else is lost (items, their categories, ground truth). `Receipts::UndoAccept`, from
+"Undo the acceptance" on the receipt's page.
+
+### It undoes only what the acceptance left
+
+The undo overwrites a transaction with a state recorded earlier. That is only right while nobody changed the
+transaction since, so it refuses unless all of these still hold: the transaction's `lock_version` is the
+record's `booked_lock_version`, its lines digest is the record's, and for a linked booking its `import_digest`
+is the recorded one and its amount the one in `previous`. The version catches every writer of the row, the
+digest a line saved on its own, the import digest an importer that rewrote the row (the export wins, as the
+import contract says), and the amount is a backstop for a writer past the models. A refreshed stored suggestion
+is in none of them on purpose: it is nobody's choice, and the undo restores the earlier suggestion anyway.
+The alternative, merging a later change into the restored state, would need rules for every column and would
+guess; a refusal that says what changed lets the person decide (put it back by hand, or keep the booking).
+
+The button also carries the receipt's and the transaction's versions as the page showed them, so a tab opened
+before an "Accept again" cannot undo the newer booking unseen. The service locks in Accept's order (receipt,
+transaction, lines in id order), so the two cannot deadlock.
+
+### The restored lines are new lines with the old values
+
+The earlier lines are rebuilt as new line objects through the transaction (nested attributes without ids), so
+the model's rules run: the lines sum to the amount, a category is a category and not a group. Their ids are
+new; passing the old ids would make Rails look for rows that no longer exist. "Exact" means the values: every
+recorded column but the ids, money from its decimal string (never a float), times to the microsecond, the
+line's own `created_at` and `updated_at` as recorded (the old line put back; the transaction's own timestamp
+and version show the undo).
+
+A reference that no longer resolves is dropped, not guessed: a deleted category, or one turned into a group,
+leaves the line without a category, which also clears the category's origin, probability and artefact (the
+check constraints require a category for them); a missing suggested category drops the whole stored
+suggestion, a missing runner-up only the runner-up. A `confirmed` transaction that thereby gets an
+uncategorised line becomes `needs_review`, Accept's own rule. The page says what was dropped.
+
+### Status, payee, created rows
+
+The status comes back from `previous`. The payee comes back when the transaction's payee is still the one
+Accept assigned, the earlier one, or none: a payee a person set between two acceptances (which the version
+check cannot see, since "Accept again" refreshes it) is the person's and stays. A `created` booking's
+transaction is destroyed with its lines; a transaction of source `receipt` without a record (from before
+records existed) the same way, with its payee kept, since nothing says the acceptance created it; any other
+transaction without a record is refused, since its earlier state is not known.
+
+A payee the acceptance created is deleted when no transaction and no other booking record names it any more,
+under its row lock (a writer adding a reference holds a key-share lock on that row, so it is seen or waits)
+and in a savepoint: if the delete is refused anyway, the payee stays and the undo commits. An unused payee is
+harmless; a lost undo is not.
+
+### The receipt
+
+The receipt goes back to `extracted` with no transaction and no record, through the same step a destroyed
+transaction takes (`Receipt#release_from_ledger!`, `update_columns` that also move its `lock_version`). Its
+items, categories, ground truth, OCR and QR columns, photos and OCR request are untouched. It is not pristine,
+so the receipt load keeps it, and nothing queues OCR for it unless a person asks.
+
 ## The importer limit
 
 The history import is not changed. Its contract is "the export wins": a row whose export row changed is
@@ -121,5 +179,6 @@ lines, as it keeps every edit made in the app.
   side is the "Book as" list.
 - Receipts accepted before this change have no record (there were none in the real data); "Accept again"
   writes one (`created` for a transaction Accept created).
-- The undo itself (restore `previous`, remove a created transaction and a payee Accept created and nothing
-  else uses, refuse when the digests say the row changed) is the next change.
+- An acceptance can be undone (restore `previous`, or remove a created transaction, and a payee Accept created
+  that nothing else uses), and the undo refuses when the version, the digests or the amount say the row
+  changed since. When a later export changed a linked row, the export wins and the undo refuses.

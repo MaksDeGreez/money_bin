@@ -152,15 +152,9 @@ class Transaction < ApplicationRecord
 
     # A `reviewed` receipt means "booked into the ledger". Without its transaction it is not, so it goes back
     # to `extracted` and can be accepted again; its items stay. Runs in the destroy's database transaction,
-    # so a failed destroy changes nothing. update_columns: the unlink must not depend on the receipt's other
-    # validations. It moves the receipt's lock_version, so a review form rendered while it was booked
-    # ("Accept again") is refused instead of booking it anew unseen.
+    # so a failed destroy changes nothing (Receipt#release_from_ledger!).
     def release_receipt
-      receipt = Receipt.lock.find_by(transaction_id: id)
-      return unless receipt
-
-      status = receipt.reviewed? ? "extracted" : receipt.status
-      receipt.update_columns(transaction_id: nil, status:, lock_version: receipt.lock_version + 1, updated_at: Time.current)
+      Receipt.lock.find_by(transaction_id: id)&.release_from_ledger!
     end
 
     # A save that changes only lines would not write the transaction row, so it would not check or bump

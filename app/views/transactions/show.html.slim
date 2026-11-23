@@ -71,6 +71,9 @@ dl.data-table.mt-8
     dd.data-row-value
       - if @receipt
         = link_to receipt_label(@receipt), receipt_path(@receipt, @filter.to_params), data: { turbo_prefetch: false }
+        / The undo lives on the receipt's page only (Receipts::UndoAccept), next to what it was booked as.
+        - if @receipt.reviewed?
+          span.block.text-xs.text-ink-muted The receipt's page can undo the acceptance.
       - else
         span.text-ink-muted —
 
