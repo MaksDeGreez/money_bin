@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Backs up the app's database into a private folder outside git.
+#
+#   bin/db-backup                 # money_bin_v2_development -> ~/Documents/money_bin_data/backups/
+#   bin/db-backup --verify        # also restores the file into a throwaway database and compares row counts
+#   bin/db-backup DIR             # another folder (created with mode 0700)
+#
+# The file is `<database>-<UTC time>.dump` in pg_dump's custom format, mode 0600. Restore it with
+# `pg_restore --no-owner -d <an empty database> FILE`.
+#
+# - The database is the one in DATABASE_URL when that is set, the development database otherwise.
+# - The folder must be outside every git repository: the ledger is personal data.
+# - It is the database only. The receipt photos (storage/) are not in it; the receipt load rebuilds them
+#   from the ingest folder.
+# - Prints the file name, its size and the result of the check, never a row. Exit codes: 0 done,
+#   1 the backup or its check failed, 2 wrong usage or a refused folder.
+
+require "fileutils"
+require "open3"
+require "pathname"
+require "uri"
+
+DEFAULT_DATABASE = "money_bin_v2_development"
+DEFAULT_FOLDER = File.join(Dir.home, "Documents", "money_bin_data", "backups")
+USAGE = "usage: bin/db-backup [--verify] [DIR]"
+
+def fail_usage(message)
+  warn message
+  warn USAGE
+  exit 2
+end
+
+# As PrivateFolder.inside_git_repository? in the app (this script does not load Rails): `.git` is a folder
+# in a checkout and a file in a linked worktree, and symbolic links are resolved first.
+def inside_git_repository?(path)
+  expanded = Pathname(File.expand_path(path))
+  existing = expanded.ascend.find(&:exist?)
+  resolved = existing.realpath.join(expanded.relative_path_from(existing))
+  resolved.ascend.any? { |folder| folder.join(".git").exist? }
+end
+
+def run(*command)
+  out, status = Open3.capture2e(*command)
+  return out if status.success?
+
+  warn "#{command.first} failed:"
+  warn out.lines.last(5).join
+  exit 1
+end
+
+# The database's name, for the file name: the last part of DATABASE_URL's path, or the URL-less name.
+def database_name(target)
+  name = target.include?("://") ? URI.parse(target).path.delete_prefix("/") : target
+  name.empty? ? "database" : name.gsub(/[^A-Za-z0-9_]/, "_")
+end
+
+# Every table's row count, as { "table" => count }, read through psql.
+def row_counts(target)
+  tables = run("psql", "-X", "-At", "-d", target, "-c",
+               "select quote_ident(tablename) from pg_tables where schemaname = 'public' order by 1").split("\n")
+  tables.to_h do |table|
+    [ table, run("psql", "-X", "-At", "-d", target, "-c", "select count(*) from public.#{table}").strip ]
+  end
+end
+
+# Restores `file` into a database made for the purpose and compares its row counts with the source's.
+# The throwaway database is dropped whatever happens.
+def verify(file, target)
+  scratch = "#{database_name(target)[0, 40]}_restore_check_#{Process.pid}"
+  run("createdb", scratch)
+  run("pg_restore", "--no-owner", "-d", scratch, file)
+  source = row_counts(target)
+  restored = row_counts(scratch)
+  different = source.keys.union(restored.keys).reject { |table| source[table] == restored[table] }
+  if different.empty?
+    puts "Verified: restored into a throwaway database, #{source.size} tables, every row count equal."
+  else
+    warn "The restored copy differs in #{different.size} table(s): #{different.join(', ')}."
+    warn "(Rows written while the backup ran would explain it: run it again with the app stopped.)"
+    exit 1
+  end
+ensure
+  system("dropdb", "--if-exists", scratch, out: File::NULL, err: File::NULL) if scratch
+end
+
+arguments = ARGV.dup
+if arguments.delete("--help") || arguments.delete("-h")
+  puts USAGE
+  exit 0
+end
+check = !arguments.delete("--verify").nil?
+unknown = arguments.find { |argument| argument.start_with?("-") }
+fail_usage("unknown option #{unknown}") if unknown
+fail_usage("too many arguments") if arguments.size > 1
+
+folder = File.expand_path(arguments.first || DEFAULT_FOLDER)
+if inside_git_repository?(folder)
+  warn "#{folder} is inside a git repository: a backup holds personal data and must stay outside git."
+  exit 2
+end
+
+target = ENV["DATABASE_URL"].to_s.empty? ? DEFAULT_DATABASE : ENV["DATABASE_URL"]
+File.umask(0o077)
+FileUtils.mkdir_p(folder, mode: 0o700)
+file = File.join(folder, "#{database_name(target)}-#{Time.now.utc.strftime('%Y%m%dT%H%M%SZ')}.dump")
+
+run("pg_dump", "--format=custom", "--file", file, "-d", target)
+run("pg_restore", "--list", file)
+puts "Backup: #{file} (#{(File.size(file) / 1024.0 / 1024.0).round(1)} MB, the database only: no receipt photos)"
+verify(file, target) if check
