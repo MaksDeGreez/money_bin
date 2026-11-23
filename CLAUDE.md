@@ -10,7 +10,7 @@ Master's capstone project (MSc Data Science, engineering project): a personal fi
 
 ## Stack
 
-- Ruby 4.0.7, Rails 8.1, PostgreSQL 18, Redis 8 (Homebrew on the owner's machine).
+- Ruby 4.0.10, Rails 8.1, PostgreSQL 18, Redis 8 (Homebrew on the owner's machine).
 - Slim is the only template language (`config.generators` emits Slim). No ERB views.
 - Tailwind CSS v4 via `tailwindcss-rails` (standalone CLI, no Node). Entry: `app/assets/tailwind/application.css`; the component classes (`btn-*`, `badge-*`, `callout-*`, `form-control`) are in `app/assets/tailwind/design-system.css`.
 - Hotwire (Turbo + Stimulus) over importmap. No React/Vue/bundlers. Behaviour goes in `app/javascript/controllers/*_controller.js`.
