@@ -72,6 +72,20 @@ module McpTools
           [ amount || "?", currency ].compact.join(" ")
         end
 
+        # A card slip's category for the text: the accepted one, else the suggestion said to be one; nil for
+        # a receipt that is not a slip (its categories are on its items).
+        def slip_category(json)
+          return nil unless json[:kind] == "card_slip"
+
+          if json[:category]
+            "category #{json.dig(:category, :slug)}"
+          elsif json[:suggested_category]
+            "suggested category #{json.dig(:suggested_category, :slug)} (confidence #{json[:confidence]}), not accepted yet"
+          else
+            "no category yet"
+          end
+        end
+
         def more_pages_note(next_cursor)
           return "This is the last page." if next_cursor.nil?
 

@@ -109,7 +109,9 @@ probability, not money, and stays a JSON number. Dates are ISO 8601; times carry
 
 A page of transactions preloads accounts, payees, receipts, lines and categories: seven statements with
 the token lookup, whatever the page size (a test counts them). A page of receipts is one statement, with
-the item count as a subquery.
+the item count as a subquery, plus one that loads the categories of a card slip's `category` and
+`suggested_category` when a receipt on the page refers to one: at most two, whatever the page size (a
+test counts them).
 
 The migration `20261118120000_add_read_api_indexes.rb`:
 
@@ -190,6 +192,8 @@ To make the check strict:
   schema in `docs/openapi.yaml`, and an example per response status in the contract test.
 - A new column in an API response is one line in its serializer and one property in the document (added
   to `required`); the receipts serializer has one place (`common`) for fields both receipt shapes share.
-  Receipts carry `kind` and `incomplete`; the card digits (`card_last4`), the QR code and its ground
-  truth (`qr_*`) and `ingest_id` are left out on purpose: an agent reading the ledger needs none of them.
+  Receipts carry `kind` and `incomplete`, and a card slip its own `category`, `suggested_category` and
+  `confidence` (null on any other receipt; `categoriser_model_name` is not exposed); the card digits
+  (`card_last4`), the QR code and its ground truth (`qr_*`) and `ingest_id` are left out on purpose: an
+  agent reading the ledger needs none of them.
 - The MCP server will call the same query objects and can reuse the serializers for the same JSON.

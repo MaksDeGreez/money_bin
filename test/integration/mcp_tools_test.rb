@@ -186,4 +186,42 @@ class McpToolsTest < ActionDispatch::IntegrationTest
     assert_tool_error(missing, "No receipt has id 999999999")
     assert_tool_error(mcp_call_tool("get_receipt", {}), "Missing required arguments: id")
   end
+
+  test "a card slip's category in the text of both tools: the accepted one, else the suggestion said to be one" do
+    slip = receipts(:corner_receipt)
+    slip.items.delete_all
+    slip.update_columns(kind: "card_slip", suggested_category_id: categories(:takeaway).id, suggested_category_confidence: 0.81)
+    suggested = "suggested category eating-out/takeaway-fast-food (confidence 0.81), not accepted yet"
+
+    listed = mcp_call_tool("recent_receipts")
+    assert_includes listed.dig("content", 0, "text"), "Corner Shop | total 152.50 UAH | 0 item(s) | extracted | #{suggested} | not booked"
+    row = mcp_structured("recent_receipts")["receipts"].find { |receipt| receipt["id"] == slip.id }
+    assert_equal [ "eating-out/takeaway-fast-food", 0.81, nil ], [ row.dig("suggested_category", "slug"), row["confidence"], row["category"] ]
+    detail_text = mcp_call_tool("get_receipt", { id: slip.id }).dig("content", 0, "text")
+    assert_includes detail_text, "| extracted | #{suggested} | not booked"
+    assert_includes detail_text, "A card slip: no items, booked as one line of its total in the slip's category."
+    assert_not_includes detail_text, "summing to"
+
+    slip.update_columns(category_id: categories(:cafes).id)
+    assert_includes mcp_call_tool("recent_receipts").dig("content", 0, "text"), "0 item(s) | extracted | category eating-out/cafes-bars-restaurants |"
+    detail = mcp_structured("get_receipt", { id: slip.id })
+    assert_equal "eating-out/cafes-bars-restaurants", detail.dig("category", "slug")
+    assert_includes mcp_call_tool("get_receipt", { id: slip.id }).dig("content", 0, "text"),
+      "| extracted | category eating-out/cafes-bars-restaurants | not booked"
+
+    slip.update_columns(category_id: nil, suggested_category_id: nil, suggested_category_confidence: nil)
+    assert_includes mcp_call_tool("recent_receipts").dig("content", 0, "text"), "0 item(s) | extracted | no category yet | not booked"
+    assert_includes mcp_call_tool("get_receipt", { id: slip.id }).dig("content", 0, "text"), "| extracted | no category yet | not booked"
+  end
+
+  test "a fiscal receipt shows no slip category, even a suggestion it kept from before" do
+    receipts(:market_receipt).update_columns(suggested_category_id: categories(:takeaway).id, suggested_category_confidence: 0.9)
+
+    detail = mcp_structured("get_receipt", { id: receipts(:market_receipt).id })
+    assert_equal [ nil, nil, nil ], detail.values_at("category", "suggested_category", "confidence")
+    row = mcp_structured("recent_receipts")["receipts"].find { |receipt| receipt["id"] == receipts(:market_receipt).id }
+    assert_equal [ nil, nil, nil ], row.values_at("category", "suggested_category", "confidence")
+    assert_not_includes mcp_call_tool("recent_receipts").dig("content", 0, "text"), "takeaway"
+    assert_not_includes mcp_call_tool("get_receipt", { id: receipts(:market_receipt).id }).dig("content", 0, "text"), "takeaway"
+  end
 end

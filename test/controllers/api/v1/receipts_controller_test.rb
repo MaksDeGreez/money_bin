@@ -17,7 +17,8 @@ module Api
           "id" => receipts(:market_receipt).id, "status" => "reviewed", "kind" => "fiscal", "incomplete" => false,
           "merchant" => "Example Market",
           "issued_at" => "2026-10-03T18:40:00+03:00", "issued_on" => "2026-10-03", "total" => "1250.40", "currency" => "UAH",
-          "transaction_id" => transactions(:market_split).id, "items_count" => 3
+          "transaction_id" => transactions(:market_split).id, "category" => nil, "suggested_category" => nil, "confidence" => nil,
+          "items_count" => 3
         }, json["receipts"].find { |receipt| receipt["id"] == receipts(:market_receipt).id })
         assert_nil json["next_cursor"]
       end
@@ -55,11 +56,55 @@ module Api
         assert_no_floats(json)
       end
 
+      test "a card slip carries its category, suggestion and confidence, in the list and alone" do
+        slip = receipts(:corner_receipt)
+        slip.items.delete_all
+        slip.update_columns(kind: "card_slip", category_id: categories(:cafes).id,
+          suggested_category_id: categories(:takeaway).id, suggested_category_confidence: 0.81)
+        cafes = { "id" => categories(:cafes).id, "slug" => "eating-out/cafes-bars-restaurants", "name" => categories(:cafes).name }
+        takeaway = { "id" => categories(:takeaway).id, "slug" => "eating-out/takeaway-fast-food", "name" => "Takeaway & fast food" }
+
+        api_get api_v1_receipts_path
+        assert_api_conform(200)
+        listed = json["receipts"].find { |receipt| receipt["id"] == slip.id }
+        assert_equal [ "card_slip", cafes, takeaway, 0.81, 0 ], listed.values_at("kind", "category", "suggested_category", "confidence", "items_count")
+
+        api_get api_v1_receipt_path(slip)
+        assert_api_conform(200)
+        assert_equal [ "card_slip", cafes, takeaway, 0.81, [] ], json.values_at("kind", "category", "suggested_category", "confidence", "items")
+        assert_no_floats(json)
+      end
+
+      test "a slip still waiting for a person has only its suggestion" do
+        slip = receipts(:corner_receipt)
+        slip.items.delete_all
+        slip.update_columns(kind: "card_slip", suggested_category_id: categories(:takeaway).id, suggested_category_confidence: 0.4)
+
+        api_get api_v1_receipt_path(slip)
+
+        assert_api_conform(200)
+        assert_nil json["category"]
+        assert_equal [ "eating-out/takeaway-fast-food", 0.4 ], [ json.dig("suggested_category", "slug"), json["confidence"] ]
+      end
+
+      test "a fiscal receipt never shows a slip suggestion it kept from before" do
+        receipts(:market_receipt).update_columns(suggested_category_id: categories(:takeaway).id, suggested_category_confidence: 0.9)
+
+        api_get api_v1_receipt_path(receipts(:market_receipt))
+        assert_api_conform(200)
+        assert_equal [ "fiscal", nil, nil, nil ], json.values_at("kind", "category", "suggested_category", "confidence")
+
+        api_get api_v1_receipts_path
+        listed = json["receipts"].find { |receipt| receipt["id"] == receipts(:market_receipt).id }
+        assert_equal [ nil, nil, nil ], listed.values_at("category", "suggested_category", "confidence")
+      end
+
       test "a receipt with no OCR yet has empty fields and no items" do
         api_get api_v1_receipt_path(receipts(:new_receipt))
 
         assert_api_conform(200)
         assert_equal [ "uploaded", nil, nil, nil, "0.00", [] ], json.values_at("status", "merchant", "issued_at", "total", "items_total", "items")
+        assert_equal [ nil, nil, nil ], json.values_at("category", "suggested_category", "confidence")
       end
 
       test "the JSON never carries the photos, the OCR answer or the fingerprint" do
