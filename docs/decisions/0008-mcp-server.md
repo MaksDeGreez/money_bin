@@ -42,6 +42,8 @@ The transport is the SDK's `StreamableHTTPTransport` with `stateless: true` and
   the protocol's long-lived `subscriptions/listen` stream is not served.
 - **HTTP methods**: POST carries JSON-RPC. There is no server-to-client stream to open (GET) and no
   session to end (DELETE), so every other method is a 405 with `Allow: POST`, as the specification allows.
+  Any other path under `/mcp` passes the same gates and is then a JSON 404, and a request Rails cannot
+  decode is a JSON 400 before them (0007, "Errors outside the endpoints").
 - **Capabilities**: tools only. No prompts, resources or logging are advertised, and no list-changed
   notification is promised (the tool list is fixed, and a stateless server could not send one).
 

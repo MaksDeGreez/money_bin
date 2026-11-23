@@ -123,7 +123,6 @@ identity, with as little machinery as possible.
   on one machine would lock out the owner's own agents when one of them is misconfigured.
 - Session expiry and a list of signed-in browsers with a "sign out everywhere" button. Changing the
   password with the rake task ends every session in the meantime.
-- A JSON 404 for unknown `/api` paths; today they get Rails' HTML 404.
 - Changing the password from the browser.
 
 ## Consequences

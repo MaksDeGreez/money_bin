@@ -13,6 +13,9 @@ module Api
   #   (one answer for all three, so a caller learns nothing about which). Both carry `WWW-Authenticate`.
   # - 403 `insufficient_scope`: a read token on a method that changes data.
   # - 404 `not_found` and 400 `bad_request` for the subclasses' missing records and required parameters.
+  # - 404 `not_found` and 405 `method_not_allowed` for paths and methods no endpoint takes
+  #   (Api::ErrorsController), and 400 `bad_request` for a request Rails cannot decode (ApiRequestErrors,
+  #   lib/middleware/), both outside the endpoints.
   # - 422 `invalid_parameter` for a query parameter that is unknown, malformed or names nothing
   #   (Api::QueryParameters), and for a cursor the API did not hand out.
   #

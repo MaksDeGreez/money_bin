@@ -177,12 +177,37 @@ To make the check strict:
   Minitest responses against it.
 - **Trigram indexes for `q` now**: see above.
 
+### Errors outside the endpoints
+
+The error shape holds for requests no endpoint takes and for requests Rails cannot decode, which once
+got Rails' HTML pages:
+
+- **A fallback route** drawn after every API route (`/api(*path)`, `Api::ErrorsController`) takes the
+  rest of `/api`. It checks the token first, as every API path does, so without one every path is the
+  same 401 and a caller learns nothing about which exist. It skips the scope check, which is about
+  methods that change data: a read token sending POST to a GET-only path learns that the method is wrong
+  (405 `method_not_allowed`, `Allow` read from the routes, HEAD wherever GET is), not that its token
+  only reads. Anything else is a 404 `not_found`: bare `/api`, a misspelt path, a `.xml` suffix. The
+  contract test leaves this route out of "every route is documented" by name, and checks it stays last.
+- **A Rack middleware** (`lib/middleware/api_request_errors.rb`), for `/api` and `/mcp` paths only,
+  answers what fails before any `rescue_from` can see it: the router's and the parameter readers'
+  `ActionController::BadRequest` (a path or query whose %-encoding is not UTF-8, `?limit=%`,
+  `a=1&a[b]=2`), a body Rack or Rails cannot parse, and the router's `ActionController::UnknownHttpMethod`.
+  They become a 400 `bad_request` and a 405 (its `Allow` the methods the area answers anywhere, never per
+  path) before the token is checked: the request could not be read far enough, and the answer reveals
+  nothing. It sits right after `ActionDispatch::DebugExceptions`, because in development and test that
+  renders HTML before `config.exceptions_app` is consulted, so an exceptions app alone would not do; and
+  again before `Rack::MethodOverride`, which reads a POST's form body above Rails' error pages and lets
+  Rack's multipart errors through. It logs the exception's class only, never the query string.
+- A GET whose JSON body does not parse is refused like any other body: 422 `invalid_parameter` naming
+  `body`.
+- The promise covers requests the web server hands to the app. Puma answers a request it cannot parse
+  at all (a malformed request line) itself, in plain text. A 500 is still Rails' own answer, not this shape.
+
 ## Deferred
 
 - Writes over the API (an agent proposing a draft transaction, accepting a receipt) and the MCP server.
 - Serving receipt photos to an agent.
-- A JSON 404 for unknown `/api` paths (still Rails' HTML 404, as in 0002), and a JSON 400 for a query
-  string Rails cannot decode (invalid %-encoding is refused before the controller runs, with an HTML 400).
 - Several values for one filter (`status=draft,needs_review`), sorting options, a total row count.
 - Zero-filled months in the summary, and a summary filtered by category or account.
 

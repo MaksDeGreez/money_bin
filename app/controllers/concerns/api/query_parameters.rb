@@ -30,9 +30,14 @@ module Api
       end
 
       # The first parameter named in a request body, for the error message: Rails does not parse the body of
-      # every GET, so a JSON body is read here. "body" when no name can be read.
+      # every GET, so a JSON body is read here. "body" when no name can be read, a body that does not parse
+      # included: it is refused the same way, not answered as a server error.
       def body_parameter_name
-        names = request.request_parameters.keys
+        names = begin
+          request.request_parameters.keys
+        rescue ActionDispatch::Http::Parameters::ParseError
+          []
+        end
         names = Array((JSON.parse(request.raw_post) rescue nil).try(:keys)) if names.empty?
         names.first || "body"
       end

@@ -29,6 +29,7 @@ Bundler.require(*Rails.groups)
 Dotenv::Rails.files = [ File::NULL ] if Dotenv::Rails.env.test?
 
 require_relative "redis_url"
+require_relative "../lib/middleware/api_request_errors"
 
 module MoneyBin
   class Application < Rails::Application
@@ -38,7 +39,7 @@ module MoneyBin
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
-    config.autoload_lib(ignore: %w[assets tasks])
+    config.autoload_lib(ignore: %w[assets tasks middleware])
 
     # Slim is the only template language. Generators write .slim views, no system tests,
     # no helper files and no stylesheets.
@@ -62,5 +63,12 @@ module MoneyBin
     # and reads files; a page that uploads or shows a photo must be an app controller behind the
     # Authentication concern (docs/decisions/0002-authentication-and-api-tokens.md).
     config.active_storage.draw_routes = false
+
+    # The REST API and the MCP server answer requests Rails cannot decode (invalid percent-encoding, a body
+    # that does not parse, an unknown HTTP method) in their JSON error shape, not with an HTML page. Twice:
+    # after DebugExceptions, which would render HTML first, and before Rack::MethodOverride, which reads a
+    # POST's form body before Rails' error pages are in the stack (lib/middleware/api_request_errors.rb).
+    config.middleware.insert_after ActionDispatch::DebugExceptions, ApiRequestErrors
+    config.middleware.insert_before Rack::MethodOverride, ApiRequestErrors
   end
 end

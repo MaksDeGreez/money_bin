@@ -60,10 +60,16 @@ Rails.application.routes.draw do
       resources :receipts, only: %i[ index show ]
     end
   end
+  # Anything else under /api (bare /api, an unknown path, a `.xml` suffix, a routed path with another method):
+  # a JSON 404 or 405 after the token check (Api::ErrorsController). It must stay after every API route.
+  match "api(*path)", to: "api/errors#fallback", via: :all, format: false, constraints: { path: %r{[/.].*} },
+    defaults: { format: :json }, as: nil
 
   # The MCP server for AI assistants (McpController): personal API tokens only, POST only, stateless.
   # Every method is routed so the controller can answer the others with 405 after its checks.
   match "mcp", to: "mcp#handle", via: :all, format: false, as: :mcp
+  # Any other path under /mcp (bare /mcp is taken above): a JSON 404 after the same gates.
+  match "mcp(*path)", to: "mcp#not_found", via: :all, format: false, constraints: { path: %r{[/.].*} }, as: nil
 
   # Sidekiq's dashboard, for a signed-in browser only (the same session cookie as every page). For anyone
   # else the route does not match, so they get a plain 404 and cannot tell that it exists.

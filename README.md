@@ -124,7 +124,11 @@ curl -s -H "Authorization: Bearer $MONEY_BIN_TOKEN" http://localhost:3100/api/v1
 
 Errors have one shape, `{"error": {"code": "...", "message": "..."}}`: 401 `unauthorized` (no token) or
 `invalid_token` (unknown, malformed or revoked), 403 `insufficient_scope` (a `read` token on a request
-that changes data).
+that changes data). With a token, a path under `/api` that does not exist is a 404 `not_found` and a
+method a path does not answer is a 405 `method_not_allowed` with an `Allow` header. A request the app
+cannot decode (an invalid percent-encoding such as `?q=%ff`, a body that does not parse) is a 400
+`bad_request`, with or without a token; so is one to `/mcp`. Only a request the web server refuses
+before the app sees it gets a plain answer of the web server's own.
 
 ## The read API
 
