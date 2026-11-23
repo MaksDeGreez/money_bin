@@ -1,0 +1,11 @@
+/ The "Change" form in its Turbo Frame (transactions/_change_categories); opened on its own, a page around it.
+- content_for :title, "Change categories · Transaction ##{@transaction.id} · Money Bin"
+
+- unless turbo_frame_request?
+  = render "ui/page_header", title: "Change categories", description: "Transaction ##{@transaction.id}" do
+    = ui_link_button transaction_path(@transaction), variant: :ghost, size: :sm do
+      = ui_icon "chevron-left"
+      span Back to the transaction
+
+= turbo_frame_tag dom_id(@transaction, :categories) do
+  = render "transactions/categories_form", transaction: @transaction, filter: @filter, from_page: @from_page

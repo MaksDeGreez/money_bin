@@ -1,5 +1,6 @@
 / One transaction of the list in its own tbody, so a categorised line can replace it (categorise.turbo_stream).
-/ Under the row, each uncategorised line with its suggestion and the controls to categorise it.
+/ The category cell offers "Change" (transactions/_change_categories). Under the row, each uncategorised line with
+/ its suggestion and the controls to categorise it.
 - message = local_assigns[:message]
 tbody id=dom_id(transaction, :list)
   tr
@@ -9,7 +10,9 @@ tbody id=dom_id(transaction, :list)
       - if transaction.comment.present?
         .text-xs.text-ink-muted = transaction.comment.truncate(80)
     td.whitespace-nowrap = transaction.account.name
-    td = transaction_categories(transaction)
+    td
+      = transaction_categories(transaction)
+      = render "transactions/change_categories", transaction:, link_params: { filter: filter.to_params }
     td.data-grid-num = receipt_money(transaction.amount, transaction.account.currency)
     td.whitespace-nowrap = transaction_status_badge(transaction)
   - if message

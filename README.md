@@ -41,7 +41,7 @@ with a dashboard and the UI helpers, the owner signs in, sees the ledger at a gl
 gets a category suggestion with a confidence for every item (the owner's own earlier labels first, then a
 zero-shot model), corrects them in a review form and accepts them into the ledger, enters an expense by hand,
 browses the ledger and categorises what is still uncategorised with the local transaction categoriser's
-suggestions (one by one or in bulk), AI agents authenticate with personal API tokens and read the ledger through a read-only
+suggestions (one by one or in bulk) or changes any transaction's categories, AI agents authenticate with personal API tokens and read the ledger through a read-only
 JSON API or the read-only MCP server, the ML service answers with its stub backend or reads receipts
 with a local vision model (`OCR_BACKEND=mlx`, Apple silicon) or a hosted one through OpenRouter
 (`OCR_BACKEND=openrouter`, zero-data-retention endpoints only), and CI checks both. The domain model is described in
@@ -426,7 +426,8 @@ service serves at `/categorise/transaction` (it takes the newest one there, or `
 restart it after a new fit). It loads on the first request and needs the e5-base weights in the local Hugging
 Face cache; it never sends transaction data anywhere. In the app, **Transactions** (`/transactions`) lists the
 ledger with filters in the URL; **Refresh suggestions** scores every uncategorised line in a background job;
-each uncategorised line can be categorised in one step (Take, or another category; keys j / k / t / c), and
+each uncategorised line can be categorised in one step (Take, or another category; keys j / k / t / c), any
+transaction's categories can be changed with **Change** (on the list or its page), and
 **Accept suggestions from N %** previews, then (once confirmed) categorises in bulk, skipping any row edited
 meanwhile. Card slips get a category suggestion from the payee's history or this model. Rules:
 [`docs/domain.md`](docs/domain.md), "Transaction suggestions" and "Card slip suggestions".

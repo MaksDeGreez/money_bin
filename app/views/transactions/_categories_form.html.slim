@@ -1,0 +1,37 @@
+/ "Change": one category picker per line of the transaction (a split shows each line's amount). Each line carries the
+/ category it shows now, so a category set or changed meanwhile saves nothing, and all lines are saved together
+/ (Transactions::Categorise in its edit mode). No suggestion: the choice is the person's own. The picker has the
+/ focus when it opens, Enter saves, Escape or "Cancel" closes it, and the focus goes back to "Change"
+/ (category_change_controller.js). The review queue's keys (j / k / t / c) are not attached here.
+- if transaction.transfer_leg?
+  p.text-sm.text-ink-muted A transfer leg: it has no lines.
+- elsif transaction.receipt
+  p.text-sm.text-ink-muted
+    | Booked from a receipt: change its items' categories on
+    =< link_to "the receipt", receipt_path(transaction.receipt), data: { turbo_prefetch: false, turbo_frame: "_top" }
+    | .
+- else
+  - currency = transaction.account.currency
+  - split = transaction.lines.size > 1
+  = form_with url: categories_transaction_path(transaction), method: :patch, class: "mt-2 flex flex-col gap-2",
+    data: { turbo_frame: "_top", controller: "category-change", category_change_return_value: dom_id(transaction, :change_categories),
+      action: "keydown->category-change#keydown turbo:submit-end->category-change#saved" } do |f|
+    = hidden_field_tag :lock_version, transaction.lock_version, id: nil
+    - if from_page
+      = hidden_field_tag :from, "page", id: nil
+    - else
+      - filter.to_params.each do |key, value|
+        = hidden_field_tag "filter[#{key}]", value, id: nil
+    - transaction.lines.each do |line|
+      - amount = receipt_money(line.amount, currency)
+      = hidden_field_tag "lines[#{line.id}][observed_category_id]", line.category_id.to_s, id: nil
+      = fields_for "lines[]", line do |l|
+        .flex.flex-wrap.items-center.gap-2
+          - if split
+            span.text-xs.text-ink-muted.tabular-nums = amount
+          .w-64
+            = l.category_select :category_id, category_choices, "aria-label": (split ? "Category of the line of #{amount}" : "Category"),
+              id: "change_category_#{line.id}", class: "combobox-compact"
+    .flex.flex-wrap.items-center.gap-2
+      = f.submit "Save", name: nil, variant: :primary, size: :sm
+      = ui_button "Cancel", variant: :ghost, size: :sm, data: { action: "category-change#close" }

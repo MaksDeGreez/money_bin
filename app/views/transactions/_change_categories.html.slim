@@ -1,0 +1,15 @@
+/ "Change" (TransactionsController#categories) on the list and the transaction page: a link that loads one category
+/ picker per line into the empty Turbo Frame after it, only when asked for (never a lazy frame per row, which would
+/ fire one request per visible row). A transaction booked from a receipt links to the receipt instead (its lines are
+/ rebuilt from the items on "Accept again"); a transfer leg has no lines and no control.
+/ `link_params`: the list's filter ({ filter: {...} }) or { from: "page" }; `autofocus`: the focus comes back here.
+- unless transaction.transfer_leg?
+  - if transaction.receipt
+    = link_to "Change on the receipt", receipt_path(transaction.receipt), class: "text-xs text-ink-muted underline", data: { turbo_prefetch: false }
+  - else
+    = ui_link_button categories_transaction_path(transaction, link_params), variant: :link, size: :sm, id: dom_id(transaction, :change_categories),
+      "aria-label": "Change the categories of transaction ##{transaction.id}",
+      data: { turbo_frame: dom_id(transaction, :categories), turbo_prefetch: false, controller: ("autofocus" if local_assigns[:autofocus]) } do
+      = ui_icon "pencil"
+      span Change
+    = turbo_frame_tag dom_id(transaction, :categories)
