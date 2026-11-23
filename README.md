@@ -49,7 +49,7 @@ with a local vision model (`OCR_BACKEND=mlx`, Apple silicon) or a hosted one thr
 
 ## Requirements
 
-- Ruby 4.0.7 (`.ruby-version`)
+- Ruby 4.0.10 (`.ruby-version`)
 - PostgreSQL 18 and Redis 8, for example from Homebrew (`bin/services` starts them with `brew services`)
 - [uv](https://docs.astral.sh/uv/) for the ML service (it installs Python 3.12 when needed)
 - [gitleaks](https://github.com/gitleaks/gitleaks) for the pre-commit hook (`brew install gitleaks`)
