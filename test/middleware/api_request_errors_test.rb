@@ -138,6 +138,34 @@ class ApiRequestErrorsTest < ActiveSupport::TestCase
     assert_json_error headers, body, "unauthorized"
   end
 
+  test "a Content-Type or Accept header that is not a media type is a JSON 400, with or without a token" do
+    [ [ "GET", "/api/v1/transactions", { content_type: "foo", body: "x" } ], [ "GET", "/api/v1/nope", { content_type: "foo", body: "x" } ],
+      [ "POST", "/mcp", { content_type: "foo", body: "x" } ], [ "POST", "/mcp", { headers: { "HTTP_ACCEPT" => "foo" } } ],
+      [ "POST", "/mcp/nope", { headers: { "HTTP_ACCEPT" => "foo" } } ] ].each do |method, path, options|
+      [ nil, :agent_read ].each do |token|
+        status, headers, body = app_call(method, path, token:, **options)
+
+        assert_equal 400, status, "#{method} #{path} #{options} token=#{token.inspect}"
+        assert_json_error headers, body, "bad_request"
+      end
+    end
+  end
+
+  test "client IP headers that contradict each other are a JSON 400" do
+    status, headers, body = app_call("GET", "/api/v1/status", headers: { "HTTP_CLIENT_IP" => "192.0.2.1", "HTTP_X_FORWARDED_FOR" => "198.51.100.1" })
+
+    assert_equal 400, status
+    assert_json_error headers, body, "bad_request"
+  end
+
+  test "an answer to HEAD has no body" do
+    status, headers, body = app_call("HEAD", "/api/v1/transactions", query: "q=%ff")
+
+    assert_equal 400, status
+    assert_equal "application/json; charset=utf-8", headers["content-type"]
+    assert_equal "", body.join
+  end
+
   test "the browser pages keep Rails' own answer" do
     status, headers, _body = app_call("GET", "/receipts", query: "q=%ff")
 
@@ -151,10 +179,10 @@ class ApiRequestErrorsTest < ActiveSupport::TestCase
     end
 
     # A request built by hand, so the path and query reach the app exactly as written.
-    def app_call(method, path, query: "", token: nil, body: "", content_type: nil)
+    def app_call(method, path, query: "", token: nil, body: "", content_type: nil, headers: {})
       env = Rack::MockRequest.env_for("/", method: "GET", input: body)
       env.merge!(Rack::REQUEST_METHOD => method, Rack::PATH_INFO => path, Rack::QUERY_STRING => query,
-        "REQUEST_URI" => query.empty? ? path : "#{path}?#{query}", "HTTP_HOST" => McpTestHelper::HOST)
+        "REQUEST_URI" => query.empty? ? path : "#{path}?#{query}", "HTTP_HOST" => McpTestHelper::HOST, **headers)
       env["CONTENT_TYPE"] = content_type if content_type
       env["HTTP_AUTHORIZATION"] = "Bearer #{plain_token(token)}" if token
       status, headers, response_body = Rails.application.call(env)

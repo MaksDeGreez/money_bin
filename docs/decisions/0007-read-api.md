@@ -188,11 +188,14 @@ got Rails' HTML pages:
   methods that change data: a read token sending POST to a GET-only path learns that the method is wrong
   (405 `method_not_allowed`, `Allow` read from the routes, HEAD wherever GET is), not that its token
   only reads. Anything else is a 404 `not_found`: bare `/api`, a misspelt path, a `.xml` suffix. The
-  contract test leaves this route out of "every route is documented" by name, and checks it stays last.
+  contract test leaves this route out of "every route is documented" by name; the controller's test
+  checks that it stays the last API route.
 - **A Rack middleware** (`lib/middleware/api_request_errors.rb`), for `/api` and `/mcp` paths only,
   answers what fails before any `rescue_from` can see it: the router's and the parameter readers'
   `ActionController::BadRequest` (a path or query whose %-encoding is not UTF-8, `?limit=%`,
-  `a=1&a[b]=2`), a body Rack or Rails cannot parse, and the router's `ActionController::UnknownHttpMethod`.
+  `a=1&a[b]=2`, a body whose text is not UTF-8), a form or multipart body Rack cannot read, a
+  Content-Type or Accept header that is not a media type, client IP headers that contradict each other,
+  and the router's `ActionController::UnknownHttpMethod`.
   They become a 400 `bad_request` and a 405 (its `Allow` the methods the area answers anywhere, never per
   path) before the token is checked: the request could not be read far enough, and the answer reveals
   nothing. It sits right after `ActionDispatch::DebugExceptions`, because in development and test that
@@ -200,9 +203,11 @@ got Rails' HTML pages:
   again before `Rack::MethodOverride`, which reads a POST's form body above Rails' error pages and lets
   Rack's multipart errors through. It logs the exception's class only, never the query string.
 - A GET whose JSON body does not parse is refused like any other body: 422 `invalid_parameter` naming
-  `body`.
-- The promise covers requests the web server hands to the app. Puma answers a request it cannot parse
-  at all (a malformed request line) itself, in plain text. A 500 is still Rails' own answer, not this shape.
+  `body` (without a token, the usual 401). `/mcp` answers malformed JSON with JSON-RPC's own parse error.
+- The promise covers requests the web server hands to the app and the host check lets through. Puma
+  answers a request it cannot parse at all (a malformed request line) itself, in plain text, and Rails'
+  host check (`config.hosts`, development and production) refuses a foreign Host with its own page. A 500
+  is still Rails' own answer, not this shape.
 
 ## Deferred
 

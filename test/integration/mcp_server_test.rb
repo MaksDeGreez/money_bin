@@ -330,11 +330,13 @@ class McpServerTest < ActionDispatch::IntegrationTest
   end
 
   test "a query string Rails cannot decode is a JSON 400, before any gate" do
-    post "/mcp?q=%ff", params: { jsonrpc: "2.0", id: 1, method: "tools/list" }.to_json, headers: mcp_headers(nil)
+    [ mcp_headers(nil), mcp_headers(nil).merge("Host" => "evil.example:3100") ].each do |headers|
+      post "/mcp?q=%ff", params: { jsonrpc: "2.0", id: 1, method: "tools/list" }.to_json, headers: headers
 
-    assert_response :bad_request
-    assert_equal "application/json", response.media_type
-    assert_equal "bad_request", json.dig("error", "code")
+      assert_response :bad_request
+      assert_equal "application/json", response.media_type
+      assert_equal "bad_request", json.dig("error", "code")
+    end
   end
 
   private

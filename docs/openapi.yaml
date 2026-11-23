@@ -31,9 +31,9 @@ info:
     `method_not_allowed` with an `Allow` header naming the methods it answers; both after the token check, so
     without a valid token every path is a 401. An HTTP method the server does not know at all is a 405 before
     the token check, its `Allow` naming the methods the API answers anywhere. A request that cannot be decoded
-    is a 400 `bad_request` (see the responses). These answers are JSON too; they cover every request the web
-    server hands to the app (one it refuses itself, such as a malformed request line, gets the web server's
-    own answer).
+    is a 400 `bad_request` (see the responses). These answers are JSON too, for every request the web server
+    hands to the app (one it refuses itself, such as a malformed request line, gets the web server's own
+    answer, and so does a Host header the app's host check refuses).
 
     Lists are read a page at a time: pass `next_cursor` from one page as `cursor` to get the next, until it is
     null. A cursor is opaque; keep the same filters while following it.
@@ -354,8 +354,9 @@ components:
     BadRequest:
       description: |
         A required parameter is missing, or the request cannot be decoded: a path or query string whose
-        percent-encoding is not valid UTF-8 (`?q=%ff`, `?limit=%`), or a parameter given both as a value and as a
-        nested one (`a=1&a[b]=2`) (`bad_request`). An undecodable request is refused before the token is checked.
+        percent-encoding is not valid UTF-8 (`?q=%ff`, `?limit=%`), a parameter given both as a value and as a
+        nested one (`a=1&a[b]=2`), or a Content-Type or Accept header that is not a media type (`bad_request`).
+        An undecodable request is refused before the token is checked.
       content:
         application/json:
           schema:
