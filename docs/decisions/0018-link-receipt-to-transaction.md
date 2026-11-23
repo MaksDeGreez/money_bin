@@ -146,12 +146,22 @@ Accept assigned, the earlier one, or none: a payee a person set between two acce
 check cannot see, since "Accept again" refreshes it) is the person's and stays. A `created` booking's
 transaction is destroyed with its lines; a transaction of source `receipt` without a record (from before
 records existed) the same way, with its payee kept, since nothing says the acceptance created it; any other
-transaction without a record is refused, since its earlier state is not known.
+transaction without a record is refused, since its earlier state is not known. The unrecorded `receipt` row is
+deleted without the "unchanged since" check, for want of a baseline: a deliberate exception for a case only test
+data has (the real data had no receipt booked without a record when the undo came); "Accept again" first writes a
+record, after which the undo checks it.
 
-A payee the acceptance created is deleted when no transaction and no other booking record names it any more,
-under its row lock (a writer adding a reference holds a key-share lock on that row, so it is seen or waits)
-and in a savepoint: if the delete is refused anyway, the payee stays and the undo commits. An unused payee is
-harmless; a lost undo is not.
+A payee the acceptance created is deleted when no transaction, no other booking record and no linked booking's
+`previous` names it any more, in a savepoint: if the delete is refused anyway, the payee stays and the undo
+commits. An unused payee is harmless; a lost undo is not. Its row is locked with `SKIP LOCKED`: a writer about to
+refer to it holds a key-share lock (the foreign key of a transaction it inserts, and
+`Payee.find_or_create_by_name!` reads with one), and the payee is then kept rather than deleted under that
+writer. When the payee is kept because another booking assigned it too, that booking inherits "Accept created
+it", so the payee goes with whichever of the two is undone last, in either order.
+
+A refusal for an edit made in the app (a category set from the transaction list, a comment) says that "Accept
+again" makes the undo possible: it overwrites the lines anyway and records the transaction as it leaves it. A
+later import or another amount cannot be got past that way.
 
 ### The receipt
 

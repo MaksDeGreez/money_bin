@@ -221,8 +221,9 @@ module ReceiptLoad
       write_ingest([ ingest_line(1, colours: [ 1 ]), ingest_line(2) ])
       load_receipts
       receipt = loaded(1)
-      receipt.update_columns(status: "extracted", currency: "UAH", issued_at: Time.utc(2026, 10, 8, 9))
-      receipt.items.create!(position: 1, name: "Bread", amount: "40.00")
+      # A card slip has no items, so only its status keeps it from being pristine.
+      receipt.update_columns(status: "extracted", kind: "card_slip", total: BigDecimal("40.00"), currency: "UAH",
+                             issued_at: Time.utc(2026, 10, 8, 9))
       Receipts::Accept.call(receipt.reload, account: accounts(:card_uah))
       receipt.reload
       Receipts::UndoAccept.call(receipt, lock_version: receipt.lock_version, transaction_lock_version: receipt.ledger_transaction.lock_version)
@@ -235,7 +236,7 @@ module ReceiptLoad
       assert_equal 1, load_receipts[:retired_kept]
 
       assert_equal 1, receipt.reload.images.count
-      assert_equal [ "Bread" ], receipt.items.pluck(:name)
+      assert_empty receipt.items
       assert_empty enqueued_jobs.select { |job| job["job_class"] == "ReceiptOcrJob" }, "nothing queues OCR"
     end
 

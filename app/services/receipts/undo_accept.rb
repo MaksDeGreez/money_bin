@@ -13,19 +13,23 @@ module Receipts
   # - `linked` (the person chose a ledger transaction): the transaction must still be as Accept left it, by all of
   #   its `lock_version` (the record's `booked_lock_version`), its lines (ReceiptBooking.lines_digest: a line saved
   #   on its own does not move the version), its `import_digest` (a later import that rewrote the row wins: the
-  #   export is the source of that row) and its amount (the one in `previous`); else ChangedSinceBooking. The stored
-  #   category suggestion on its lines is in neither marker on purpose: a refreshed suggestion is nobody's change.
+  #   export is the source of that row) and its amount (the one in `previous`); else ChangedSinceBooking, which for an
+  #   edit in the app says that "Accept again" (it writes the lines anew and records them) makes the undo possible.
+  #   The stored category suggestion on its lines is in neither marker on purpose: a refreshed suggestion is nobody's
+  #   change.
   #   Then the lines in `previous` (format 1 only; another is UnknownFormat) replace the current ones, built as new
   #   lines through the transaction, so its rules run (the sum, a category not a group); their ids are new, every
   #   other column is restored as recorded, `created_at` and `updated_at` included (the line is the old line put
   #   back; the transaction's own `updated_at` and `lock_version` show the undo). The status comes back from
   #   `previous`, and the payee too when the transaction's payee is still the one Accept assigned, the earlier one,
-  #   or none (a payee a person set between two acceptances stays).
+  #   or none (a payee a person set between two acceptances stays). Columns Accept never writes (the date, the
+  #   comment, the account, the merchant) are not in `previous` and stay as they are.
   # - `created` (Accept created the expense): the transaction must still be as Accept left it (version and lines
   #   digest); then it is destroyed with its lines.
   # - No record, on a transaction of source `receipt` (booked before records existed): Accept created it, so it is
-  #   destroyed the same way; its payee stays, since nothing says who created it. Any other transaction without a
-  #   record is refused (NotUndoable): its earlier state is not known.
+  #   destroyed the same way, but without the "unchanged since" check (there is nothing to compare with; no such
+  #   receipt was in the real data when the undo came) and keeping its payee, since nothing says who created it. Any
+  #   other transaction without a record is refused (NotUndoable): its earlier state is not known.
   # - A transfer leg is refused.
   #
   # References `previous` names that no longer resolve are dropped, not guessed: a category deleted or turned into a
@@ -34,8 +38,9 @@ module Receipts
   # that thereby gets a line without a category becomes `needs_review`, Accept's own rule. The result lists what
   # was dropped, so the page tells the person.
   #
-  # A payee Accept created (`payee_created`) is deleted afterwards when no transaction and no other booking record
-  # refers to it, inside a savepoint: a parallel reuse or a foreign key keeps the payee and never the undo back.
+  # A payee Accept created (`payee_created`) is deleted afterwards when no transaction, no other booking record and no
+  # linked booking's `previous` refers to it, inside a savepoint: a parallel reuse or a foreign key keeps the payee and
+  # never the undo back. Kept because another booking assigned it too, it passes "Accept created it" on to that one.
   #
   # The receipt ends `extracted` with no transaction (Receipt#release_from_ledger!), its booking record gone; its
   # items, their categories and `accepted_by_user`, its ground truth, OCR and QR columns, photos and
@@ -45,7 +50,7 @@ module Receipts
   # Locks, in Receipts::Accept's order so the two cannot deadlock: the receipt row, the transaction row, its lines in
   # id order (the suggestion job writes lines without moving the transaction's version). Everything runs in one
   # database transaction: a refusal changes nothing. Every refusal is a subclass of Error, its message in words for
-  # the page.
+  # the page; a lock or a reference lost to a parallel writer is Busy. The SQL log is silenced while it writes.
   class UndoAccept
     Result = Data.define(:mode, :transaction_id, :transaction_deleted, :dropped, :payee_removed, :payee_kept) do
       def transaction_deleted? = transaction_deleted
@@ -89,7 +94,18 @@ module Receipts
 
     # Returns a Result.
     def call
-      result = Receipt.transaction(requires_new: true) do
+      result = silencing_sql_log { Receipt.transaction(requires_new: true) { undo } }
+      @receipt.reload
+      LiveUpdate.changed(@receipt)
+      result
+    rescue ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout
+      raise Busy, "another change was writing the transaction at the same moment; try again"
+    rescue ActiveRecord::InvalidForeignKey
+      raise Busy, "something the earlier state refers to was deleted at the same moment; try again"
+    end
+
+    private
+      def undo
         @receipt.lock!
         check_receipt
         transaction = lock_transaction(@receipt.transaction_id)
@@ -103,14 +119,13 @@ module Receipts
           remove(transaction, booking)
         end
       end
-      @receipt.reload
-      LiveUpdate.changed(@receipt)
-      result
-    rescue ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout
-      raise Busy, "another change was writing the transaction at the same moment; try again"
-    end
 
-    private
+      # The restore writes the earlier lines' comments and amounts: kept out of the SQL log, as the importers do.
+      def silencing_sql_log(&block)
+        logger = ActiveRecord::Base.logger
+        logger ? logger.silence(Logger::WARN, &block) : yield
+      end
+
       def check_receipt
         unless @receipt.reviewed? && @receipt.transaction_id
           raise NotBooked, "the receipt is not booked into the ledger (it is #{@receipt.status})"
@@ -163,17 +178,22 @@ module Receipts
 
       # What a person (or an import) changed since Accept wrote the transaction.
       def check_unchanged(transaction, booking)
-        changes = []
-        changes << "the transaction itself (its version moved)" if transaction.lock_version != booking.booked_lock_version
-        changes << "its lines" if ReceiptBooking.lines_digest(transaction.id) != booking.lines_digest
+        edits = []
+        edits << "the transaction itself (its version moved)" if transaction.lock_version != booking.booked_lock_version
+        edits << "its lines" if ReceiptBooking.lines_digest(transaction.id) != booking.lines_digest
+        others = []
         if booking.linked?
-          changes << "a later import rewrote it" if transaction.import_digest != booking.transaction_import_digest
-          changes << "its amount" if transaction.amount != decimal(booking.previous["amount"], "amount")
+          others << "a later import rewrote it" if transaction.import_digest != booking.transaction_import_digest
+          others << "its amount" if transaction.amount != decimal(booking.previous["amount"], "amount")
         end
-        return if changes.empty?
+        return if edits.empty? && others.empty?
 
-        raise ChangedSinceBooking, "the transaction changed after the receipt was booked on it (#{changes.to_sentence}); " \
+        message = "the transaction changed after the receipt was booked on it (#{(edits + others).to_sentence}); " \
           "undoing would overwrite that"
+        # An edit in the app (a category from the list, a comment) is overwritten by "Accept again" anyway, which also
+        # records the transaction as it leaves it; an import or an amount is not.
+        message += ". To undo anyway, accept the receipt again first (it writes the lines anew), then undo" if others.empty?
+        raise ChangedSinceBooking, message
       end
 
       # `linked`: the earlier lines, status and payee come back; the transaction stays.
@@ -222,10 +242,14 @@ module Receipts
             CATEGORY_ORIGIN_COLUMNS.each { |column| attributes[column] = nil }
             @category_dropped = true
           end
+          # A recorded suggestion whose best category is gone goes whole; a runner-up is checked on its own (also when
+          # the best one was already empty in the record: the database nullifies a deleted suggested category alone).
+          suggestion_dropped = false
           attributes["suggested_category_id"] = category(stored["suggested_category_id"], "its suggested category") do
             SUGGESTION_COLUMNS.each { |column| attributes[column] = nil }
+            suggestion_dropped = true
           end
-          if attributes["suggested_category_id"]
+          unless suggestion_dropped
             attributes["runner_up_category_id"] = category(stored["runner_up_category_id"], "its runner-up suggestion") do
               RUNNER_UP_COLUMNS.each { |column| attributes[column] = nil }
             end
@@ -235,10 +259,10 @@ module Receipts
       end
 
       # The id when it names a category (not a group) now; otherwise nil, noted, and the block clears what depends on
-      # it.
+      # it. A key-share lock keeps the category from being deleted until the restored line is in.
       def category(id, what)
         return nil if id.nil?
-        return id if Category.leaves.exists?(id:)
+        return id if Category.leaves.where(id:).lock("FOR KEY SHARE").pick(:id)
 
         @dropped << (Category.exists?(id:) ? "#{what} is now a group" : "#{what} no longer exists")
         yield
@@ -260,21 +284,27 @@ module Receipts
           return current
         end
         return nil if previous_payee_id.nil?
-        return previous_payee_id if Payee.exists?(id: previous_payee_id)
+        return previous_payee_id if Payee.where(id: previous_payee_id).lock("FOR KEY SHARE").pick(:id)
 
         @dropped << "its earlier payee no longer exists"
         nil
       end
 
-      # Deletes the payee Accept created when nothing refers to it any more. In a savepoint, with the payee row locked
-      # (a writer that adds a reference to it holds a key-share lock on that row, so it is seen or waits): a refusal
-      # keeps the payee and lets the undo commit. True when it was deleted.
+      # Deletes the payee Accept created when nothing refers to it any more. In a savepoint: a refusal keeps the payee
+      # and lets the undo commit. The payee row is locked without waiting: a writer that is adding a reference to it
+      # (a transaction's foreign key, Payee.find_or_create_by_name!'s read) holds a key-share lock on it, and then the
+      # payee is simply kept. When it is kept because another booking also assigned it, that booking inherits "Accept
+      # created it", so the last undo of the payee's bookings removes it. True when it was deleted.
       def remove_created_payee(booking)
         return false unless booking.payee_created? && booking.assigned_payee_id
 
         Payee.transaction(requires_new: true) do
-          payee = Payee.lock.find_by(id: booking.assigned_payee_id)
-          if payee.nil? || payee_in_use?(payee)
+          payee = Payee.lock("FOR UPDATE SKIP LOCKED").find_by(id: booking.assigned_payee_id)
+          if payee.nil?
+            false
+          elsif payee_in_use?(payee)
+            ReceiptBooking.where(assigned_payee_id: payee.id, payee_created: false).order(:id).first
+              &.update_columns(payee_created: true, updated_at: Time.current)
             false
           else
             payee.destroy!
@@ -285,9 +315,11 @@ module Receipts
         false
       end
 
-      # A transaction or another booking record still names the payee (read under its row lock).
+      # A transaction names the payee, another booking assigned it, or a linked booking's earlier state names it (an
+      # undo of that booking would put it back).
       def payee_in_use?(payee)
-        Transaction.exists?(payee_id: payee.id) || ReceiptBooking.exists?(assigned_payee_id: payee.id)
+        Transaction.exists?(payee_id: payee.id) || ReceiptBooking.exists?(assigned_payee_id: payee.id) ||
+          ReceiptBooking.linked.where("(previous ->> 'payee_id')::bigint = ?", payee.id).exists?
       end
 
       def decimal(value, what)

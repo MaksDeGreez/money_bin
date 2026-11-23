@@ -22,14 +22,17 @@ class Payee < ApplicationRecord
 
   # The payee whose normalised name matches `name`, created with `name` when there is none.
   # Safe against a parallel insert of the same name (the unique index decides, then we read the winner).
+  # The payee found is read with a key-share lock, held until the caller's database transaction ends: the caller is
+  # about to refer to it, and Receipts::UndoAccept, which may delete a payee nothing uses, then leaves it alone
+  # instead of deleting it under the caller's feet. (The lock blocks only deletes and key changes, not a rename.)
   def self.find_or_create_by_name!(name)
     normalized = normalize_name(name)
     raise ArgumentError, "a payee name cannot be blank" if normalized.empty?
 
     # The savepoint keeps a caller's open transaction usable after a unique-index violation.
-    find_by(normalized_name: normalized) || transaction(requires_new: true) { create!(name:) }
+    lock("FOR KEY SHARE").find_by(normalized_name: normalized) || transaction(requires_new: true) { create!(name:) }
   rescue ActiveRecord::RecordNotUnique
-    find_by!(normalized_name: normalized)
+    lock("FOR KEY SHARE").find_by!(normalized_name: normalized)
   end
 
   # The key follows the name on every assignment, so it is right even on a save that skips validation.

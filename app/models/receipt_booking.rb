@@ -10,9 +10,10 @@ require "digest"
 # - `lines_digest`: the lines Accept wrote (ReceiptBooking.lines_digest), refreshed by every "Accept again", so an
 #   undo can tell whether somebody changed them since.
 # - `booked_lock_version`: the transaction's `lock_version` right after Accept wrote it, refreshed by every
-#   "Accept again". Every writer of the row or its lines moves it (a person's edit, a category from the list, an
-#   import); only the suggestion job's refresh of a line's stored suggestion does not, and that is disposable.
-#   So an undo can tell that the transaction changed since.
+#   "Accept again". Every writer of the row moves it (a person's edit, a category from the list, an import), and so
+#   does a line saved on its own with a new amount; a line saved on its own with only a new category or comment does
+#   not (`lines_digest` sees that), nor does the suggestion job's refresh of a stored suggestion, which is
+#   disposable. So Receipts::UndoAccept can tell that the transaction changed since.
 # - `assigned_payee`: the payee Accept set on the transaction (nil when it kept the transaction's own or the
 #   merchant name was blank); `payee_created`: Accept created that payee. A payee Accept created stays recorded
 #   when a later "Accept again" assigns another one, so an undo still knows it may remove it.

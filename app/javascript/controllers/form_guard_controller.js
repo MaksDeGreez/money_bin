@@ -16,7 +16,9 @@ import { Controller } from "@hotwired/stimulus"
 //   submission is never held back: a refused save's response (422, 409) renders, with its errors and the
 //   typed values, and focus goes to the first field marked invalid.
 // - While a submission is on its way the form is inert, so nothing typed then can be lost to the response.
-// - Leaving the page while dirty asks first (a Turbo visit, and closing or reloading the tab).
+// - Leaving the page while dirty asks first (a Turbo visit, and closing or reloading the tab). So does sending
+//   another form of the page ("Undo the acceptance", "Read again"), before it reaches the server: its redirect
+//   would only ask once the server had acted. A yes drops the unsaved changes, so the response can render.
 // - Enter never submits the form by accident; Ctrl+S (Cmd+S) clicks Save, Ctrl+Shift+S (Cmd+Shift+S) clicks
 //   Save as ground truth and Ctrl+Enter (Cmd+Enter) clicks Accept, when the form has them and they are
 //   enabled. Missing Shift on the ground-truth shortcut only saves, which is harmless.
@@ -43,9 +45,11 @@ export default class extends Controller {
       [this.element, "change", () => this.markDirty()],
       [this.element, "line-items:changed", () => this.markDirty()],
       [this.element, "keydown", (event) => this.preventImplicitSubmit(event)],
-      [this.element, "submit", () => { this.submitting = true }]
+      [this.element, "submit", () => { this.submitting = true }],
+      // Captured on the document, so it runs before Turbo's own submit handling (and its confirmation).
+      [document, "submit", (event) => this.otherFormSubmit(event), true]
     ]
-    this.listeners.forEach(([target, name, handler]) => target.addEventListener(name, handler))
+    this.listeners.forEach(([target, name, handler, capture]) => target.addEventListener(name, handler, capture === true))
   }
 
   // On connect and when a refused save's response is morphed in (the controller stays connected then).
@@ -54,7 +58,7 @@ export default class extends Controller {
   }
 
   disconnect() {
-    this.listeners.forEach(([target, name, handler]) => target.removeEventListener(name, handler))
+    this.listeners.forEach(([target, name, handler, capture]) => target.removeEventListener(name, handler, capture === true))
     delete document.documentElement.dataset.unsavedChanges
   }
 
@@ -73,6 +77,16 @@ export default class extends Controller {
 
   beforeVisit(event) {
     if (this.guarding && !window.confirm(LEAVE_MESSAGE)) event.preventDefault()
+  }
+
+  otherFormSubmit(event) {
+    if (event.target === this.element || !this.guarding) return
+    if (window.confirm(LEAVE_MESSAGE)) {
+      this.dirtyValue = false
+    } else {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
   }
 
   beforeUnload(event) {

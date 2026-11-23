@@ -139,7 +139,8 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
     assert_not result.payee_removed?
   end
 
-  test "a refreshed stored suggestion alone does not block the undo" do
+  test "a refreshed stored suggestion alone does not block the undo, and the earlier one comes back" do
+    original_lines = line_rows(@bank.id)
     link
     TransactionLine.where(transaction_id: @bank.id, category_id: nil)
       .update_all(suggested_category_id: categories(:cafes).id, suggestion_probability: 0.5, suggestion_source: "model",
@@ -147,6 +148,20 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
 
     assert_equal :linked, undo.mode
     assert @receipt.reload.extracted?
+    assert_equal original_lines, line_rows(@bank.id)
+  end
+
+  test "an edit in the app since the booking: refused with the way out, and Accept again then undo works" do
+    original_lines = line_rows(@bank.id)
+    link
+    TransactionLine.where(transaction_id: @bank.id, category_id: nil).first.update!(category: categories(:takeaway))
+
+    error = assert_refused(Receipts::UndoAccept::ChangedSinceBooking, /\(its lines\)/)
+    assert_match "To undo anyway, accept the receipt again first", error.message
+
+    Receipts::Accept.call(Receipt.find(@receipt.id))
+    undo
+    assert_equal original_lines, line_rows(@bank.id)
   end
 
   test "a stale receipt or transaction version is refused" do
@@ -187,7 +202,8 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
     link
     Transaction.where(id: @bank.id).update_all(import_digest: "b" * 64)
 
-    assert_refused(Receipts::UndoAccept::ChangedSinceBooking, /a later import rewrote it/)
+    error = assert_refused(Receipts::UndoAccept::ChangedSinceBooking, /a later import rewrote it/)
+    assert_no_match(/accept the receipt again/, error.message)
   end
 
   test "an amount that is not the recorded one is refused" do
@@ -213,6 +229,31 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
     booking.update_column(:previous, booking.previous.merge("lines" => lines))
 
     assert_refused(Receipts::UndoAccept::NotUndoable, /unreadable a line's amount/)
+  end
+
+  test "earlier lines that no longer add up are refused after the first writes, and everything is rolled back" do
+    link
+    booking = @receipt.reload.booking
+    lines = booking.previous["lines"].map { |line| line.merge("amount" => "-1.00") }
+    booking.update_column(:previous, booking.previous.merge("lines" => lines))
+
+    assert_refused(Receipts::UndoAccept::NotUndoable, /earlier state cannot be restored: Lines must add up/)
+    assert @receipt.reload.reviewed?
+    assert_equal booking.lines_digest, ReceiptBooking.lines_digest(@bank.id)
+  end
+
+  BUSY = Class.new(Receipts::UndoAccept) do
+    private def undo = raise(ActiveRecord::Deadlocked, "deadlock detected")
+  end
+
+  test "a lock lost to a parallel writer is a refusal to try again" do
+    link
+    receipt = Receipt.find(@receipt.id)
+
+    error = assert_raises(Receipts::UndoAccept::Busy) do
+      BUSY.new(receipt, lock_version: receipt.lock_version, transaction_lock_version: @bank.reload.lock_version).call
+    end
+    assert_match "try again", error.message
   end
 
   test "a transfer leg is refused" do
@@ -279,6 +320,45 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
     assert_equal [ "its suggested category no longer exists" ], result.dropped
   end
 
+  test "a runner-up deleted since drops only the runner-up" do
+    bakery = Category.create!(parent: categories(:groceries_group), name: "Bakery")
+    @bank.destroy!
+    @bank = bank_row
+    TransactionLine.where(transaction_id: @bank.id, category_id: nil).update_all(runner_up_category_id: bakery.id)
+    link
+    bakery.destroy!
+
+    result = undo
+
+    line = TransactionLine.where(transaction_id: @bank.id).order(:id).first
+    assert_equal [ categories(:groceries).id, 0.8731, nil, nil ],
+      line.values_at(:suggested_category_id, :suggestion_probability, :runner_up_category_id, :runner_up_probability)
+    assert_equal [ "its runner-up suggestion no longer exists" ], result.dropped
+  end
+
+  test "a runner-up recorded without a best suggestion (the database nullified it) comes back as recorded" do
+    TransactionLine.where(transaction_id: @bank.id, category_id: nil).update_all(suggested_category_id: nil)
+    original_lines = line_rows(@bank.id)
+    link
+
+    result = undo
+
+    assert_empty result.dropped
+    assert_equal original_lines, line_rows(@bank.id)
+    assert_equal categories(:cafes).id, TransactionLine.where(transaction_id: @bank.id).order(:id).first.runner_up_category_id
+  end
+
+  test "an earlier payee that no longer exists is reported and left empty" do
+    link
+    booking = @receipt.reload.booking
+    booking.update_column(:previous, booking.previous.merge("payee_id" => Payee.maximum(:id) + 1000))
+
+    result = undo
+
+    assert_nil @bank.reload.payee_id
+    assert_includes result.dropped, "its earlier payee no longer exists"
+  end
+
   test "a payee Accept created is removed when nothing else uses it" do
     link
     created = @bank.reload.payee
@@ -305,6 +385,53 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
     end
     assert_not result.payee_removed?
     assert_nil @bank.reload.payee_id
+  end
+
+  # A second receipt from the same shop, linked onto another bank row without a payee.
+  def second_receipt_on(transaction, merchant_name: "Corner Shop")
+    receipt = receipts(:new_receipt)
+    receipt.update_columns(status: "extracted", total: BigDecimal("40.00"), merchant_name:, currency: "UAH",
+                           issued_at: Time.utc(2026, 10, 9, 9))
+    receipt.items.create!(position: 1, name: "Bread", amount: "40.00")
+    Receipts::Accept.call(receipt.reload, link: transaction, link_lock_version: transaction.reload.lock_version)
+    receipt.reload
+  end
+
+  def bank_row_of_40(payee: nil)
+    Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 9), amount: "-40.00", source: :bank,
+                        payee:, lines_attributes: [ { amount: "-40.00" } ]).reload
+  end
+
+  test "a payee two bookings assigned goes with the last undo, whichever comes first" do
+    link
+    created = @bank.reload.payee
+    other_bank = bank_row_of_40
+    second = second_receipt_on(other_bank)
+    assert_equal created, other_bank.reload.payee
+    assert_not second.booking.payee_created?, "the second acceptance found the payee"
+
+    assert_not undo.payee_removed?, "the other bank row still uses it"
+    assert second.booking.reload.payee_created?, "the remaining booking inherits it"
+
+    assert undo(second).payee_removed?
+    assert_not Payee.exists?(created.id)
+    assert_nil other_bank.reload.payee_id
+  end
+
+  test "a payee another booking's earlier state names is kept for that booking's undo" do
+    link
+    created = @bank.reload.payee
+    other_bank = bank_row_of_40(payee: created)
+    second = second_receipt_on(other_bank, merchant_name: nil)
+    assert_equal created.id, second.booking.previous["payee_id"]
+    other_bank.reload.update!(payee: nil)
+    Receipts::Accept.call(Receipt.find(second.id)) # re-records the row without a payee
+
+    assert_not undo.payee_removed?
+    assert Payee.exists?(created.id)
+
+    undo(second)
+    assert_equal created, other_bank.reload.payee
   end
 
   # As a writer that missed a reference under the row lock would see it.

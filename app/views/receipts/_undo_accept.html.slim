@@ -1,8 +1,12 @@
 / "Undo the acceptance" on a booked receipt (Receipts::UndoAccept), below the review form: a form of its own, since
 / forms do not nest. It carries the receipt's and the transaction's versions the page shows (`version`,
-/ `transaction_version`), so a page older than the last acceptance or edit undoes nothing.
+/ `transaction_version`), so a page older than the last acceptance or edit undoes nothing. The service decides
+/ whether the transaction is still as the acceptance left it; a transaction it can never put back (booked before
+/ bookings were recorded, not created by a receipt) gets no button.
 ruby:
-  linked = receipt.booking&.linked?
+  booking = receipt.booking
+  linked = booking&.linked?
+  undoable = booking || transaction.from_receipt?
   undone = linked ? "Transaction ##{transaction.id} gets back the lines, status and payee it had before." : "Transaction ##{transaction.id} is deleted, with its lines."
   confirm = "Undo the acceptance? #{undone} The receipt waits for review again; its items, their categories and its ground truth stay."
 section.review-section aria-labelledby=dom_id(receipt, :undo_heading)
@@ -10,11 +14,15 @@ section.review-section aria-labelledby=dom_id(receipt, :undo_heading)
   p.text-sm.text-ink-muted
     - if linked
       | Booked on a ledger transaction it was linked to. Undoing gives that transaction back the lines, status and payee it had before.
-    - else
+    - elsif undoable
       | Booked as a new expense. Undoing deletes that transaction.
-    |  Refused when the transaction changed after the acceptance.
-  = ui_button_to undo_accept_receipt_path(receipt, filter.to_params), variant: :secondary, size: :sm,
-    params: { lock_version: version, transaction_lock_version: transaction_version },
-    form: { data: { turbo_confirm: confirm } } do
-    = ui_icon "undo-2"
-    span Undo the acceptance
+    - else
+      | Booked before bookings were recorded, on a transaction the receipt did not create: its earlier state is not known, so the acceptance cannot be undone here.
+    - if undoable
+      |  Refused when the transaction changed after the acceptance.
+  - if undoable
+    = ui_button_to undo_accept_receipt_path(receipt, filter.to_params), variant: :secondary, size: :sm,
+      params: { lock_version: version, transaction_lock_version: transaction_version },
+      form: { data: { turbo_confirm: confirm } } do
+      = ui_icon "undo-2"
+      span Undo the acceptance

@@ -51,6 +51,14 @@ class ReceiptUndoAcceptTest < ActionDispatch::IntegrationTest
     assert_select "form[action=?][data-turbo-confirm*=?]", undo_accept_receipt_path(receipts(:market_receipt)), "is deleted"
   end
 
+  test "a transaction the receipt did not create, booked without a record, offers no undo" do
+    @receipt.update_columns(transaction_id: @bank.id, status: "reviewed")
+    get receipt_path(@receipt)
+
+    assert_select "form[action=?]", undo_accept_receipt_path(@receipt), 0
+    assert_select "p", text: /its earlier state is not known, so the acceptance cannot be undone here/
+  end
+
   test "a receipt not booked has no undo" do
     get receipt_path(@receipt)
 

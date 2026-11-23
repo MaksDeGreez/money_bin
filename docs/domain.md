@@ -157,7 +157,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A receipt and a transaction have at most one booking record; it goes with either | Model + DB (unique indexes, foreign keys `ON DELETE CASCADE`) |
 | A `linked` booking records the transaction's earlier state (a JSON object with `format`, `amount` as text, `status`, `lines`); a `created` one has neither that nor an import digest; a payee marked created is assigned; the booked version is not negative | Model + DB (`receipt_bookings_*` checks) |
 | A receipt is booked onto a ledger transaction only by a person's choice, never onto a transfer leg, an income, another receipt's transaction, an account in another currency, or a transaction changed since the page showed it | Model only (`Receipts::Review` and `Receipts::Accept`, under row locks) |
-| An acceptance is undone only from a page at the receipt's and the transaction's current versions, and only while the transaction is as the acceptance left it (version, lines digest, import digest, amount); never on a transfer leg, nor on a transaction of another source than `receipt` without a booking record | Model only (`Receipts::UndoAccept`, under row locks) |
+| An acceptance is undone only from a page at the receipt's and the transaction's current versions, and only while the transaction is as the acceptance left it (version, lines digest, import digest, amount); never on a transfer leg, nor on a transaction of another source than `receipt` without a booking record (one of source `receipt` without a record, from before records existed, has no baseline and is deleted unchecked) | Model only (`Receipts::UndoAccept`, under row locks) |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
 | A receipt item's `suggested_by` is `memory`, `model` or nil; its `name_key` is `ItemName.key(name)`, never null | Model; DB for the values and the null (`receipt_items_suggested_by_known`) |
 | Filling suggestions never writes an item's `category_id` or `accepted_by_user`, nor the receipt's `lock_version` | `Receipts::SuggestCategories` (tested) |
@@ -345,6 +345,7 @@ Who moves the status:
 | `uploaded`, `failed` | `failed` | `OcrBatches::ApplyResults` or `OcrBatches::Submit`, when the batch could not read it |
 | `extracted`, `reviewed` | `reviewed` | `Receipts::Accept` |
 | `reviewed` | `extracted` | destroying its transaction (the receipt is unlinked, keeps its items and can be accepted again) |
+| `reviewed` | `extracted` | `Receipts::UndoAccept` ("Undo the acceptance": the transaction is restored or deleted, see "Undoing an acceptance") |
 
 The job starts only on `uploaded`, `processing` (its own retry, or a run that died), and on `failed` and
 `extracted` while a request to read it again waits (a failed receipt stays failed until a person asks).
@@ -825,15 +826,19 @@ the ledger goes back to what it was before the receipt was booked, the receipt g
   `lock_version` is the record's `booked_lock_version`, its lines digest is the record's (a line saved on its
   own does not move the version), and for a `linked` booking its `import_digest` is the recorded one (a later
   import rewrote the row: the export wins) and its amount is the one in `previous`. Otherwise it refuses and
-  says what changed. A refreshed stored suggestion is in neither marker and does not block it: a suggestion
-  is nobody's change, and the restored lines carry their own.
+  says what changed. An edit in the app (a category set from the transaction list, a comment) is overwritten
+  by "Accept again" anyway, which also records the transaction as it leaves it, so the refusal then says to
+  accept the receipt again first and undo after; a later import or another amount cannot be got past. A
+  refreshed stored suggestion is in neither marker and does not block it: a suggestion is nobody's change,
+  and the restored lines carry their own.
 - **`linked`.** The lines in `previous` (format 1; another format is refused) replace the current ones. They
   are built as new lines through the transaction, so the model's rules run (the sum, a category not a group);
   their ids are new and every other column is as recorded, the line's own `created_at` and `updated_at`
   included (the old line is put back; the transaction's `updated_at` and `lock_version` show the undo). Money
   is decoded from its decimal string, times from ISO 8601 with microseconds. The status comes back from
   `previous`. The payee comes back too when the transaction's payee is still the one Accept assigned, the
-  earlier one, or none; a payee set between two acceptances stays.
+  earlier one, or none; a payee set between two acceptances stays. What Accept never writes (the date, the
+  comment, the account, the merchant) is not in `previous`: an edit of those between two acceptances stays.
 - **References that no longer resolve** are dropped, never guessed: a category deleted or turned into a
   group since leaves its line without a category, and without the category's origin, probability and
   artefact (which need a category); a missing suggested category drops the whole stored suggestion, a missing
@@ -841,11 +846,18 @@ the ledger goes back to what it was before the receipt was booked, the receipt g
   gets a line without a category becomes `needs_review` (Accept's rule). The page says what was dropped.
 - **`created`.** The transaction is destroyed with its lines. A transaction of source `receipt` without a
   record (booked before records existed) is destroyed the same way, its payee kept (nothing says Accept
-  created it). Any other transaction without a record is refused: its earlier state is not known. A
+  created it), but without the "as Accept left it" check: there is no baseline to compare with. That is the
+  owner's decision for a case only test data has (no receipt in the real data was booked without a record
+  when the undo came); "Accept again" first writes a record, and the undo then checks it. Any other
+  transaction without a record is refused, and its page offers no undo: its earlier state is not known. A
   transfer leg is refused.
-- **The payee Accept created** (`payee_created`) is deleted when no transaction and no other booking record
-  refers to it any more, under its row lock and in a savepoint: a refusal (a foreign key, a parallel reuse)
-  keeps the payee and never takes the undo back.
+- **The payee Accept created** (`payee_created`) is deleted when no transaction, no other booking record and
+  no linked booking's `previous` refers to it any more (an undo of that booking would put it back), in a
+  savepoint: a refusal (a foreign key, a parallel reuse) keeps the payee and never takes the undo back. Its row
+  is locked without waiting: a writer about to refer to it holds a key-share lock (a transaction's foreign
+  key, and `Payee.find_or_create_by_name!` reads the payee it returns with one), and then the payee is kept.
+  When it is kept because another booking assigned it too (a second receipt from the same new shop), that
+  booking inherits "Accept created it", so whichever of the two is undone last removes it.
 - **The receipt** becomes `extracted` with no transaction and no booking record
   (`Receipt#release_from_ledger!`, the same step a destroyed transaction takes), and its `lock_version`
   moves. Its items, their categories and `accepted_by_user`, its ground truth, its OCR and QR columns, its
@@ -857,8 +869,10 @@ the ledger goes back to what it was before the receipt was booked, the receipt g
   `stale`.
 - Everything runs in one database transaction, so a refusal changes nothing; every refusal is a subclass of
   `Receipts::UndoAccept::Error` and reaches the page as "Nothing was undone: …". A lock that could not be
-  had (a deadlock with an import) is a refusal too, to try again. The receipt's pages and the list are
-  refreshed afterwards (`Receipts::LiveUpdate`).
+  had (a deadlock with an import) or a category or payee deleted at the same moment is a refusal too, to try
+  again (the categories and payee it restores are read with a key-share lock, so they cannot go mid-way).
+  The SQL log is silenced while it writes (the earlier lines' comments and amounts), as the importers do.
+  The receipt's pages and the list are refreshed afterwards (`Receipts::LiveUpdate`).
 
 ### Category suggestions
 
@@ -1020,7 +1034,9 @@ with the typed values (a row marked for removal stays marked).
 confirmation that says what happens (a linked transaction gets back its earlier lines, status and payee; a
 created one is deleted). It takes the receipt from `reviewed` back to `extracted` (see "Undoing an
 acceptance" under Receipts); the page then shows "Book as" again, with a notice of what was restored or
-dropped, or the reason nothing was undone. The transaction page links to the receipt for it.
+dropped, or the reason nothing was undone. While the review form has unsaved changes, sending the undo (or
+any other form of the page) asks first, before anything reaches the server. The transaction page links to
+the receipt for it.
 
 **Book as.** While the receipt has no transaction, the form lists the ledger transactions that may be this
 purchase (see "Booking onto a transaction"), each a radio with its account, date and distance ("same day",
@@ -1750,7 +1766,6 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
 - Refreshing transaction suggestions on their own when a new uncategorised line appears (today: "Refresh
   suggestions"), and calibrating their probabilities on the ledger.
 - A database trigger for the line sum, if anything starts writing lines past the models.
-- Undoing a receipt booking (restoring the transaction from its booking record; see "Receipt bookings").
 - Matching bank items to receipts automatically (today a person chooses under "Book as") and to each other
   (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view (the dashboard shows one currency at a time until then).
