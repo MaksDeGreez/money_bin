@@ -8,4 +8,4 @@
       span Back to the transaction
 
 = turbo_frame_tag dom_id(@transaction, :categories) do
-  = render "transactions/categories_form", transaction: @transaction, filter: @filter, from_page: @from_page
+  = render "transactions/categories_form", transaction: @transaction, filter: @filter, from_page: @from_page, standalone: !turbo_frame_request?

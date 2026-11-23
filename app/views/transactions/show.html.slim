@@ -79,7 +79,7 @@ section.mt-8 aria-labelledby="lines-heading"
   / "Change" loads a category picker per line above the table; saving comes back here with the focus on it.
   - unless @transaction.transfer_leg?
     .mt-2
-      = render "transactions/change_categories", transaction: @transaction, link_params: { from: "page" }, autofocus: params[:changed_categories].present?
+      = render "transactions/change_categories", transaction: @transaction, link_params: { return_to: "page" }, autofocus: params[:changed_categories].present?
   - if @transaction.transfer_leg?
     p.mt-2.text-sm.text-ink-muted A transfer leg: it has no lines.
   - else

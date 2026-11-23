@@ -1,23 +1,27 @@
 / One transaction of the list in its own tbody, so a categorised line can replace it (categorise.turbo_stream).
-/ The category cell offers "Change" (transactions/_change_categories). Under the row, each uncategorised line with
-/ its suggestion and the controls to categorise it.
+/ Under the row, each uncategorised line with its suggestion and the controls to categorise it. Once no line waits
+/ there, the category cell offers "Change" (transactions/_change_categories): never next to a suggestion on
+/ screen, so a category chosen with it is the person's own label. `focus_change`: the answer to "Change" puts the
+/ focus back on it.
 - message = local_assigns[:message]
+- review_lines = transaction_review_lines(transaction)
 tbody id=dom_id(transaction, :list)
   tr
     td.whitespace-nowrap = l(transaction.occurred_on)
     td
-      = link_to transaction.payee&.name || transaction.merchant.presence || "Transaction ##{transaction.id}", transaction_path(transaction), class: "data-grid-link font-medium"
+      = link_to transaction_label(transaction), transaction_path(transaction), class: "data-grid-link font-medium"
       - if transaction.comment.present?
         .text-xs.text-ink-muted = transaction.comment.truncate(80)
     td.whitespace-nowrap = transaction.account.name
     td
       = transaction_categories(transaction)
-      = render "transactions/change_categories", transaction:, link_params: { filter: filter.to_params }
+      - if review_lines.empty?
+        = render "transactions/change_categories", transaction:, link_params: { filter: filter.to_params }, autofocus: local_assigns[:focus_change]
     td.data-grid-num = receipt_money(transaction.amount, transaction.account.currency)
     td.whitespace-nowrap = transaction_status_badge(transaction)
   - if message
     tr
       td colspan="6"
         p.text-sm.font-medium.text-ink-display role="alert" = message
-  - transaction_review_lines(transaction).each do |line|
+  - review_lines.each do |line|
     = render "transactions/review_line", transaction:, line:, filter:

@@ -104,16 +104,16 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
     line = transaction_lines(:coffee_line)
 
     get transaction_path(coffee)
-    assert_select "section a##{dom_id(coffee, :change_categories)}[href=?][data-turbo-frame=?]", categories_transaction_path(coffee, from: "page"), dom_id(coffee, :categories)
+    assert_select "section a##{dom_id(coffee, :change_categories)}[href=?][data-turbo-frame=?]", categories_transaction_path(coffee, return_to: "page"), dom_id(coffee, :categories)
     assert_select "a##{dom_id(coffee, :change_categories)}[data-controller=autofocus]", false
 
-    get categories_transaction_path(coffee, from: "page"), headers: { "Turbo-Frame" => dom_id(coffee, :categories) }
-    assert_select "form[action=?] input[name=from][value=page]", categories_transaction_path(coffee)
+    get categories_transaction_path(coffee, return_to: "page"), headers: { "Turbo-Frame" => dom_id(coffee, :categories) }
+    assert_select "form[action=?][data-turbo-action=replace] input[name=return_to][value=page]", categories_transaction_path(coffee)
 
-    patch categories_transaction_path(coffee), params: { from: "page", lock_version: coffee.lock_version,
+    patch categories_transaction_path(coffee), params: { return_to: "page", lock_version: coffee.lock_version,
       lines: { line.id => { observed_category_id: categories(:cafes).id, category_id: categories(:takeaway).id } } }
 
-    assert_redirected_to transaction_path(coffee, changed_categories: 1)
+    assert_redirected_to transaction_path(coffee, changed_categories: 1, anchor: "lines-heading")
     assert_equal "Categories saved.", flash[:notice]
     assert_equal [ categories(:takeaway), "person" ], [ line.reload.category, line.category_origin ]
     follow_redirect!
@@ -124,15 +124,21 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
   test "Change on the transaction page: nothing changed is a notice, a refusal an alert" do
     coffee = transactions(:coffee)
     line = transaction_lines(:coffee_line)
-    form = { from: "page", lock_version: coffee.lock_version, lines: { line.id => { observed_category_id: categories(:cafes).id, category_id: categories(:cafes).id } } }
+    form = { return_to: "page", lock_version: coffee.lock_version, lines: { line.id => { observed_category_id: categories(:cafes).id, category_id: categories(:cafes).id } } }
 
     patch categories_transaction_path(coffee), params: form
     assert_equal "Nothing changed.", flash[:notice]
 
     form[:lines][line.id][:observed_category_id] = categories(:groceries).id
     patch categories_transaction_path(coffee), params: form
-    assert_redirected_to transaction_path(coffee, changed_categories: 1)
+    assert_redirected_to transaction_path(coffee, changed_categories: 1, anchor: "lines-heading")
     assert_match "A category was set or changed", flash[:alert]
+    assert_equal categories(:cafes), line.reload.category
+
+    form[:lines][line.id].merge!(observed_category_id: categories(:cafes).id, category_id: categories(:takeaway).id)
+    coffee.update!(comment: "edited elsewhere")
+    patch categories_transaction_path(coffee), params: form
+    assert_match "Changed somewhere else", flash[:alert]
     assert_equal categories(:cafes), line.reload.category
   end
 
@@ -140,7 +146,9 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
     get categories_transaction_path(transactions(:coffee))
 
     assert_select "h1", "Change categories"
-    assert_select "form input[name=from][value=page]"
+    assert_select "form input[name=return_to][value=page]"
+    assert_select "form a[href=?]", transaction_path(transactions(:coffee)), text: "Cancel"
+    assert_select "form button[data-action='category-change#close']", false
   end
 
   test "a transaction booked from a receipt links to the receipt instead of Change; a transfer leg has neither" do

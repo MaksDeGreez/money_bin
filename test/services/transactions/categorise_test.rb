@@ -220,6 +220,44 @@ class Transactions::CategoriseTest < ActiveSupport::TestCase
     assert_equal "confirmed", transaction.reload.status
   end
 
+  test "an imported line in Uncategorised kept as it is is skipped while its sibling changes" do
+    transaction = split([ categories(:uncategorised), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+
+    assert change(transaction, { second => categories(:takeaway) }).categorised?
+
+    assert_equal [ categories(:uncategorised), nil ], [ first.reload.category, first.category_origin ]
+    assert_equal [ categories(:takeaway), "person" ], [ second.reload.category, second.category_origin ]
+    assert_equal "needs_review", transaction.reload.status
+  end
+
+  test "several lines of a split change in one save" do
+    transaction = split([ categories(:groceries), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+
+    assert change(transaction, { first => categories(:takeaway), second => categories(:household_supplies) }).categorised?
+    assert_equal [ categories(:takeaway), categories(:household_supplies) ], [ first.reload.category, second.reload.category ]
+    assert_equal %w[person person], [ first.category_origin, second.category_origin ]
+  end
+
+  test "a line added since the form was shown saves nothing" do
+    transaction = split([ categories(:groceries), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+    seen = [ first, second ].map { |line| Choice.new(line_id: line.id, category_id: categories(:takeaway).id, origin: "person", observed_category_id: line.category_id) }
+    transaction.update!(amount: BigDecimal("-120"), lines_attributes: [ { amount: BigDecimal("-20"), category: categories(:groceries) } ])
+
+    assert_equal :changed, Transactions::Categorise.call(transaction.id, lock_version: transaction.lock_version, choices: seen, edit: true).status
+    assert_equal [ categories(:groceries), categories(:cafes) ], [ first.reload.category, second.reload.category ]
+  end
+
+  test "a draft stays a draft when its categories change" do
+    coffee = transactions(:coffee)
+    coffee.update!(status: "draft")
+
+    assert change(coffee, { transaction_lines(:coffee_line) => categories(:takeaway) }).categorised?
+    assert_equal "draft", coffee.reload.status
+  end
+
   test "a split with one line changed meanwhile writes none of its lines" do
     transaction = split([ categories(:groceries), categories(:cafes) ])
     first, second = transaction.lines.to_a

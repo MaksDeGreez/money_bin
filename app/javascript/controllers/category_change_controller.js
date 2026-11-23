@@ -4,12 +4,12 @@ import { Controller } from "@hotwired/stimulus"
 // to its "Change" link:
 //
 //   form data-controller="category-change" data-category-change-return-value="<the Change link's id>"
-//        data-action="keydown->category-change#keydown turbo:submit-end->category-change#saved"
+//        data-action="keydown->category-change#keydown"
 //
 // - it opens with the focus in the first picker (Enter in a picker saves, once no list is open);
-// - Escape (when no picker list is open: the picker closes its own first) or "Cancel" empties the frame;
-// - after either, or a save, the focus goes back to "Change". A save from the list replaces the transaction's rows
-//   (the new row has a link with the same id); from the transaction page the page comes back with it focused.
+// - Escape (when no picker list is open: the picker closes its own first) or "Cancel" empties the frame, and the
+//   focus goes back to "Change". After a save the answer focuses "Change" itself (the autofocus controller on the
+//   replaced row's link, or on the transaction page's).
 export default class extends Controller {
   static values = { return: String }
 
@@ -32,11 +32,5 @@ export default class extends Controller {
       frame.replaceChildren()
     }
     document.getElementById(id)?.focus()
-  }
-
-  // The answer replaces the rows after this event: look the link up again once it has.
-  saved() {
-    const id = this.returnValue
-    setTimeout(() => document.getElementById(id)?.focus(), 50)
   }
 }
