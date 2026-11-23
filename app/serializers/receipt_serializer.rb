@@ -3,6 +3,11 @@
 # an agent reading the ledger needs none of them, and the card digits are the most sensitive of all.
 #
 # A new receipt column is one line in `common` (and one property in both schemas of docs/openapi.yaml).
+#
+# `category`, `suggested_category` and `confidence` are a card slip's own (a slip has no items and is
+# booked as one line); they are null on any other receipt, also when a receipt that stopped being a slip
+# still holds its old suggestion (Receipts::Review clears the category, not the suggestion). The
+# associations are preloaded by ReceiptsQuery.
 module ReceiptSerializer
   module_function
 
@@ -22,6 +27,7 @@ module ReceiptSerializer
   end
 
   def common(receipt)
+    slip = receipt.card_slip?
     {
       id: receipt.id,
       status: receipt.status,
@@ -32,7 +38,10 @@ module ReceiptSerializer
       issued_on: JsonFormat.date(receipt.issued_at&.in_time_zone&.to_date),
       total: JsonFormat.money(receipt.total),
       currency: receipt.currency,
-      transaction_id: receipt.transaction_id
+      transaction_id: receipt.transaction_id,
+      category: slip ? CategorySerializer.reference(receipt.category) : nil,
+      suggested_category: slip ? CategorySerializer.reference(receipt.suggested_category) : nil,
+      confidence: slip && receipt.suggested_category_id ? receipt.suggested_category_confidence : nil
     }
   end
 

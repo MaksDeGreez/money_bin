@@ -8,7 +8,9 @@ module McpTools
       item, and its category (the accepted one, or else the categoriser's suggestion with its confidence).
       Item amounts and the total are positive, as printed on the receipt, in the receipt's currency; a
       negative item is money given back (a bottle deposit). items_total is the sum of the item amounts and
-      may differ from the printed total when OCR missed a line. Get ids from recent_receipts. Photos are not
+      may differ from the printed total when OCR missed a line. A card slip (kind card_slip) has no items: it
+      is booked as one line in its own category, given as category (accepted) or else suggested_category with
+      its confidence; these three are null on any other receipt. Get ids from recent_receipts. Photos are not
       available through this server.
     TEXT
     input_schema(
@@ -37,10 +39,14 @@ module McpTools
 
         def text(json)
           lines = [ [ "Receipt #{json[:id]}", json[:merchant] || "merchant not read", json[:issued_at] || "no time read",
-            "total #{money(json[:total], json[:currency])}", json[:status],
-            json[:transaction_id] ? "booked as transaction #{json[:transaction_id]}" : "not booked" ].join(" | ") ]
-          lines << "#{json[:items_count]} item(s), amounts in #{json[:currency] || 'the receipt currency'}, summing to #{json[:items_total]}:"
-          json[:items].each { |item| lines << item_line(item) }
+            "total #{money(json[:total], json[:currency])}", json[:status], slip_category(json),
+            json[:transaction_id] ? "booked as transaction #{json[:transaction_id]}" : "not booked" ].compact.join(" | ") ]
+          if json[:kind] == "card_slip" && json[:items].empty?
+            lines << "A card slip: no items, booked as one line of its total in the slip's category."
+          else
+            lines << "#{json[:items_count]} item(s), amounts in #{json[:currency] || 'the receipt currency'}, summing to #{json[:items_total]}:"
+            json[:items].each { |item| lines << item_line(item) }
+          end
           lines.join("\n")
         end
 

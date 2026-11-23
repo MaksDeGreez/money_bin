@@ -730,8 +730,12 @@ components:
 
     ReceiptSummary:
       type: object
+      description: >-
+        `category` (the accepted one), `suggested_category` and `confidence` are a card slip's own (a slip has no
+        items); they are null on any other receipt.
       additionalProperties: false
-      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, items_count]
+      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, category,
+        suggested_category, confidence, items_count]
       properties:
         id:
           type: integer
@@ -760,6 +764,16 @@ components:
           type: integer
           nullable: true
           description: The transaction the receipt was booked as; null until it is accepted.
+        category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        suggested_category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        confidence:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: The categoriser's confidence in a card slip's suggested category (a probability, not money).
         items_count:
           type: integer
 
@@ -798,9 +812,12 @@ components:
 
     Receipt:
       type: object
+      description: >-
+        `category` (the accepted one), `suggested_category` and `confidence` are a card slip's own (a slip has no
+        items); they are null on any other receipt.
       additionalProperties: false
-      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, items_count, items_total,
-        items]
+      required: [id, status, kind, incomplete, merchant, issued_at, issued_on, total, currency, transaction_id, category,
+        suggested_category, confidence, items_count, items_total, items]
       properties:
         id:
           type: integer
@@ -828,6 +845,16 @@ components:
         transaction_id:
           type: integer
           nullable: true
+        category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        suggested_category:
+          $ref: "#/components/schemas/NullableCategoryRef"
+        confidence:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: The categoriser's confidence in a card slip's suggested category (a probability, not money).
         items_count:
           type: integer
         items_total:

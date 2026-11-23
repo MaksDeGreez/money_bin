@@ -187,7 +187,9 @@ curl -s -H "$H" "$API/summary?from=2026-10-01&to=2026-10-31"
 curl -s -H "$H" "$API/receipts?limit=1"
 # {"receipts":[{"id":7,"status":"reviewed","kind":"fiscal","incomplete":false,"merchant":"Example Market",
 #   "issued_at":"2026-10-03T18:40:00+03:00","issued_on":"2026-10-03","total":"1250.40",
-#   "currency":"UAH","transaction_id":81,"items_count":3}],"next_cursor":"…"}
+#   "currency":"UAH","transaction_id":81,"category":null,"suggested_category":null,"confidence":null,
+#   "items_count":3}],"next_cursor":"…"}
+# category, suggested_category and confidence are a card slip's own (it has no items), null otherwise.
 curl -s -H "$H" "$API/receipts/7"
 # {"id":7, …,"items_total":"1250.40","items":[{"id":20,"position":1,"name":"Rye bread",
 #   "quantity":"2.000","unit_price":"20.20","amount":"40.40","discount":"0.00",
@@ -208,8 +210,8 @@ objects as the read API, so both always give the same numbers. The design is in
 | `search_transactions` | transactions by date range, account, category or group (slug or id), status, payee, text; paged |
 | `list_categories` | the category tree with slugs and descriptions |
 | `list_accounts` | accounts with their booked balances |
-| `recent_receipts` | the latest receipts, newest purchase first |
-| `get_receipt` | one receipt with its items |
+| `recent_receipts` | the latest receipts, newest purchase first (a card slip with its category or suggestion) |
+| `get_receipt` | one receipt with its items, or a card slip with its category or suggestion |
 
 Each result has a short text and `structuredContent` with the exact values (the read API's JSON: money
 as decimal strings next to their currency, dates as `YYYY-MM-DD`, times in ISO 8601 with the Kyiv offset). Expenses are negative, drafts and

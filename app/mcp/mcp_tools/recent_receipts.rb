@@ -11,7 +11,9 @@ module McpTools
       are not included: call get_receipt with an id for them (for "what did I buy on my last receipt", take
       the first receipt here, then get_receipt). Receipt totals are positive (what the receipt says was
       paid), unlike expenses in the ledger. A receipt OCR has not read yet has no merchant, time or total and
-      sorts by its upload time. Paging: when next_cursor is not null, call again with the same arguments
+      sorts by its upload time. A card slip (kind card_slip) has no items and carries its own category
+      (accepted) or else suggested_category with its confidence; these three are null on any other receipt.
+      Paging: when next_cursor is not null, call again with the same arguments
       plus that cursor.
     TEXT
     input_schema(
@@ -47,7 +49,7 @@ module McpTools
           json[:receipts].each do |receipt|
             lines << [ "id #{receipt[:id]}", receipt[:issued_at] || "no time read yet", receipt[:merchant] || "merchant not read",
               "total #{money(receipt[:total], receipt[:currency])}", "#{receipt[:items_count]} item(s)", receipt[:status],
-              receipt[:transaction_id] ? "booked as transaction #{receipt[:transaction_id]}" : "not booked" ].join(" | ")
+              slip_category(receipt), receipt[:transaction_id] ? "booked as transaction #{receipt[:transaction_id]}" : "not booked" ].compact.join(" | ")
           end
           lines << more_pages_note(json[:next_cursor])
           lines.join("\n")

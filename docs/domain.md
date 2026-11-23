@@ -796,6 +796,11 @@ pre-filled; when the source changes on a slip whose category a person already ch
 `source:unknown`, as for items. With `CATEGORISE_BACKEND=off` slip suggestions are off too: the switch exists
 to label receipts with no suggestion on screen, and a slip's category is part of that label.
 
+**Over the API and MCP.** Both receipt shapes of the read API carry a slip's `category`, `suggested_category`
+and `confidence` (`ReceiptSerializer`), and the text of the MCP tools `recent_receipts` and `get_receipt`
+names the accepted category, or else the suggestion as a suggestion. They are null on any other receipt,
+also on one that stopped being a slip and kept its old suggestion. `categoriser_model_name` is not exposed.
+
 ### Label memory
 
 `LabelMemory` (`app/queries/label_memory.rb`) answers: what did the owner call items with this name?
@@ -1529,8 +1534,6 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   suggest a row's category from the payee; left out to keep the form as it is).
 - Refreshing transaction suggestions on their own when a new uncategorised line appears (today: "Refresh
   suggestions"), and calibrating their probabilities on the ledger.
-- A slip's category and suggestion in the read API and the MCP tools (the booked line already carries the
-  category).
 - A database trigger for the line sum, if anything starts writing lines past the models.
 - Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view (the dashboard shows one currency at a time until then).

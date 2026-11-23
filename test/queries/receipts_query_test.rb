@@ -2,11 +2,13 @@ require "test_helper"
 
 class ReceiptsQueryTest < ActiveSupport::TestCase
   # A receipt row written past the model: the query only reads rows, and photos do not matter here.
-  def insert_receipt(issued_at:, created_at: Time.current, status: "extracted")
+  def insert_receipt(issued_at:, created_at: Time.current, status: "extracted", **columns)
     sha256 = SecureRandom.hex(32)
-    Receipt.insert!({ sha256:, status:, issued_at:, created_at:, updated_at: created_at })
+    Receipt.insert!({ sha256:, status:, issued_at:, created_at:, updated_at: created_at, **columns })
     Receipt.find_by!(sha256:)
   end
+
+  include ApiRequestTestHelper # count_queries
 
   test "newest first: by the time on the receipt, else the upload time, then by id" do
     rows = ReceiptsQuery.new.relation.to_a
@@ -56,6 +58,25 @@ class ReceiptsQueryTest < ActiveSupport::TestCase
       page.records.to_h { |receipt| [ receipt.id, receipt.items_count ] })
   end
 
+  test "a page of card slips costs the same queries whatever its size, serialised with their categories" do
+    categories = [ categories(:groceries), categories(:cafes), categories(:takeaway), categories(:household_supplies) ]
+    # Newer than every fixture, so the first page is slips only; each refers to both associations.
+    8.times do |index|
+      insert_receipt(issued_at: 1.day.from_now + index.minutes, kind: "card_slip", category_id: categories[index % 4].id,
+        suggested_category_id: categories[(index + 1) % 4].id, suggested_category_confidence: 0.5)
+    end
+    serialise = ->(limit) { ReceiptsQuery.new.page(limit:).records.map { |receipt| ReceiptSerializer.summary(receipt) } }
+
+    small = count_queries { serialise.call(2) }
+    large = count_queries { serialise.call(20) }
+
+    assert_equal 2, small, "the page, then one query for the categories of both associations"
+    assert_equal small, large
+    rows = serialise.call(20)
+    assert_equal 8, rows.count { |row| row[:category] && row[:suggested_category] }
+    assert_equal 4, rows.count { |row| row[:kind] == "fiscal" || row[:kind].nil? }
+  end
+
   test "a foreign or broken cursor raises KeysetCursor::Invalid" do
     [ KeysetCursor.encode("yesterday", 1), KeysetCursor.encode(nil, 1), KeysetCursor.encode("2026-10-01T00:00:00Z", -1) ].each do |cursor|
       assert_raises(KeysetCursor::Invalid, cursor) { ReceiptsQuery.new.page(cursor:) }
@@ -67,5 +88,7 @@ class ReceiptsQueryTest < ActiveSupport::TestCase
 
     assert receipt.association(:items).loaded?
     assert receipt.items.first.association(:suggested_category).loaded?
+    assert receipt.association(:category).loaded?
+    assert receipt.association(:suggested_category).loaded?
   end
 end
