@@ -80,6 +80,20 @@ class ReceiptLinkCandidates
     candidates.any? || linked_elsewhere.any?
   end
 
+  # True when there was something to search for: a date and a positive amount.
+  def searched?
+    !date.nil? && amounts.any?
+  end
+
+  # Reads everything now (the receipt's items, the matches), so the lists stay as they were when a caller's
+  # database transaction rolls back afterwards.
+  def load
+    amounts
+    @receipt.booking_total
+    load_matches
+    self
+  end
+
   private
     def load_matches
       return if @candidates

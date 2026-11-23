@@ -51,6 +51,8 @@ class CreateReceiptBookings < ActiveRecord::Migration[8.1]
     # Runs first on a rollback (reversed order), before the table is dropped.
     reversible do |direction|
       direction.down do
+        # Held until the drop: an acceptance that has written a record but not committed yet waits, or is seen.
+        execute "LOCK TABLE receipt_bookings IN ACCESS EXCLUSIVE MODE"
         count = select_value("SELECT COUNT(*) FROM receipt_bookings").to_i
         if count.positive?
           raise ActiveRecord::IrreversibleMigration, "receipt_bookings holds #{count} booking record(s), the only copy of " \

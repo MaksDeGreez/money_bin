@@ -10,7 +10,7 @@ ruby:
   linked = found.linked_elsewhere
   none = candidates.empty? && linked.empty?
   new_choice = Receipts::Review::NEW_BOOKING
-  chosen = review ? review.booking : (new_choice if none && found.date)
+  chosen = review ? review.booking : (new_choice if none && found.searched?)
   currency = found.receipt.currency
   invalid = (form_receipt.errors[:booking].any? || nil)
 section.review-section aria-labelledby=dom_id(receipt, :booking_heading)
@@ -22,6 +22,10 @@ section.review-section aria-labelledby=dom_id(receipt, :booking_heading)
     p.text-sm.text-ink-muted
       | The receipt has no date (nor has its QR code), so the ledger was not searched for this purchase. Save a date
       |  to look for the bank's transaction, or choose a new expense (dated today).
+  - elsif found.amounts.empty?
+    p.text-sm.text-ink-muted
+      | The receipt has no amount to look for yet (no total, and items that sum to nothing), so the ledger was not
+      |  searched. Save its total or items to look for the bank's transaction.
   - elsif none
     p.text-sm.text-ink-muted
       = "No expense of #{found.amounts.map { |amount| receipt_money(amount, currency) }.to_sentence(two_words_connector: ' or ', last_word_connector: ' or ').presence || 'this amount'}"

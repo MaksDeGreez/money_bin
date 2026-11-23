@@ -180,6 +180,8 @@ module Receipts
         # PostgreSQL aborted the transaction: nothing more can be read in it. The page reads the list again.
         @transaction = nil
         @link_candidates = nil
+        # The page reads the list again, perhaps after the other writer committed: the person chooses again.
+        @choose_again = true
         @receipt.errors.add(:base, LOCK_FAILED)
         raise ActiveRecord::Rollback
       rescue ActiveRecord::RecordInvalid => error
@@ -206,10 +208,10 @@ module Receipts
       # Books the receipt as just saved: "Accept again" onto its own transaction; otherwise as the person chose
       # under "Book as", once the list of matching transactions is still the one the page showed.
       def book
-        stored = Receipt.find(@receipt.id)
+        stored = Receipt.includes(:items).find(@receipt.id)
         return Accept.call(stored) if stored.transaction_id
 
-        @link_candidates = ReceiptLinkCandidates.new(stored)
+        @link_candidates = ReceiptLinkCandidates.new(stored).load
         unless same_ids?(@params[:shown_candidate_ids], @link_candidates.candidate_ids) &&
             same_ids?(@params[:shown_linked_ids], @link_candidates.linked_ids) &&
             same_ids?(@params[:shown_exact_ids], @link_candidates.exact_ids)
@@ -490,7 +492,7 @@ module Receipts
         # The chosen transaction is not what the person saw any more: they choose again from the list as it is now
         # (read after Accept's savepoint rolled back, past the row lock it waited on).
         @choose_again = [ Accept::TransactionChanged, Accept::LinkGone, Accept::AlreadyLinked, Accept::NotLinkable ].any? { |type| error.is_a?(type) }
-        @link_candidates = ReceiptLinkCandidates.new(Receipt.find(@receipt.id)) if @choose_again
+        @link_candidates = ReceiptLinkCandidates.new(Receipt.includes(:items).find(@receipt.id)).load if @choose_again
         field = if @linking then :booking
         elsif error.is_a?(Accept::CurrencyMismatch) && @receipt.transaction_id then :currency
         elsif error.is_a?(Accept::AccountRequired) || error.is_a?(Accept::CurrencyMismatch) then :account_id

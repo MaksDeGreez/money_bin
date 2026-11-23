@@ -769,6 +769,17 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /has no date/
   end
 
+  test "a receipt with a date but nothing to look for is not searched, and nothing is chosen" do
+    receipt = receipts(:corner_receipt)
+    receipt.items.delete_all
+    receipt.update_columns(total: nil)
+
+    get receipt_path(receipt)
+
+    assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
+    assert_select "p", text: /no amount to look for yet/
+  end
+
   test "a refused choice whose transaction left the list leaves nothing chosen, not a new expense" do
     receipt = receipts(:corner_receipt)
     bank = bank_row

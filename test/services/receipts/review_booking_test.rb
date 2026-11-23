@@ -177,8 +177,23 @@ class Receipts::ReviewBookingTest < ActiveSupport::TestCase
       assert_not saved
       assert_equal [ Receipts::Review::LOCK_FAILED ], review.form_receipt.errors[:base]
       assert_nil review.link_candidates, "the page reads the list again"
+      assert_nil review.booking, "and the person chooses again"
     end
     assert_equal "Corner Shop", @receipt.reload.merchant_name
+  end
+
+  test "the list after a refusal under the lock is read with the typed items, before the rollback" do
+    params = form(booking: @bank.id.to_s, **shown)
+    params[:items_attributes]["1"] = params[:items_attributes]["1"].merge(amount: "90.00") # typed: 147.50
+    params[:shown_exact_ids] = "" # as a page showing these items would
+    @bank.update!(comment: "edited elsewhere")
+
+    saved, review = accept(params)
+
+    assert_not saved
+    assert_match(/changed somewhere else/, review.form_receipt.errors[:booking].first)
+    assert_equal BigDecimal("147.50"), review.link_candidates.receipt.booking_total
+    assert_includes review.link_candidates.amounts, BigDecimal("147.50")
   end
 
   test "a refusal rolls the save back inside a caller's own transaction too" do

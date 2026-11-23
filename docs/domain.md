@@ -746,7 +746,7 @@ link must satisfy (the row is there, at the version the page showed, an expense 
 other receipt on it, the receipt's currency when known, the amount).
 
 **The choice is the person's.** Nothing is pre-selected while there is any match; "A new expense" is
-pre-selected only when the search ran (the receipt has a date) and found nothing, and only on a page as
+pre-selected only when the search ran (the receipt has a date and an amount) and found nothing, and only on a page as
 first rendered: a refused form keeps the person's choice, or none. See "Review" for how the form makes a
 stale choice safe. Any status is offered, a `draft` too: booking a receipt onto a draft books it (as for
 a draft a receipt created), and `previous` keeps its old status.
@@ -793,7 +793,9 @@ records existed gets one on its next "Accept again" (`created`, when Accept had 
 `source: receipt`); for any other transaction "Accept again" is refused, since its earlier state is lost and
 recording the current one would make an undo a silent no-op. "Accept again" also checks the currency again:
 a receipt currency corrected since the booking must still be the account's. Rolling the migration back
-refuses while the table has a row: it holds the only copy of the earlier states.
+locks the table and refuses while it has a row: it holds the only copy of the earlier states. Limit, for the
+undo to handle: the record names one payee; when a later "Accept again" creates a second one (the first was
+cleared from the transaction meanwhile), only the first is recorded as Accept's.
 
 **The undo** (a later change) restores `previous` for a `linked` booking, or removes the transaction of a
 `created` one, and a created payee nothing else uses. It can tell from `booked_lock_version`, `lines_digest`
@@ -975,7 +977,8 @@ booked or saved and the page shows the fresh list, with nothing chosen and the t
 at all is refused the same way. A chosen transaction goes to `Receipts::Accept` with the version the page
 showed and no account; the account goes only with "A new expense" (the select is enabled only then). When
 Accept refuses the chosen transaction (changed, gone, taken), the page shows the list as it is after the row
-lock, and a lock that could not be had (a deadlock with an import) is a message too, never an error page. A successful save or acceptance refreshes the receipt's other open pages and
+lock, read before the save rolls back (so with the typed items), and a lock that could not be had (a
+deadlock with an import) is a message too, never an error page, after which the person chooses again. A successful save or acceptance refreshes the receipt's other open pages and
 the list (`Receipts::LiveUpdate`); a form there with unsaved changes is not refreshed, and its save is refused
 as stale. The page then
 opens the transaction (`/transactions/:id`): its lines, its status, why it needs review, and "Next receipt
