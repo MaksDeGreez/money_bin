@@ -23,6 +23,11 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     assert_redirected_to new_session_path
     post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1" }
     assert_redirected_to new_session_path
+    get categories_transaction_path(@transaction)
+    assert_redirected_to new_session_path
+    patch categories_transaction_path(@transaction), params: { lock_version: @transaction.lock_version,
+      lines: { @line.id => { observed_category_id: "", category_id: categories(:cafes).id } } }
+    assert_redirected_to new_session_path
     post transactions_bulk_acceptances_path, params: { threshold_percent: 90 }
     assert_redirected_to new_session_path
     post transactions_suggestion_runs_path
@@ -213,5 +218,207 @@ class TransactionsListTest < ActionDispatch::IntegrationTest
     assert_select "tbody[id^=list_transaction]", 0
     get transactions_path(expense: "1", status: "needs_review")
     assert_select "tbody[id^=list_transaction]", 1
+  end
+
+  # --- "Change" -----------------------------------------------------------------------------------------------
+
+  def frame_headers(transaction)
+    { "Turbo-Frame" => dom_id(transaction, :categories) }
+  end
+
+  def change_params(transaction, chosen, observed: {})
+    lines = transaction.lines.reload.to_h do |line|
+      category = chosen.key?(line) ? chosen[line] : line.category
+      [ line.id, { observed_category_id: observed.fetch(line, line.category)&.id.to_s, category_id: category&.id.to_s } ]
+    end
+    { lock_version: transaction.reload.lock_version, lines: }
+  end
+
+  def invented_split
+    Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 9), amount: BigDecimal("-100"), source: "bank",
+      merchant: "Invented Shop", lines_attributes: [ { amount: BigDecimal("-60"), category: categories(:groceries) },
+                                                      { amount: BigDecimal("-40"), category: categories(:cafes) } ])
+  end
+
+  test "a categorised row offers Change, a link into an empty frame of its own; receipt, transfer and uncategorised rows do not" do
+    coffee = transactions(:coffee)
+
+    get transactions_path(payee: "corner")
+
+    assert_select "tbody##{dom_id(coffee, :list)} td" do
+      assert_select "a##{dom_id(coffee, :change_categories)}[data-turbo-frame=?][href=?]", dom_id(coffee, :categories),
+        categories_transaction_path(coffee, filter: { payee: "corner" }), text: /Change/
+      assert_select "turbo-frame##{dom_id(coffee, :categories)}:not([src]):not([loading])", text: ""
+    end
+
+    get transactions_path
+    market = transactions(:market_split)
+    assert_select "tbody##{dom_id(market, :list)}" do
+      assert_select "a[data-turbo-frame]", false
+      assert_select "turbo-frame", false
+      assert_select "a[href=?][data-turbo-prefetch=false]", receipt_path(receipts(:market_receipt)), text: "Change on the receipt"
+    end
+    assert_select "tbody##{dom_id(transactions(:withdrawal_out), :list)}" do
+      assert_select "a[data-turbo-frame]", false
+      assert_select "turbo-frame", false
+    end
+    assert_select "a##{dom_id(@transaction, :change_categories)}", 0,
+      "a row with an uncategorised line is categorised under it, next to its suggestion, never with Change"
+  end
+
+  test "Change loads a picker per line with the category it shows, the list's filter and no suggestion" do
+    get categories_transaction_path(@transaction, filter: { status: "needs_review" }), headers: frame_headers(@transaction)
+
+    assert_response :success
+    assert_select "turbo-frame##{dom_id(@transaction, :categories)} form[action=?][data-controller=category-change]", categories_transaction_path(@transaction) do |form|
+      assert_not_includes form.first["data-action"], "review-queue", "the review queue's advance is not attached here"
+      assert_select "input[name=_method][value=patch]"
+      assert_select "input[name=lock_version][value=?]", @transaction.lock_version.to_s
+      assert_select "input[name='filter[status]'][value=needs_review]"
+      assert_select "input[name=from]", false
+      assert_select "input[name=?][value='']", "lines[#{@line.id}][observed_category_id]"
+      assert_select "select[name=?]", "lines[#{@line.id}][category_id]"
+      assert_select "[data-combobox-suggestion-value]", false
+      assert_select "input[name^=shown]", false
+      assert_select "input[type=submit][value=Save]"
+    end
+    assert_select "h1", false, "inside the frame, no page around it"
+  end
+
+  test "a split gets one picker per line, each with its amount and its category" do
+    split = invented_split
+    first, second = split.lines.to_a
+
+    get categories_transaction_path(split), headers: frame_headers(split)
+
+    assert_select "select[name^=lines]", 2
+    [ [ first, categories(:groceries) ], [ second, categories(:cafes) ] ].each do |line, category|
+      assert_select "input[name=?][value=?]", "lines[#{line.id}][observed_category_id]", category.id.to_s
+      assert_select "select[name=?] option[selected][value=?]", "lines[#{line.id}][category_id]", category.id.to_s
+    end
+    assert_select "span", text: "-60.00 UAH"
+    assert_select "input[aria-label=?]", "Category of the line of -40.00 UAH, Invented Shop"
+  end
+
+  test "Change on a receipt's transaction or a transfer leg offers no form" do
+    get categories_transaction_path(transactions(:market_split)), headers: frame_headers(transactions(:market_split))
+    assert_select "form", false
+    assert_select "a[href=?]", receipt_path(receipts(:market_receipt)), text: "the receipt"
+
+    get categories_transaction_path(transactions(:withdrawal_out)), headers: frame_headers(transactions(:withdrawal_out))
+    assert_select "form", false
+    assert_select "p", text: "A transfer leg: it has no lines."
+  end
+
+  test "saving Change from the list replaces the category and answers with the row" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+
+    patch categories_transaction_path(coffee), params: { **change_params(coffee, { line => categories(:groceries) }), filter: { payee: "corner" } },
+      as: :turbo_stream
+
+    assert_response :success
+    assert_select "turbo-stream[action=replace][target=?]", dom_id(coffee, :list) do
+      assert_select "template a##{dom_id(coffee, :change_categories)}[href=?][data-controller=autofocus]", categories_transaction_path(coffee, filter: { payee: "corner" })
+      assert_select "template [role=alert]", false
+    end
+    assert_equal [ categories(:groceries), "person" ], [ line.reload.category, line.category_origin ]
+  end
+
+  test "the same categories save nothing, quietly" do
+    coffee = transactions(:coffee)
+    version = coffee.lock_version
+
+    patch categories_transaction_path(coffee), params: change_params(coffee, {}), as: :turbo_stream
+
+    assert_response :success
+    assert_select "turbo-stream template [role=alert]", false
+    assert_equal version, coffee.reload.lock_version
+  end
+
+  test "a category changed since Change was opened saves nothing and says so" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+    form = change_params(coffee, { line => categories(:groceries) })
+    line.update_columns(category_id: categories(:takeaway).id)
+
+    patch categories_transaction_path(coffee), params: form, as: :turbo_stream
+
+    assert_response :unprocessable_content
+    assert_match "A category was set or changed", response.body
+    assert_equal categories(:takeaway), line.reload.category
+  end
+
+  test "clearing a category is refused; without Turbo the list comes back with the answer" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+
+    patch categories_transaction_path(coffee), params: { **change_params(coffee, { line => nil }), filter: { payee: "corner" } }
+    assert_redirected_to transactions_path(payee: "corner")
+    assert_match "cannot be cleared", flash[:alert]
+    assert_equal categories(:cafes), line.reload.category
+
+    patch categories_transaction_path(coffee), params: change_params(coffee, { line => categories(:groceries) })
+    assert_redirected_to transactions_path
+    assert_equal "Categories saved.", flash[:notice]
+
+    patch categories_transaction_path(coffee), params: { lock_version: coffee.reload.lock_version, lines: "nonsense" }
+    assert_match "Choose a category", flash[:alert]
+    patch categories_transaction_path(coffee), params: { lock_version: coffee.reload.lock_version,
+      lines: { "abc" => { observed_category_id: categories(:cafes).id, category_id: categories(:takeaway).id } } }
+    assert_match "cannot be cleared", flash[:alert], "a key that is not a line id is a bad form, not a change made meanwhile"
+    assert_equal categories(:groceries), line.reload.category
+  end
+
+  test "taking a suggestion from the list still answers without the focus on Change" do
+    post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, take: "1", **shown },
+      as: :turbo_stream
+
+    assert_select "template a##{dom_id(@transaction, :change_categories)}:not([data-controller])"
+  end
+
+  test "a category picked from the queue's picker with nothing chosen keeps the queue's own message" do
+    post categorise_transaction_path(@transaction), params: { line_id: @line.id, lock_version: @transaction.lock_version, review: { category_id: "" } },
+      as: :turbo_stream
+
+    assert_response :unprocessable_content
+    assert_match "Choose a category (not Uncategorised) first.", response.body
+  end
+
+  test "a Change form without its version or its line snapshot saves nothing" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+    snapshot = { observed_category_id: categories(:cafes).id.to_s, category_id: categories(:takeaway).id.to_s }
+
+    [
+      { lines: { line.id => snapshot } },
+      { lock_version: coffee.lock_version, lines: { line.id => snapshot.except(:observed_category_id) } },
+      { lock_version: coffee.lock_version, lines: { line.id => snapshot.merge(observed_category_id: "cafes") } },
+      { lock_version: { "x" => "1" }, lines: { line.id => snapshot } }
+    ].each do |params|
+      patch categories_transaction_path(coffee), params:, as: :turbo_stream
+      assert_response :unprocessable_content
+      assert_match "Choose a category", response.body
+    end
+    assert_equal categories(:cafes), line.reload.category
+  end
+
+  test "Change saved for a transaction deleted meanwhile takes its row off the list, or goes back to the list" do
+    split = invented_split
+    form = change_params(split, {})
+    split.destroy!
+
+    patch categories_transaction_path(split), params: form, as: :turbo_stream
+    assert_response :unprocessable_content
+    assert_select "turbo-stream[action=remove][target=?]", dom_id(split, :list)
+
+    patch categories_transaction_path(split), params: form.merge(return_to: "page")
+    assert_redirected_to transactions_path
+    assert_equal "This transaction is gone: nothing was saved.", flash[:alert]
+  end
+
+  test "Change for a transaction that does not exist is not found" do
+    get categories_transaction_path(id: 0), headers: { "Turbo-Frame" => "categories_transaction_0" }
+    assert_response :not_found
   end
 end

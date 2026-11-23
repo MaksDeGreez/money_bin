@@ -22,8 +22,9 @@
 # Filling it (Transactions::SuggestCategories) writes those columns only, never the category, the amount or the
 # transaction's lock_version: a suggestion is not an edit.
 #
-# `category_origin` says how a person set the category through the transaction list (Transactions::Categorise):
-# `person` (chosen by hand), `suggestion` (the suggestion taken, one line at a time) or `bulk` (taken by a bulk
+# `category_origin` says how a person set the category through the transaction list or page
+# (Transactions::Categorise): `person` (chosen by hand, also every correction made with "Change", which never
+# records a taken suggestion), `suggestion` (the suggestion taken, one line at a time) or `bulk` (taken by a bulk
 # acceptance), with the taken suggestion's probability and artefact. Nil means set elsewhere (the history
 # import, a receipt, manual entry). A retraining tells its own accepted output from a person's labels by it
 # (docs/decisions/0006-transaction-categoriser.md, "Serving").

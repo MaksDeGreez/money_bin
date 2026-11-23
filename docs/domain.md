@@ -77,8 +77,8 @@ Photos are stored with Active Storage (`active_storage_*` tables), attached to a
   app's category path ("Food / Snacks") when the history importer brings the line in, so the original label
   is never lost. A line with no category or with the taxonomy's Uncategorised is **uncategorised**
   (`TransactionLine.uncategorised`); such a line may carry the transaction categoriser's stored suggestion,
-  and `category_origin` says how a person set its category from the transactions list (see "Transaction
-  suggestions").
+  and `category_origin` says how a person set its category from the transactions list or a transaction's page
+  (see "Transaction suggestions").
 - **Receipt.** `status` moves `uploaded` -> `processing` -> `extracted` -> `reviewed`, or ends in `failed`
   (see "OCR" below). `extracted` means the items are filled in and wait for a person; `reviewed` means the
   receipt was accepted into the ledger. `ocr_raw` keeps the OCR service's full answer, or the reason of a
@@ -158,7 +158,8 @@ listed, the model gives a readable error and the database is the safety net for 
 | Filling suggestions never writes an item's `category_id` or `accepted_by_user`, nor the receipt's `lock_version` | `Receipts::SuggestCategories` (tested) |
 | Filling a slip's suggestion never writes its `category_id` or `lock_version` | `Receipts::SuggestSlipCategory` (tested) |
 | Filling a line's suggestion never writes its category or amount, nor the transaction's `lock_version` | `Transactions::SuggestCategories` (tested) |
-| Categorising from the list writes only an uncategorised line, never over a newer version of its transaction | `Transactions::Categorise` (row lock and `lock_version`, tested) |
+| Categorising from the list (and a bulk acceptance) writes only an uncategorised line, never over a newer version of its transaction | `Transactions::Categorise` (row lock and `lock_version`, tested) |
+| "Change" writes all of a transaction's lines or none, only when each still has the category the person saw and the version is the one they saw; it never clears a category and its lines are `person` | `Transactions::Categorise` in its edit mode (row locks, observed categories, `lock_version`, tested) |
 | A suggestion's probabilities are in 0..1, its source is `model`, `history` or `mix`, a category's origin is `person`, `suggestion` or `bulk` and needs a category, and a taken suggestion records its probability and artefact | Model + DB (`transaction_lines_*` checks) |
 | A bulk acceptance item is applied at most once and has one outcome (`accepted`, `stale`, `changed`, `failed`) | Model (`BulkAcceptanceItem#apply!` under a row lock); DB for the values and the one item per transaction (unique index) |
 | A receipt's `card_last4` is exactly four digits when present | Model + DB (`receipts_card_last4_format`) |
@@ -959,8 +960,8 @@ to its receipt instead: "Accept again" rebuilds its lines from the items, so it 
 j / k move between lines (the arrows too, once a line has the focus), t takes, c opens the picker; focus moves
 to the next waiting line. `Transactions::Categorise` does the write:
 
-- only an uncategorised line is written: a category already set (by anyone) is never overwritten, the answer
-  is "has a category by now";
+- only an uncategorised line is written: a category already set (by anyone) is never overwritten here, the
+  answer is "a category was set or changed" (replacing one is "Change", below);
 - the form carries the transaction's `lock_version` and the suggestion it showed (category and artefact);
   under row locks on the transaction and its lines a newer version saves nothing ("changed somewhere
   else"), and so does a suggestion refreshed since it was shown: "Take" saves exactly the suggestion on
@@ -981,6 +982,37 @@ to the next waiting line. `Transactions::Categorise` does the write:
   accepted output from a person's labels by this (`docs/decisions/0006-transaction-categoriser.md`,
   "Self-training"), and the payee history of slips counts only a person's labels. Categories set elsewhere
   (receipts, manual entry, the import) have no origin.
+
+**Changing a category.** A transaction's page (`/transactions/:id`) has "Change" above its lines, and so does
+its row on the list once none of its lines is uncategorised (until then its lines are categorised under the row,
+where the suggestion is on screen and taking it is recorded as such: "Change" is never offered next to a
+suggestion, so what it saves is the person's own label). It is a link into an empty Turbo Frame next to it that
+loads `GET /transactions/:id/categories` only when asked for (no lazy frame per row): one category picker per
+line, each line's amount shown on a split, no suggestion. The picker has the focus, Enter saves, Escape or
+"Cancel" closes it, and the focus goes back to "Change"; the review keys stay with the uncategorised queue.
+`PATCH /transactions/:id/categories` saves it through `Transactions::Categorise` in its edit mode (`edit:
+true`):
+
+- every line of the transaction is sent with the category the person saw on it (none for a line without one)
+  and the one chosen, and they are saved together or not at all. Under the same row locks on the transaction
+  and its lines, a newer `lock_version` saves nothing ("changed somewhere else"), and so does a line whose
+  category is not the observed one any more: a line's category can change without moving the transaction's
+  version, so the version alone would not catch it;
+- a line whose choice is its category now is left alone; when none differs nothing is written, the version
+  stays and the answer is `unchanged`, a quiet success ("Nothing changed." on the page). A line without a
+  category left empty is left alone too; clearing a category (empty, or Uncategorised) is refused;
+- a changed line gets `category_origin` `person` with no probability or artefact: the edit mode never records a
+  taken suggestion (none is shown with it), so `person` keeps meaning a label a person chose. The stored
+  suggestion columns stay as they are;
+- transfer legs and transactions booked from a receipt are refused as above; those rows link to the receipt
+  ("Change on the receipt") instead of offering the control;
+- the status follows `Transaction#status_after_categorising` as above. From the list the answer replaces the
+  transaction's rows, with the reason when nothing was saved; from the transaction page it goes back to the
+  page (replacing the history entry) with a notice or the reason.
+
+Without the edit mode `Categorise` behaves as before, so the bulk acceptance still never overwrites a
+category. **Known limit:** the history import writes a row again when it changed in a later export, and then
+the export wins, a person's correction included (see "History import").
 
 **The bulk action.** "Accept suggestions from N %" for the list's current filter:
 
@@ -1505,7 +1537,8 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
   export row (`LegacyImport::RowDigest`). On the next run a row whose digest is the same is not touched at
   all, whatever a person changed in the app since: a second run of the same export writes nothing and
   keeps every review, category and comment made in the app. Only a row that changed in the export is
-  written again, and then the export wins for that row. A transfer pair is written again only when the
+  written again, and then the export wins for that row (a category a person changed in the app included;
+  known and accepted). A transfer pair is written again only when the
   digest of one of its legs changed. A row without a digest counts as changed; payees are never renamed;
 - a line's category comes from the taxonomy by group and category name, or is `Category.uncategorised`
   when the old category is unmapped or not in the taxonomy; `legacy_category_path` keeps the old path; a

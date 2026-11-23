@@ -24,6 +24,11 @@ module TransactionsHelper
     safe_join(labels, ", ")
   end
 
+  # A transaction as a person knows it: its payee, else its merchant, else its number.
+  def transaction_label(transaction)
+    transaction.payee&.name || transaction.merchant.presence || "Transaction ##{transaction.id}"
+  end
+
   # The uncategorised lines of a transaction (none for a transfer leg).
   def transaction_review_lines(transaction)
     transaction.transfer_leg? ? [] : transaction.lines.select(&:uncategorised?)

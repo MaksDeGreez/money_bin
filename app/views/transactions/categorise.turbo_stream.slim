@@ -1,4 +1,8 @@
-/ The answer to categorising a line from the list: the transaction's rows as they are now (categorised, or
-/ unchanged with the reason nothing was saved).
+/ The answer to categorising a line, or to "Change", from the list: the transaction's rows as they are now
+/ (categorised, or unchanged with the reason nothing was saved). After "Change" the focus goes back to it.
+/ A transaction deleted meanwhile leaves the list.
 - if @transaction
-  = turbo_stream.replace dom_id(@transaction, :list), partial: "transactions/transaction", locals: { transaction: @transaction, filter: @filter, message: @message }
+  = turbo_stream.replace dom_id(@transaction, :list), partial: "transactions/transaction",
+    locals: { transaction: @transaction, filter: @filter, message: @message, focus_change: @focus_change }
+- else
+  = turbo_stream.remove "list_transaction_#{params[:id].to_s.to_i}"

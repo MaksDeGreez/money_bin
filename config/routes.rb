@@ -38,14 +38,17 @@ Rails.application.routes.draw do
     post :release, on: :member
   end
 
-  # The transactions list (with categorising an uncategorised line from it), one transaction (read-only), and an
+  # The transactions list (with categorising an uncategorised line from it), one transaction, and an
   # expense entered by hand. Bulk acceptances of suggestions and suggestion refreshes hang off the list.
+  # `categories` changes the categories of a transaction's lines ("Change", on the list and the transaction page).
   namespace :transactions do
     resources :bulk_acceptances, only: %i[ create show update destroy ]
     resources :suggestion_runs, only: :create
   end
   resources :transactions, only: %i[ index show new create ] do
     post :categorise, on: :member
+    get :categories, on: :member
+    patch :categories, on: :member, action: :update_categories
   end
 
   # The REST API for AI agents and scripts: personal API tokens only (Api::BaseController).

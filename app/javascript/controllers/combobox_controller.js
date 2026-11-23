@@ -5,8 +5,8 @@ import { Controller } from "@hotwired/stimulus"
 //
 // - Focus selects the text; typing part of a category or group name opens the list of matches (every word
 //   must match, accents and case ignored), the first one highlighted.
-// - Up / Down move; Enter takes the highlighted one; Tab takes it too when something was typed, then moves
-//   on; Escape closes and puts the chosen name back. Alt+Down opens the whole list.
+// - Up / Down move; Enter takes the highlighted one (with no match it does nothing); Tab takes it too when
+//   something was typed, then moves on; Escape closes and puts the chosen name back. Alt+Down opens the whole list.
 // - Enter in a field with no category takes the suggestion (data-combobox-suggestion-value), which is also
 //   listed first.
 // - Leaving the field: empty text clears the category, anything else that was not chosen is undone.
@@ -42,9 +42,11 @@ export default class extends Controller {
         break
       case "Enter":
         if (event.ctrlKey || event.metaKey) return
-        if (this.isOpen && this.matches[this.active]) {
+        if (this.isOpen) {
+          // An open list takes Enter: the highlighted match, or nothing when none matches (never the form's submit
+          // with the old category still chosen behind the typed text).
           event.preventDefault()
-          this.choose(this.matches[this.active].value)
+          if (this.matches[this.active]) this.choose(this.matches[this.active].value)
         } else if (!this.selectTarget.value && this.suggestionValue && !this.typed) {
           event.preventDefault()
           this.choose(this.suggestionValue)

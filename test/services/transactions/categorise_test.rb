@@ -158,4 +158,205 @@ class Transactions::CategoriseTest < ActiveSupport::TestCase
       @line.update_columns(category_origin: "bulk", category_origin_probability: nil, category_origin_model_version: nil)
     end
   end
+
+  # --- The edit mode ("Change") ------------------------------------------------------------------------------
+
+  # Every line of `transaction` with the category the person saw (its category now unless `observed` says) and the
+  # one chosen (`chosen`: { line => category or nil }; a line not named keeps its category).
+  def change(transaction, chosen = {}, observed: {}, lock_version: transaction.reload.lock_version, origin: "person", shown: {})
+    choices = transaction.lines.reload.map do |line|
+      category = chosen.key?(line) ? chosen[line] : line.category
+      Choice.new(line_id: line.id, category_id: category&.id, origin:, observed_category_id: observed.fetch(line, line.category)&.id, **shown)
+    end
+    Transactions::Categorise.call(transaction.id, lock_version:, choices:, edit: true)
+  end
+
+  def split(categories)
+    amounts = categories.size == 3 ? [ -50, -30, -20 ] : [ -60, -40 ]
+    Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 8), amount: BigDecimal("-100"), source: "bank",
+      merchant: "Invented Shop", status: "needs_review",
+      lines_attributes: categories.zip(amounts).map { |category, amount| { amount: BigDecimal(amount), category: } })
+  end
+
+  test "a person replaces a category: the line is theirs, the transaction confirmed, its version moved" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+    version = coffee.lock_version
+
+    result = change(coffee, { line => categories(:groceries) })
+
+    assert result.categorised?
+    line.reload
+    assert_equal [ categories(:groceries), "person", nil, nil ], [ line.category, line.category_origin, line.category_origin_probability, line.category_origin_model_version ]
+    assert_operator coffee.reload.lock_version, :>, version
+    assert_equal BigDecimal("-85.00"), line.amount
+  end
+
+  test "a category set or changed since the form was shown saves nothing, even with the same version" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+    line.update_columns(category_id: categories(:takeaway).id)
+
+    result = change(coffee, { line => categories(:groceries) }, observed: { line => categories(:cafes) })
+
+    assert_equal :changed, result.status
+    assert_equal categories(:takeaway), line.reload.category
+  end
+
+  test "a split is saved together: changed lines written, the same category skipped, an empty line left empty" do
+    transaction = split([ categories(:groceries), categories(:cafes), nil ])
+    first, second, third = transaction.lines.to_a
+    second.update_columns(category_origin: "person")
+
+    result = change(transaction, { first => categories(:household_supplies), third => nil })
+
+    assert result.categorised?
+    assert_equal [ categories(:household_supplies), "person" ], [ first.reload.category, first.category_origin ]
+    assert_equal [ categories(:cafes), "person" ], [ second.reload.category, second.category_origin ]
+    assert_nil third.reload.category
+    assert_equal "needs_review", transaction.reload.status, "a line is still uncategorised"
+
+    assert change(transaction, { third => categories(:takeaway) }).categorised?
+    assert_equal "confirmed", transaction.reload.status
+  end
+
+  test "an imported line in Uncategorised kept as it is is skipped while its sibling changes" do
+    transaction = split([ categories(:uncategorised), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+
+    assert change(transaction, { second => categories(:takeaway) }).categorised?
+
+    assert_equal [ categories(:uncategorised), nil ], [ first.reload.category, first.category_origin ]
+    assert_equal [ categories(:takeaway), "person" ], [ second.reload.category, second.category_origin ]
+    assert_equal "needs_review", transaction.reload.status
+  end
+
+  test "several lines of a split change in one save" do
+    transaction = split([ categories(:groceries), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+
+    assert change(transaction, { first => categories(:takeaway), second => categories(:household_supplies) }).categorised?
+    assert_equal [ categories(:takeaway), categories(:household_supplies) ], [ first.reload.category, second.reload.category ]
+    assert_equal %w[person person], [ first.category_origin, second.category_origin ]
+  end
+
+  test "a line added since the form was shown saves nothing" do
+    transaction = split([ categories(:groceries), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+    seen = [ first, second ].map { |line| Choice.new(line_id: line.id, category_id: categories(:takeaway).id, origin: "person", observed_category_id: line.category_id) }
+    transaction.update!(amount: BigDecimal("-120"), lines_attributes: [ { amount: BigDecimal("-20"), category: categories(:groceries) } ])
+
+    assert_equal :changed, Transactions::Categorise.call(transaction.id, lock_version: transaction.lock_version, choices: seen, edit: true).status
+    assert_equal [ categories(:groceries), categories(:cafes) ], [ first.reload.category, second.reload.category ]
+  end
+
+  test "a draft stays a draft when its categories change" do
+    coffee = transactions(:coffee)
+    coffee.update!(status: "draft")
+
+    assert change(coffee, { transaction_lines(:coffee_line) => categories(:takeaway) }).categorised?
+    assert_equal "draft", coffee.reload.status
+  end
+
+  test "a split with one line changed meanwhile writes none of its lines" do
+    transaction = split([ categories(:groceries), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+    second.update_columns(category_id: categories(:takeaway).id)
+
+    result = change(transaction, { first => categories(:household_supplies), second => categories(:groceries) }, observed: { second => categories(:cafes) })
+
+    assert_equal :changed, result.status
+    assert_equal [ categories(:groceries), categories(:takeaway) ], [ first.reload.category, second.reload.category ]
+  end
+
+  test "the same categories are a no-op: nothing written, the version stays" do
+    coffee = transactions(:coffee)
+    version = coffee.lock_version
+    updated_at = coffee.updated_at
+
+    result = change(coffee)
+
+    assert result.unchanged?
+    assert result.saved?
+    assert_equal [ version, updated_at ], [ coffee.reload.lock_version, coffee.updated_at ]
+    assert_nil transaction_lines(:coffee_line).reload.category_origin
+  end
+
+  test "clearing a category is refused, and so are a group and Uncategorised" do
+    coffee = transactions(:coffee)
+    line = transaction_lines(:coffee_line)
+
+    [ nil, categories(:groceries_group), categories(:uncategorised) ].each do |category|
+      assert_equal :invalid, change(coffee, { line => category }).status
+    end
+    assert_equal categories(:cafes), line.reload.category
+  end
+
+  test "a taken suggestion is not part of the edit mode" do
+    @line.update!(category: categories(:cafes))
+
+    assert_equal :invalid, change(@transaction, { @line => categories(:household_supplies) }, origin: "suggestion",
+      shown: { shown_category_id: categories(:household_supplies).id, shown_model_version: VERSION }).status
+    assert_equal :invalid, change(@transaction, { @line => categories(:household_supplies) },
+      shown: { shown_category_id: categories(:household_supplies).id, shown_model_version: VERSION }).status
+    assert_equal [ categories(:cafes), nil ], [ @line.reload.category, @line.category_origin ]
+  end
+
+  test "overriding a taken suggestion makes the line the person's, with no probability, keeping the stored suggestion" do
+    assert take.categorised?
+    assert_equal "suggestion", @line.reload.category_origin
+
+    assert change(@transaction, { @line => categories(:cafes) }).categorised?
+
+    @line.reload
+    assert_equal [ categories(:cafes), "person", nil, nil ], [ @line.category, @line.category_origin, @line.category_origin_probability, @line.category_origin_model_version ]
+    assert_equal [ categories(:household_supplies).id, 0.91, VERSION ], [ @line.suggested_category_id, @line.suggestion_probability, @line.suggestion_model_version ]
+  end
+
+  test "an uncategorised line given its suggested category by hand is the person's label, not a taken suggestion" do
+    assert change(@transaction, { @line => categories(:household_supplies) }).categorised?
+
+    assert_equal [ categories(:household_supplies), "person", nil ], [ @line.reload.category, @line.category_origin, @line.category_origin_probability ]
+    assert_equal "confirmed", @transaction.reload.status
+  end
+
+  test "a stale version saves nothing in the edit mode either" do
+    coffee = transactions(:coffee)
+    seen = coffee.lock_version
+    coffee.update!(comment: "edited elsewhere")
+
+    assert_equal :stale, change(coffee, { transaction_lines(:coffee_line) => categories(:groceries) }, lock_version: seen).status
+    assert_equal categories(:cafes), transaction_lines(:coffee_line).reload.category
+  end
+
+  test "every line must come, once: a missing or doubled line saves nothing" do
+    transaction = split([ categories(:groceries), categories(:cafes) ])
+    first, second = transaction.lines.to_a
+    choice = ->(line) { Choice.new(line_id: line.id, category_id: categories(:takeaway).id, origin: "person", observed_category_id: line.category_id) }
+
+    assert_equal :changed, Transactions::Categorise.call(transaction.id, lock_version: transaction.lock_version, choices: [ choice.(first) ], edit: true).status
+    assert_equal :invalid, Transactions::Categorise.call(transaction.id, lock_version: transaction.lock_version,
+      choices: [ choice.(first), choice.(first), choice.(second) ], edit: true).status
+    assert_equal [ categories(:groceries), categories(:cafes) ], [ first.reload.category, second.reload.category ]
+  end
+
+  test "a transfer leg and a transaction booked from a receipt stay refused in the edit mode" do
+    leg = transactions(:withdrawal_out)
+    choice = Choice.new(line_id: 0, category_id: categories(:cafes).id, origin: "person")
+    assert_equal :changed, Transactions::Categorise.call(leg.id, lock_version: leg.lock_version, choices: [ choice ], edit: true).status
+
+    market = transactions(:market_split)
+    assert_equal :on_receipt, change(market, { transaction_lines(:market_groceries) => categories(:takeaway) }).status
+    assert_equal categories(:groceries), transaction_lines(:market_groceries).reload.category
+  end
+
+  test "without the edit mode a categorised line is still refused, also as a bulk acceptance would ask" do
+    line = transaction_lines(:coffee_line)
+    bulk = Choice.new(line_id: line.id, category_id: categories(:groceries).id, origin: "bulk", shown_category_id: categories(:groceries).id,
+      shown_model_version: VERSION, observed_category_id: categories(:cafes).id)
+
+    assert_equal :changed, Transactions::Categorise.call(line.transaction_id, lock_version: transactions(:coffee).lock_version, choices: [ bulk ]).status
+    assert_equal :changed, take(line, category: categories(:groceries), origin: "person").status
+    assert_equal categories(:cafes), line.reload.category
+  end
 end

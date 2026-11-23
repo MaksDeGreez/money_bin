@@ -1,18 +1,24 @@
 # The transactions: the list with its URL filter (Transaction::Filter over TransactionsQuery), one transaction
 # (where "Accept" on a receipt lands), an expense entered by hand (ManualExpense, docs/domain.md, "Manual entry"),
-# and categorising an uncategorised line from the list (Transactions::Categorise; docs/domain.md, "Transaction
-# suggestions").
+# categorising an uncategorised line from the list, and changing the categories of a transaction's lines from the
+# list or its page (Transactions::Categorise; docs/domain.md, "Transaction suggestions").
 #
 # A transaction page reached from a receipt carries the receipt list's filter (Receipt::Filter) in its URL,
 # so "Next receipt to review" continues through the same list.
 class TransactionsController < ApplicationController
   CATEGORISE_MESSAGES = {
     categorised: nil,
+    unchanged: nil,
     stale: "Changed somewhere else since this page was loaded: nothing was saved. Here it is as it is now.",
-    changed: "This line has a category by now, or a new suggestion: nothing was saved. Here it is as it is now.",
+    changed: "A category was set or changed, or a new suggestion arrived, since this was opened: nothing was saved. " \
+      "Here it is as it is now.",
     invalid: "Choose a category (not Uncategorised) first.",
     on_receipt: "Booked from a receipt: categorise its items on the receipt and accept it again."
   }.freeze
+  # "Change" asks for every line at once, and may not clear a category.
+  CHANGE_MESSAGES = CATEGORISE_MESSAGES.merge(
+    invalid: "Choose a category (not Uncategorised) for each line; a category cannot be cleared. Nothing was saved."
+  ).freeze
 
   def index
     @filter = Transaction::Filter.from_params(params)
@@ -58,19 +64,80 @@ class TransactionsController < ApplicationController
       origin: taken ? "suggestion" : "person", shown_category_id:, shown_model_version: params[:shown_model_version].presence)
     result = Transactions::Categorise.call(params[:id], lock_version: params[:lock_version].to_i, choices: [ choice ])
     @message = CATEGORISE_MESSAGES.fetch(result.status)
-    @transaction = Transaction.includes(*list_preloads).find_by(id: params[:id])
-    @filter = Transaction::Filter.from_params(params, :filter)
+    answer_on_list(result, notice: "Categorised.")
+  end
 
-    respond_to do |format|
-      format.turbo_stream { render status: (result.categorised? ? :ok : :unprocessable_content) }
-      format.html do
-        redirect_to transactions_path(@filter.to_params), status: :see_other,
-          **(result.categorised? ? { notice: "Categorised." } : { alert: @message })
-      end
+  # "Change" on the list or the transaction page: one category picker per line of the transaction, loaded into the
+  # Turbo Frame next to the control. Transfer legs and transactions booked from a receipt get no form.
+  def categories
+    @transaction = Transaction.includes(:account, :payee, :receipt, lines: { category: :parent }).find(params[:id])
+    @filter = Transaction::Filter.from_params(params, :filter)
+    @from_page = params[:return_to] == "page" || !turbo_frame_request?
+  end
+
+  # Saves "Change" (Transactions::Categorise in its edit mode): every line of the transaction with the category the
+  # person saw on it and the one chosen, all together or none, so a category set or changed meanwhile saves nothing.
+  # The choice is always the person's own (origin `person`), even when it is the stored suggestion. From the list the
+  # answer replaces the transaction's rows, as categorising does, with the focus back on "Change"; from the
+  # transaction page it goes back to the page (its Lines section, "Change" focused).
+  # A form without a usable version or line snapshot saves nothing (:invalid).
+  def update_categories
+    lock_version = integer(params[:lock_version])
+    choices = category_changes
+    result = if lock_version.nil? || choices.empty?
+      Transactions::Categorise::Result.new(status: :invalid, transaction: nil)
+    else
+      Transactions::Categorise.call(params[:id], lock_version:, choices:, edit: true)
     end
+    @message = CHANGE_MESSAGES.fetch(result.status)
+    notice = result.unchanged? ? "Nothing changed." : "Categories saved."
+    unless params[:return_to] == "page"
+      @focus_change = true
+      return answer_on_list(result, notice:)
+    end
+
+    # A transaction deleted meanwhile (a later history import may replace a row) has no page to go back to.
+    unless Transaction.exists?(params[:id].to_s.to_i)
+      return redirect_to transactions_path, status: :see_other, alert: "This transaction is gone: nothing was saved."
+    end
+
+    redirect_to transaction_path(params[:id], changed_categories: 1, anchor: "lines-heading"), status: :see_other,
+      **(result.saved? ? { notice: } : { alert: @message })
   end
 
   private
+    # The rows of the list as they are now (categorise.turbo_stream: the transaction's tbody, with the message when
+    # nothing was saved), or the list again without Turbo.
+    def answer_on_list(result, notice:)
+      @transaction = Transaction.includes(*list_preloads).find_by(id: params[:id])
+      @filter = Transaction::Filter.from_params(params, :filter)
+
+      respond_to do |format|
+        format.turbo_stream { render :categorise, status: (result.saved? ? :ok : :unprocessable_content) }
+        format.html do
+          redirect_to transactions_path(@filter.to_params), status: :see_other, **(result.saved? ? { notice: } : { alert: @message })
+        end
+      end
+    end
+
+    # lines[<line id>][observed_category_id] and [category_id] from the "Change" form, as the person's choices: each
+    # an id, or empty for none. Anything malformed (a key that is not a line id, a field missing, a value that is
+    # neither) leaves no choice at all, so nothing is saved.
+    def category_changes
+      lines = params[:lines]
+      return [] unless lines.is_a?(ActionController::Parameters)
+
+      lines.each_pair.map do |key, values|
+        line_id = integer(key)
+        return [] unless line_id && values.is_a?(ActionController::Parameters)
+
+        observed, chosen = values.values_at(:observed_category_id, :category_id)
+        return [] unless [ observed, chosen ].all? { |value| value.is_a?(String) && (value.empty? || integer(value)) }
+
+        Transactions::Categorise::Choice.new(line_id:, category_id: integer(chosen), origin: "person", observed_category_id: integer(observed))
+      end
+    end
+
     def integer(value)
       Integer(value.to_s, 10, exception: false)
     end

@@ -293,8 +293,12 @@ taken suggestion's probability and artefact (`category_origin_probability`, `cat
 a database check makes them required for a taken suggestion). A retraining should leave `suggestion` and
 `bulk` lines out, or at least count and evaluate them apart; the training reads the previous app's history
 export, which has no such rows; an export of this app's ledger for a retraining must carry the column. Limits: a person who chooses the suggested category in
-the picker is recorded as taking the suggestion (it was on screen, so the label is not independent of it);
-a category set elsewhere (a receipt, manual entry, the import) has no origin.
+the picker under an uncategorised line is recorded as taking the suggestion (it was on screen, so the label
+is not independent of it); a correction made with "Change" (offered where no suggestion is on screen: the
+transaction page, and a list row with no uncategorised line) is always `person` with no probability or
+artefact, so a `person` label is one a person chose, and a person overriding a taken suggestion turns it into
+one; a category set elsewhere (a receipt, manual entry,
+the import) has no origin.
 
 ## Limitations
 
