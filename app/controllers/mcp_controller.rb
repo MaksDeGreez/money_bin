@@ -16,6 +16,10 @@
 # 3. The method: POST carries JSON-RPC messages. In stateless mode there is no event stream to open (GET)
 #    and no session to end (DELETE), so every other method is a 405 with `Allow: POST`.
 #
+# Any other path under /mcp (`/mcp/tools`, `/mcp.json`) passes the same two gates and is then a JSON 404
+# (`not_found`). A request Rails cannot decode (`/mcp?q=%ff`) or a method nobody knows never reaches this
+# controller: ApiRequestErrors answers it, with the same error shape.
+#
 # The transport then answers with one JSON object per POST, and protocol errors (a wrong Accept or
 # Content-Type, malformed JSON, an unknown method) in JSON-RPC's own error shape. A failure anywhere else
 # (the database down while the token is checked, say) is a 500 with no detail, in every environment: the
@@ -25,6 +29,9 @@ class McpController < ActionController::API
 
   # A Host header value: a name or an IPv4 address, or an IPv6 address in brackets, and an optional port.
   HOST_FORMAT = /\A(?:\[(?<ipv6>[0-9a-f:.]+)\]|(?<name>[a-z0-9.-]+))(?::[0-9]{1,5})?\z/
+
+  # The one method the server answers (ApiRequestErrors names it too, for a method nobody knows).
+  ALLOWED_METHODS = %w[POST].freeze
 
   wrap_parameters false
 
@@ -38,7 +45,7 @@ class McpController < ActionController::API
 
   def handle
     unless request.post?
-      response.headers["Allow"] = "POST"
+      response.headers["Allow"] = ALLOWED_METHODS.join(", ")
       return render_api_error :method_not_allowed, "method_not_allowed",
         "The MCP server is stateless: send JSON-RPC messages with POST. There is no event stream (GET) and no session to end (DELETE)."
     end
@@ -50,6 +57,11 @@ class McpController < ActionController::API
     self.response_body = body
   ensure
     transport&.close
+  end
+
+  # Any other path under /mcp, after the same gates.
+  def not_found
+    render_api_error :not_found, "not_found", "The MCP server answers at /mcp only."
   end
 
   private

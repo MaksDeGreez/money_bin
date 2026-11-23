@@ -26,6 +26,15 @@ info:
     refused the same way (every endpoint reads only the query string), and a format suffix such as `.xml` is
     not routed.
 
+    Addresses and methods: any other path under `/api` (bare `/api`, a misspelt path, a format suffix) is a 404
+    `not_found`, and a documented path asked with another method (POST, DELETE, OPTIONS, ...) is a 405
+    `method_not_allowed` with an `Allow` header naming the methods it answers; both after the token check, so
+    without a valid token every path is a 401. An HTTP method the server does not know at all is a 405 before
+    the token check, its `Allow` naming the methods the API answers anywhere. A request that cannot be decoded
+    is a 400 `bad_request` (see the responses). These answers are JSON too, for every request the web server
+    hands to the app (one it refuses itself, such as a malformed request line, gets the web server's own
+    answer, and so does a Host header the app's host check refuses).
+
     Lists are read a page at a time: pass `next_cursor` from one page as `cursor` to get the next, until it is
     null. A cursor is opaque; keep the same filters while following it.
 servers:
@@ -46,6 +55,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Status"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -105,6 +116,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TransactionPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -123,6 +136,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Transaction"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -144,6 +159,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccountList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -163,6 +180,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CategoryTree"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -222,6 +241,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReceiptPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -240,6 +261,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Receipt"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -329,7 +352,11 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     BadRequest:
-      description: A required parameter is missing (`bad_request`).
+      description: |
+        A required parameter is missing, or the request cannot be decoded: a path or query string whose
+        percent-encoding is not valid UTF-8 (`?q=%ff`, `?limit=%`), a parameter given both as a value and as a
+        nested one (`a=1&a[b]=2`), or a Content-Type or Accept header that is not a media type (`bad_request`).
+        An undecodable request is refused before the token is checked.
       content:
         application/json:
           schema:
@@ -412,7 +439,7 @@ components:
           properties:
             code:
               type: string
-              enum: [unauthorized, invalid_token, insufficient_scope, not_found, bad_request, invalid_parameter]
+              enum: [unauthorized, invalid_token, insufficient_scope, not_found, method_not_allowed, bad_request, invalid_parameter]
             message:
               type: string
 

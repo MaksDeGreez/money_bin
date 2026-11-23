@@ -17,19 +17,24 @@ class ApiContractTest < ActionDispatch::IntegrationTest
   # One request per documented "METHOD path status": [path, params, token] (token nil: no Authorization).
   EXAMPLES = {
     "GET /api/v1/status 200" => -> { [ "/api/v1/status", {}, :agent_read ] },
+    "GET /api/v1/status 400" => -> { [ "/api/v1/status?q=%ff", {}, :agent_read ] },
     "GET /api/v1/status 401" => -> { [ "/api/v1/status", {}, nil ] },
     "GET /api/v1/status 422" => -> { [ "/api/v1/status", { x: "1" }, :agent_read ] },
     "GET /api/v1/transactions 200" => -> { [ "/api/v1/transactions", { limit: 5 }, :agent_read ] },
+    "GET /api/v1/transactions 400" => -> { [ "/api/v1/transactions?q=%ff", {}, :agent_read ] },
     "GET /api/v1/transactions 401" => -> { [ "/api/v1/transactions", {}, nil ] },
     "GET /api/v1/transactions 422" => -> { [ "/api/v1/transactions", { status: "nope" }, :agent_read ] },
     "GET /api/v1/transactions/{id} 200" => -> { [ "/api/v1/transactions/#{transactions(:coffee).id}", {}, :agent_read ] },
+    "GET /api/v1/transactions/{id} 400" => -> { [ "/api/v1/transactions/#{transactions(:coffee).id}?q=%ff", {}, :agent_read ] },
     "GET /api/v1/transactions/{id} 401" => -> { [ "/api/v1/transactions/#{transactions(:coffee).id}", {}, nil ] },
     "GET /api/v1/transactions/{id} 404" => -> { [ "/api/v1/transactions/999999999", {}, :agent_read ] },
     "GET /api/v1/transactions/{id} 422" => -> { [ "/api/v1/transactions/#{transactions(:coffee).id}", { x: "1" }, :agent_read ] },
     "GET /api/v1/accounts 200" => -> { [ "/api/v1/accounts", {}, :agent_read ] },
+    "GET /api/v1/accounts 400" => -> { [ "/api/v1/accounts?q=%ff", {}, :agent_read ] },
     "GET /api/v1/accounts 401" => -> { [ "/api/v1/accounts", {}, nil ] },
     "GET /api/v1/accounts 422" => -> { [ "/api/v1/accounts", { x: "1" }, :agent_read ] },
     "GET /api/v1/categories 200" => -> { [ "/api/v1/categories", {}, :agent_read ] },
+    "GET /api/v1/categories 400" => -> { [ "/api/v1/categories?q=%ff", {}, :agent_read ] },
     "GET /api/v1/categories 401" => -> { [ "/api/v1/categories", {}, nil ] },
     "GET /api/v1/categories 422" => -> { [ "/api/v1/categories", { x: "1" }, :agent_read ] },
     "GET /api/v1/summary 200" => -> { [ "/api/v1/summary", { from: "2026-10-01", to: "2026-10-31" }, :agent_read ] },
@@ -37,9 +42,11 @@ class ApiContractTest < ActionDispatch::IntegrationTest
     "GET /api/v1/summary 401" => -> { [ "/api/v1/summary", { from: "2026-10-01", to: "2026-10-31" }, nil ] },
     "GET /api/v1/summary 422" => -> { [ "/api/v1/summary", { from: "2026-10-01", to: "2026-10-31", currency: "XYZ" }, :agent_read ] },
     "GET /api/v1/receipts 200" => -> { [ "/api/v1/receipts", { limit: 1 }, :agent_read ] },
+    "GET /api/v1/receipts 400" => -> { [ "/api/v1/receipts?q=%ff", {}, :agent_read ] },
     "GET /api/v1/receipts 401" => -> { [ "/api/v1/receipts", {}, nil ] },
     "GET /api/v1/receipts 422" => -> { [ "/api/v1/receipts", { limit: "0" }, :agent_read ] },
     "GET /api/v1/receipts/{id} 200" => -> { [ "/api/v1/receipts/#{receipts(:corner_receipt).id}", {}, :agent_read ] },
+    "GET /api/v1/receipts/{id} 400" => -> { [ "/api/v1/receipts/#{receipts(:corner_receipt).id}?q=%ff", {}, :agent_read ] },
     "GET /api/v1/receipts/{id} 401" => -> { [ "/api/v1/receipts/#{receipts(:corner_receipt).id}", {}, nil ] },
     "GET /api/v1/receipts/{id} 404" => -> { [ "/api/v1/receipts/999999999", {}, :agent_read ] },
     "GET /api/v1/receipts/{id} 422" => -> { [ "/api/v1/receipts/#{receipts(:corner_receipt).id}", { x: "1" }, :agent_read ] }
@@ -104,8 +111,10 @@ class ApiContractTest < ActionDispatch::IntegrationTest
 
   test "every API route is documented, and every documented path is routed" do
     routed = Rails.application.routes.routes.filter_map do |route|
+      next if route.defaults[:controller] == "api/errors" # the fallback for everything else (Api::ErrorsControllerTest)
+
       path = route.path.spec.to_s.delete_suffix("(.:format)")
-      "#{route.verb} #{path.gsub(/:(\w+)/, '{\1}')}" if path.start_with?("/api/")
+      "#{route.verb} #{path.gsub(/:(\w+)/, '{\1}')}" if path.start_with?("/api")
     end
 
     assert_equal routed.sort, self.class.documented_operations.sort
@@ -140,12 +149,13 @@ class ApiContractTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "every API route is JSON only: a format suffix is not routed" do
-    api_get "/api/v1/transactions.xml"
-    assert_response :not_found
-
-    api_get "/api/v1/transactions.json"
-    assert_response :not_found
+  test "every API route is JSON only: a format suffix is not routed, and says so in JSON" do
+    %w[/api/v1/transactions.xml /api/v1/transactions.json /api.json].each do |path|
+      api_get path
+      assert_response :not_found, path
+      assert_equal "application/json", response.media_type, path
+      assert_equal "not_found", json.dig("error", "code"), path
+    end
   end
 
   test "a request body is refused, so a filter sent there is never ignored" do

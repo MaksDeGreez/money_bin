@@ -124,7 +124,13 @@ curl -s -H "Authorization: Bearer $MONEY_BIN_TOKEN" http://localhost:3100/api/v1
 
 Errors have one shape, `{"error": {"code": "...", "message": "..."}}`: 401 `unauthorized` (no token) or
 `invalid_token` (unknown, malformed or revoked), 403 `insufficient_scope` (a `read` token on a request
-that changes data).
+that changes data). With a token, a path under `/api` that does not exist is a 404 `not_found` and a
+method a path does not answer is a 405 `method_not_allowed` with an `Allow` header. A request the app
+cannot decode (an invalid percent-encoding such as `?q=%ff`, a form body Rack cannot read, a
+Content-Type or Accept that is not a media type) is a 400 `bad_request`, with or without a token; so is
+one to `/mcp`. A JSON body that does not parse is refused like any body, a 422 (`/mcp` answers it with
+JSON-RPC's own parse error). Not covered: a request the web server refuses before the app sees it, and
+a Host header Rails' host check refuses (development and production), which get their own answers.
 
 ## The read API
 

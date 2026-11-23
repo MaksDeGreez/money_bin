@@ -310,10 +310,33 @@ class McpServerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
-  test "a format suffix is not routed" do
-    post "/mcp.json", params: { jsonrpc: "2.0", id: 1, method: "tools/list" }.to_json, headers: mcp_headers(:agent_read)
+  test "a format suffix or any other path under /mcp is a JSON 404, behind the same gates" do
+    message = { jsonrpc: "2.0", id: 1, method: "tools/list" }.to_json
+    %w[/mcp.json /mcp/nope /mcp/tools/list].each do |path|
+      post path, params: message, headers: mcp_headers(:agent_read)
+      assert_response :not_found, path
+      assert_equal({ "code" => "not_found", "message" => "The MCP server answers at /mcp only." }, json["error"])
 
+      post path, params: message, headers: mcp_headers(nil)
+      assert_response :unauthorized, path
+
+      post path, params: message, headers: mcp_headers(:agent_read).merge("Host" => "evil.example:3100")
+      assert_response :forbidden, path
+      assert_equal "forbidden_host", json.dig("error", "code")
+    end
+
+    get "/mcp/nope", headers: mcp_headers(:agent_read)
     assert_response :not_found
+  end
+
+  test "a query string Rails cannot decode is a JSON 400, before any gate" do
+    [ mcp_headers(nil), mcp_headers(nil).merge("Host" => "evil.example:3100") ].each do |headers|
+      post "/mcp?q=%ff", params: { jsonrpc: "2.0", id: 1, method: "tools/list" }.to_json, headers: headers
+
+      assert_response :bad_request
+      assert_equal "application/json", response.media_type
+      assert_equal "bad_request", json.dig("error", "code")
+    end
   end
 
   private
