@@ -142,6 +142,19 @@ module ReceiptsHelper
     grouped_options_for_select(groups.reject { |_, choices| choices.empty? }, selected&.id)
   end
 
+  # The ledger transactions "Book as" lists: the list Receipts::Review computed from the values it saved (a refused
+  # accept), else the one for the receipt as last saved (a form re-rendered with typed values reads it again).
+  def receipt_link_candidates(receipt, review)
+    review&.link_candidates || ReceiptLinkCandidates.new(review ? Receipt.includes(:items).find(receipt.id) : receipt)
+  end
+
+  # A candidate's date next to the receipt's: "same day", "1 day earlier", "2 days later".
+  def receipt_link_distance(days)
+    return "same day" if days.zero?
+
+    "#{pluralize(days.abs, 'day')} #{days.negative? ? 'earlier' : 'later'}"
+  end
+
   # The value of the date-and-time field: what the person typed while it is unsaved and unreadable, else the
   # stored moment in Kyiv time, to the second.
   def review_issued_at_value(receipt)

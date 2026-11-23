@@ -1,18 +1,12 @@
-/ Before "Accept": the same purchase may already be booked, or photographed twice (a fiscal receipt and its
-/ card slip). A warning with links, never a block (Receipt::DuplicateCheck).
+/ Before "Accept": the same purchase may have been photographed twice (a fiscal receipt and its card slip). A
+/ warning with links, never a block (Receipt::DuplicateCheck). A bank transaction for it is "Book as" above.
 - if check.any?
   = render "ui/callout", tone: :signal do
     .space-y-2.text-sm role="status"
       p
-        strong Possibly booked already.
-        |  Same date and amount as the receipt as saved:
+        strong Possibly photographed twice.
+        |  Another receipt not booked yet has the same date and total as this one as saved:
       ul.list-disc.pl-5
-        - check.transactions.each do |transaction|
-          li
-            = link_to "Transaction ##{transaction.id}", transaction_path(transaction)
-            = " · #{transaction.account.name} · #{l(transaction.occurred_on)} · #{receipt_money(transaction.amount, transaction.account.currency)}"
-            - if transaction.receipt
-              =< "(from #{receipt_label(transaction.receipt)})"
         - check.receipts.each do |other|
           li
             = link_to receipt_label(other), receipt_path(other), data: { turbo_prefetch: false }

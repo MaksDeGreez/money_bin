@@ -7,6 +7,8 @@
 # two payees; merging those is a job for a person or a later rule, not for this key.
 class Payee < ApplicationRecord
   has_many :transactions, dependent: :restrict_with_error
+  # A payee a receipt booking says it assigned stays while the record does: an undo may need it.
+  has_many :receipt_bookings, foreign_key: :assigned_payee_id, inverse_of: :assigned_payee, dependent: :restrict_with_error
 
   normalizes :name, with: ->(value) { value.squish }
 

@@ -136,7 +136,8 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
   end
 
   test "lines on a linked income carry its positive sign" do
-    refund = Transaction.create!(account: accounts(:card_uah), amount: "152.50", occurred_on: Date.new(2026, 10, 9), source: :manual,
+    # Booked from a receipt before booking records existed (Accept no longer links an income).
+    refund = Transaction.create!(account: accounts(:card_uah), amount: "152.50", occurred_on: Date.new(2026, 10, 9), source: :receipt,
                                  lines_attributes: [ { amount: "152.50" } ])
     receipt = receipts(:corner_receipt)
     receipt.update!(ledger_transaction: refund)
@@ -163,7 +164,8 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
   end
 
   test "a linked receipt refuses a different account" do
-    assert_raises(ArgumentError) { accept(receipts(:market_receipt), account: accounts(:cash_uah)) }
+    error = assert_raises(Receipts::Accept::AccountMismatch) { accept(receipts(:market_receipt), account: accounts(:cash_uah)) }
+    assert_equal "the receipt is already booked on Everyday card, not on Cash wallet", error.message
     assert accept(receipts(:market_receipt), account: accounts(:card_uah))
   end
 
@@ -303,7 +305,9 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
 
   test "every refusal is a Receipts::Accept::Error" do
     [ Receipts::Accept::NotAcceptable, Receipts::Accept::AccountRequired, Receipts::Accept::CurrencyMismatch,
-      Receipts::Accept::NothingToBook, Receipts::Accept::TotalMismatch ].each do |error|
+      Receipts::Accept::NothingToBook, Receipts::Accept::TotalMismatch, Receipts::Accept::AccountMismatch,
+      Receipts::Accept::NotLinkable, Receipts::Accept::AlreadyLinked, Receipts::Accept::TransactionChanged,
+      Receipts::Accept::LinkGone ].each do |error|
       assert_operator error, :<, Receipts::Accept::Error
     end
   end

@@ -14,7 +14,10 @@ module Receipts
   # page was rendered from), `transaction_lock_version` (for a reviewed receipt, its transaction's), and
   # `account_id` and `remove_items` (the confirmation that turning a receipt with items into a card slip
   # removes them), `filled_from` ("dps_xml" when the person filled the form from the tax-service record),
-  # `without_categories` and `replace_ground_truth` (for "Save as ground truth").
+  # `without_categories` and `replace_ground_truth` (for "Save as ground truth"), and the "Book as" choice:
+  # `booking` ("new", or the id of the chosen ledger transaction), `link_lock_versions` (each candidate's
+  # `lock_version` as shown, by id), `shown_candidate_ids`, `shown_linked_ids` and `shown_exact_ids` (the ids the
+  # page listed, separated by spaces; the last: the candidates whose amount was the booking total).
   #
   # Rules:
   # - Only a receipt a person may review is saved: `extracted` or `reviewed`, with no OCR queued or running
@@ -35,6 +38,15 @@ module Receipts
   # - The save always writes the receipt row, so its `lock_version` moves and an older form is refused.
   # - "Accept" saves and then runs Receipts::Accept, in one database transaction: a refusal (TotalMismatch,
   #   no account, ...) leaves nothing saved, and the typed values stay on the form with the reason.
+  # - "Accept" on a receipt without a ledger transaction books it as the person chose under "Book as": onto a
+  #   ledger transaction of the list (ReceiptLinkCandidates), with the `lock_version` the page showed and no
+  #   account, or as a new expense on the chosen account. The list is computed again from the values just
+  #   saved, in the same database transaction; when its ids are not the ones the page showed (the date or the
+  #   total was corrected, a bank row arrived, another receipt took one), or which of them match the items' sum
+  #   exactly changed, or no choice was made, nothing is booked or saved and the fresh list goes back to the form
+  #   (`link_candidates`) with nothing chosen. So a "new expense" chosen before a correction cannot go through
+  #   past a match the person has not seen. A refusal about the chosen transaction (changed, gone, taken) also
+  #   returns the list as it is then. A lock that could not be had (a deadlock with an import) is a message too.
   # - "Save as ground truth" saves as "Save" does and then writes the manual ground-truth record from the
   #   stored receipt (Receipts::SaveGroundTruth), in one database transaction; it never books and never moves
   #   the status. Before it, the form must be complete enough to be ground truth (the kind set, a total and
@@ -63,12 +75,24 @@ module Receipts
       "then save it as ground truth. Nothing was saved.".freeze
     CATEGORIES_NEEDED = "Every item needs a category to be saved as ground truth (a card slip needs its own), or tick " \
       "\"Save without categories\".".freeze
+    CANDIDATES_CHANGED = "Not accepted: the ledger transactions that match this receipt changed (your corrections, or a " \
+      "change in the ledger). Nothing was saved. Check the list under \"Book as\" and choose again.".freeze
+    LOCK_FAILED = "Not accepted: the transaction was being written by something else at the same moment (an import?). " \
+      "Nothing was saved. Try again.".freeze
+    CHOICE_NEEDED = "Not accepted: choose under \"Book as\" whether this receipt books onto a transaction already in the " \
+      "ledger or as a new expense. Nothing was saved.".freeze
+    NEW_BOOKING = "new".freeze
 
-    attr_reader :receipt, :form_receipt, :transaction, :version, :transaction_version, :account, :ground_truth
+    # The "Book as" choice cannot go through; the message goes next to it.
+    class BookingRefused < StandardError; end
+
+    attr_reader :receipt, :form_receipt, :transaction, :version, :transaction_version, :account, :ground_truth,
+      :link_candidates
 
     def self.permitted_params
       [ *HEADER_FIELDS, :lock_version, :transaction_lock_version, :account_id, :remove_items, :filled_from,
-        :without_categories, :replace_ground_truth, { items_attributes: ITEM_FIELDS } ]
+        :without_categories, :replace_ground_truth, :booking, :shown_candidate_ids, :shown_linked_ids, :shown_exact_ids,
+        { items_attributes: ITEM_FIELDS, link_lock_versions: {} } ]
     end
 
     def initialize(receipt, params, intent: "save")
@@ -109,8 +133,20 @@ module Receipts
       @conflict == true
     end
 
+    # The "Book as" choice sent ("new", a transaction id, or nil), to keep it chosen on a refused form; nil after
+    # the list changed, since then the person must choose again.
+    def booking
+      @params[:booking].to_s.presence unless candidates_changed? || @choose_again
+    end
+
+    # True when an accept found other matching transactions than the form listed.
+    def candidates_changed?
+      @candidates_changed == true
+    end
+
     def call
-      saved = Receipt.transaction do
+      # Its own savepoint inside a caller's transaction, so a refusal rolls the save back there too.
+      saved = Receipt.transaction(requires_new: true) do
         @receipt.lock!
         next refuse_detached(not_editable_message) if not_editable_message
         next refuse_detached(CONFLICT, conflict: true) if stale?
@@ -126,7 +162,7 @@ module Receipts
           @receipt.save!
         end
         @became_slip = kind_before != "card_slip" && @receipt.card_slip? && !accept?
-        @transaction = Accept.call(Receipt.find(@receipt.id), account: @account) if accept?
+        @transaction = book if accept?
         if ground_truth?
           @ground_truth = SaveGroundTruth.call(Receipt.includes(:category, items: :category).find(@receipt.id),
             confirm: @params[:replace_ground_truth])
@@ -135,6 +171,18 @@ module Receipts
         true
       rescue Accept::Error => error
         accept_refused(error)
+        raise ActiveRecord::Rollback
+      rescue BookingRefused => error
+        @transaction = nil
+        @receipt.errors.add(:booking, error.message)
+        raise ActiveRecord::Rollback
+      rescue ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout
+        # PostgreSQL aborted the transaction: nothing more can be read in it. The page reads the list again.
+        @transaction = nil
+        @link_candidates = nil
+        # The page reads the list again, perhaps after the other writer committed: the person chooses again.
+        @choose_again = true
+        @receipt.errors.add(:base, LOCK_FAILED)
         raise ActiveRecord::Rollback
       rescue ActiveRecord::RecordInvalid => error
         # A booking the models refuse (the items sum past the amount limit, say): a reason on the form, not a 500.
@@ -157,6 +205,38 @@ module Receipts
     end
 
     private
+      # Books the receipt as just saved: "Accept again" onto its own transaction; otherwise as the person chose
+      # under "Book as", once the list of matching transactions is still the one the page showed.
+      def book
+        stored = Receipt.includes(:items).find(@receipt.id)
+        return Accept.call(stored) if stored.transaction_id
+
+        @link_candidates = ReceiptLinkCandidates.new(stored).load
+        unless same_ids?(@params[:shown_candidate_ids], @link_candidates.candidate_ids) &&
+            same_ids?(@params[:shown_linked_ids], @link_candidates.linked_ids) &&
+            same_ids?(@params[:shown_exact_ids], @link_candidates.exact_ids)
+          @candidates_changed = true
+          raise BookingRefused, CANDIDATES_CHANGED
+        end
+
+        choice = @params[:booking].to_s
+        if choice == NEW_BOOKING
+          Accept.call(stored, account: @account)
+        elsif (chosen = @link_candidates.candidates.find { |candidate| candidate.id.to_s == choice })
+          @linking = true
+          versions = @params[:link_lock_versions]
+          version = versions[choice] if versions.is_a?(Hash)
+          Accept.call(stored, link: chosen.id, link_lock_version: version)
+        else
+          raise BookingRefused, CHOICE_NEEDED
+        end
+      end
+
+      # The ids a hidden field listed ("12 40 7") are these ids, in any order.
+      def same_ids?(shown, ids)
+        shown.to_s.split.sort == ids.map(&:to_s).sort
+      end
+
       # The save destroyed the rows marked for removal and dropped them from the items in memory; the rollback
       # brought them back in the database only. They go back on the form, still marked, so the page shows
       # them as removed (hidden, _destroy=1) and the next save removes them again instead of keeping them.
@@ -405,10 +485,19 @@ module Receipts
         false
       end
 
-      # The account errors go next to the account select; the others above the form.
+      # A refusal about the chosen ledger transaction goes next to "Book as", one about the account next to the
+      # account select; the others above the form.
       def accept_refused(error)
         @transaction = nil
-        field = error.is_a?(Accept::AccountRequired) || error.is_a?(Accept::CurrencyMismatch) ? :account_id : :base
+        # The chosen transaction is not what the person saw any more: they choose again from the list as it is now
+        # (read after Accept's savepoint rolled back, past the row lock it waited on).
+        @choose_again = [ Accept::TransactionChanged, Accept::LinkGone, Accept::AlreadyLinked, Accept::NotLinkable ].any? { |type| error.is_a?(type) }
+        @link_candidates = ReceiptLinkCandidates.new(Receipt.includes(:items).find(@receipt.id)).load if @choose_again
+        field = if @linking then :booking
+        elsif error.is_a?(Accept::CurrencyMismatch) && @receipt.transaction_id then :currency
+        elsif error.is_a?(Accept::AccountRequired) || error.is_a?(Accept::CurrencyMismatch) then :account_id
+        else :base
+        end
         @receipt.errors.add(field, "Not accepted: #{accept_message(error)}")
       end
 
@@ -416,8 +505,14 @@ module Receipts
         case error
         when Accept::AccountRequired then "choose the account to book it on."
         when Accept::TotalMismatch
+          if @linking
+            return "#{error.message}. Accepting replaces the chosen transaction's lines with the items, so the two " \
+              "must agree: correct the items, or book it as a new expense if it is another purchase."
+          end
           "#{error.message}. Accepting again replaces the booked transaction's lines, so the two must agree: correct " \
             "the items (a booked amount cannot be changed in the app yet)."
+        when Accept::TransactionChanged
+          "#{error.message}. Its lines as they are now are shown below: check them and choose again."
         else "#{error.message}."
         end
       end

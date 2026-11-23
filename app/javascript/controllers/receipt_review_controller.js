@@ -10,12 +10,14 @@ import { Controller } from "@hotwired/stimulus"
 //   record's (data-receipt-review-fill-value, prepared by the server in the form's own formats), as unsaved
 //   edits, and sets the hidden filled_from field, so a save records that the record pre-filled the form.
 //   The rows come without categories, for the person to choose. Nothing is saved until the person saves.
+// - "Book as": the account select is enabled only while "A new expense" is chosen, so the account is sent only
+//   with it (a disabled select is not submitted; the server sends it to the booking only on that choice anyway).
 // Taking a suggestion sets the row's category select and fires "change", like a choice by hand: the
 // server then marks the item accepted_by_user.
 const FILL_QUESTION = "Replace the fields and items in this form with the tax-service record? Nothing is saved until you save."
 
 export default class extends Controller {
-  static targets = ["kind", "slipOnly", "itemsOnly", "threshold", "suggestionStatus", "filledFrom", "fillStatus"]
+  static targets = ["kind", "slipOnly", "itemsOnly", "threshold", "suggestionStatus", "filledFrom", "fillStatus", "bookingAccount"]
   static values = { fill: Object }
   static outlets = ["line-items"]
 
@@ -40,6 +42,14 @@ export default class extends Controller {
       this.fillStatusTarget.textContent = `Filled from the tax-service record: ${count} item${count === 1 ? "" : "s"}. ` +
         "Choose their categories, check them against the photo and save."
     }
+  }
+
+  bookingChanged(event) {
+    if (!this.hasBookingAccountTarget) return
+
+    const newExpense = event.target.value === "new" && event.target.checked
+    this.bookingAccountTarget.disabled = !newExpense
+    if (newExpense) this.bookingAccountTarget.focus()
   }
 
   kindChanged() {

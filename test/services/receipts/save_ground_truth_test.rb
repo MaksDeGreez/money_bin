@@ -84,7 +84,7 @@ class Receipts::SaveGroundTruthTest < ActiveSupport::TestCase
 
   test "Save and Accept never write ground truth" do
     assert Receipts::Review.new(Receipt.find(@receipt.id), categorised_form, intent: "save").call
-    assert Receipts::Review.new(Receipt.find(@receipt.id), categorised_form.merge(account_id: accounts(:card_uah).id.to_s),
+    assert Receipts::Review.new(Receipt.find(@receipt.id), categorised_form.merge(booking: "new", account_id: accounts(:card_uah).id.to_s),
       intent: "accept").call
     assert_nil record
   end

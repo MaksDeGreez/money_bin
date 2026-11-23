@@ -1,0 +1,10 @@
+# The record of how a fixture receipt was booked (ReceiptBooking). The market receipt created its transaction
+# (market_split), so there is no earlier state; the digest is that of market_split's two lines.
+market_booking:
+  receipt: market_receipt
+  ledger_transaction: market_split
+  mode: created
+  lines_digest: <%= ReceiptBooking.digest_rows([ [ ActiveRecord::FixtureSet.identify(:groceries), BigDecimal("-1000.40"), nil, nil, nil, nil, nil ],
+                                                 [ ActiveRecord::FixtureSet.identify(:household_supplies), BigDecimal("-250.00"), nil, nil, nil, nil, nil ] ]) %>
+  booked_lock_version: 0
+  assigned_payee: example_market
