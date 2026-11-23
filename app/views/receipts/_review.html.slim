@@ -227,3 +227,6 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
         data: { form_guard_target: "accept", turbo_submits_with: "Booking…" } do
         span = receipt.reviewed? ? "Accept again" : "Accept"
         = ui_kbd "Ctrl", "Enter", class: "hidden sm:inline-flex"
+  / A booked receipt can be taken out of the ledger again (not from a page refused as stale: it offers the current one).
+  - if transaction && receipt.reviewed? && !review&.conflict?
+    = render "receipts/undo_accept", receipt:, transaction:, filter:, version:, transaction_version:

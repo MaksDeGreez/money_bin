@@ -506,6 +506,11 @@ The review form (rules: [`docs/domain.md`](docs/domain.md), "Review"):
   again**. If the matching transactions changed since the page was opened (a corrected date or total, say),
   nothing is booked and the fresh list is shown. Enter in the last row adds a row. A warning links to
   another receipt with the same date and total;
+- **Undo the acceptance** on an accepted receipt (behind a confirmation): a bank transaction it was booked
+  onto gets back the lines, status and payee it had before, a transaction the acceptance created is deleted,
+  and a payee the acceptance created goes when nothing else uses it. The receipt waits for review again with
+  its items, categories and ground truth. Refused, with the reason, when the transaction changed after the
+  acceptance (an edit, a line's category, a later import) or the page is older than the last acceptance;
 - a form that was opened before OCR read the receipt again, or before another tab saved it, is refused
   and keeps your values on screen; live refreshes wait while the form has unsaved changes, and leaving the
   page asks first;

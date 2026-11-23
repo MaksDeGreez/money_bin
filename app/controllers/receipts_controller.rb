@@ -1,7 +1,8 @@
 # The receipts: the list with its filter, one receipt with its photos and its review form, the upload, OCR
 # requests (docs/domain.md, "Who enqueues OCR"), saving and accepting a review and saving it as ground truth
 # (Receipts::Review), "Enter by hand" (Receipts::EnterByHand) and "Suggest categories again"
-# (ReceiptCategoriseJob; for a card slip, its own category, also queued when a save turns a receipt into a slip).
+# (ReceiptCategoriseJob; for a card slip, its own category, also queued when a save turns a receipt into a slip),
+# and "Undo the acceptance" (Receipts::UndoAccept).
 #
 # The list filter lives in the URL (Receipt::Filter). A receipt page carries the same parameters, so its
 # previous / next links walk the filtered list and "Back" returns to it.
@@ -20,8 +21,8 @@ class ReceiptsController < ApplicationController
   SUGGESTIONS_UNAVAILABLE = "Category suggestions could not be asked for: the job queue (Redis) cannot be reached. " \
     "Try again later."
 
-  before_action :set_filter, only: %i[ index show read_all update enter_by_hand suggest_categories ]
-  before_action :set_receipt, only: %i[ show read update enter_by_hand suggest_categories ]
+  before_action :set_filter, only: %i[ index show read_all update enter_by_hand suggest_categories undo_accept ]
+  before_action :set_receipt, only: %i[ show read update enter_by_hand suggest_categories undo_accept ]
 
   def index
     @pagination = Pagination.new(@filter.scope, page: params[:page])
@@ -80,6 +81,18 @@ class ReceiptsController < ApplicationController
     redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other, notice: "Type the receipt in below."
   rescue Receipts::EnterByHand::NotAllowed => error
     redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other, alert: "Not entered by hand: #{error.message}."
+  end
+
+  # "Undo the acceptance": the transaction gets back its earlier lines, status and payee (a linked booking) or is
+  # deleted (one Accept created), and the receipt waits for review again. The form carries the receipt's and the
+  # transaction's versions the page showed, so an older page undoes nothing.
+  def undo_accept
+    result = Receipts::UndoAccept.call(@receipt, lock_version: params[:lock_version],
+      transaction_lock_version: params[:transaction_lock_version])
+    redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other, notice: undo_notice(result)
+  rescue Receipts::UndoAccept::Error => error
+    redirect_to receipt_path(@receipt, @filter.to_params), status: :see_other,
+      alert: "Nothing was undone: #{error.message}."
   end
 
   def new
@@ -196,6 +209,23 @@ class ReceiptsController < ApplicationController
     rescue StandardError => error
       Rails.logger.warn("ReceiptsController: the suggestion queue cannot be reached (#{error.class})")
       false
+    end
+
+    def undo_notice(result)
+      sentences = [
+        if result.transaction_deleted?
+          "The acceptance is undone: the transaction it created (##{result.transaction_id}) is deleted."
+        else
+          "The acceptance is undone: transaction ##{result.transaction_id} has its earlier lines, status and payee back."
+        end
+      ]
+      sentences << "It keeps the payee set on it after the first acceptance." if result.payee_kept?
+      sentences << "The payee the acceptance created is removed: nothing else used it." if result.payee_removed?
+      if result.dropped.any?
+        sentences << "Restored without what no longer exists: #{result.dropped.to_sentence}; check its lines."
+      end
+      sentences << "The receipt waits for review again."
+      sentences.join(" ")
     end
 
     def prefetch?

@@ -263,6 +263,17 @@ class Receipt < ApplicationRecord
     error if error.is_a?(Hash)
   end
 
+  # Takes the receipt out of the ledger: no transaction, and a `reviewed` one goes back to `extracted`, so it can
+  # be accepted again; its items, ground truth, OCR and QR columns and photos stay. Used when its transaction is
+  # destroyed (Transaction#release_receipt) and by Receipts::UndoAccept, both under the receipt's row lock.
+  # update_columns: the unlink must not depend on the receipt's other validations. It moves `lock_version` (in the
+  # database and on this copy), so a review form rendered while the receipt was booked is refused instead of booking
+  # it anew unseen.
+  def release_from_ledger!
+    released = reviewed? ? "extracted" : status
+    update_columns(transaction_id: nil, status: released, lock_version: lock_version + 1, updated_at: Time.current)
+  end
+
   # Nothing has happened to the receipt since it was stored: no OCR result, no items, no transaction, no
   # ground truth, and it is not waiting in an OCR batch (its photos are at the provider). Only such a receipt may
   # be changed or removed by the receipt load.

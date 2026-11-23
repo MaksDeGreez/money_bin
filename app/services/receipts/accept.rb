@@ -221,13 +221,15 @@ module Receipts
           transaction.receipt_booking&.receipt_id
       end
 
-      # The transaction row, then its lines in id order, under row locks (the suggestion job writes lines
-      # without moving the transaction's version, so they are locked before they are read); then read again
-      # as stored. nil when the row is gone.
+      # The transaction row, then its lines in id order, then its booking record, under row locks (the suggestion job
+      # writes lines without moving the transaction's version, so they are locked before they are read; an undo of
+      # another receipt may hand the record "Accept created the payee", Receipts::UndoAccept); then read again as
+      # stored. nil when the row is gone.
       def lock_transaction(id)
         return nil unless Transaction.lock.find_by(id:)
 
         TransactionLine.where(transaction_id: id).order(:id).lock.load
+        ReceiptBooking.where(transaction_id: id).lock.load
         Transaction.includes(:account, :receipt_booking, :lines).find(id)
       end
 
