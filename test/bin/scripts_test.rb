@@ -55,6 +55,33 @@ class BinScriptsTest < ActiveSupport::TestCase
     assert_match(/usage: bin\/pr-wait <pr>/, out)
   end
 
+  test "db-backup checks its arguments and its folder before it reaches a database" do
+    no_database = { "DATABASE_URL" => "postgresql://127.0.0.1:1/none" }
+
+    out, status = run_script(no_database, "bin/db-backup", "--help")
+    assert status.success?, out
+    assert_match(/usage: bin\/db-backup \[--verify\] \[DIR\]/, out)
+
+    out, status = run_script(no_database, "bin/db-backup", "--everything")
+    assert_equal 2, status.exitstatus
+    assert_match(/unknown option --everything/, out)
+
+    out, status = run_script(no_database, "bin/db-backup", "one", "two")
+    assert_equal 2, status.exitstatus
+    assert_match(/too many arguments/, out)
+  end
+
+  # A backup is the whole ledger. Inside a checkout it would be one `git add` away from the public repository.
+  test "db-backup refuses a folder inside a git repository and creates nothing there" do
+    folder = Rails.root.join("tmp", "db-backup-test-#{Process.pid}")
+
+    out, status = run_script({ "DATABASE_URL" => "postgresql://127.0.0.1:1/none" }, "bin/db-backup", folder.to_s)
+
+    assert_equal 2, status.exitstatus
+    assert_match(/is inside a git repository/, out)
+    assert_not folder.exist?
+  end
+
   # The ML service reads only its environment, so bin/dev's line for it must pass the repository's .env.
   # Without that the service runs its stub backends whatever .env says. The line is run here as foreman
   # runs it, with a fake `uv` that prints its arguments, in a folder with and without a .env.

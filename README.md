@@ -36,8 +36,8 @@ provider batch is a separate opt-in that gives up zero retention in
 
 ## Status
 
-Phase 1: the skeleton and the data model. The Rails app boots with a dashboard and the UI helpers, the
-owner signs in, sees the ledger at a glance, sees the receipts, uploads new ones and has them read by OCR,
+The planned features are built; what is left is labelling receipts and the evaluation. The Rails app boots
+with a dashboard and the UI helpers, the owner signs in, sees the ledger at a glance, sees the receipts, uploads new ones and has them read by OCR,
 gets a category suggestion with a confidence for every item (the owner's own earlier labels first, then a
 zero-shot model), corrects them in a review form and accepts them into the ledger, enters an expense by hand,
 browses the ledger and categorises what is still uncategorised with the local transaction categoriser's
@@ -284,6 +284,19 @@ every change made in the app since (a category given, a row confirmed, a comment
 changed in the export is written again from it. It prints counts and warnings only, never a name or an amount, and exits
 with status 1 when it stops. The taxonomy must be loaded first (`bin/rails db:seed`). The format and every
 rule are in [`docs/import-contract.md`](docs/import-contract.md).
+
+## Backing up the database
+
+```sh
+bin/db-backup            # the development database -> ~/Documents/money_bin_data/backups/
+bin/db-backup --verify   # also restores the file into a throwaway database and compares row counts
+```
+
+The file is `<database>-<UTC time>.dump` (pg_dump's custom format, mode 0600; restore it with
+`pg_restore --no-owner -d <an empty database> FILE`). The folder must be outside every git repository: the
+script refuses one inside. It is the database only: the receipt photos in `storage/` are not in it, and the
+receipt load rebuilds them from the ingest folder. Take one before an import, a receipt load or anything
+else that rewrites the ledger.
 
 ## Receipt photos for OCR evaluation
 
@@ -638,7 +651,7 @@ app/              Rails app: models, controllers, Slim views, UI helpers (app/he
                   (app/queries/, the API's reading logic), the API's JSON builders (app/serializers/)
                   and the MCP server's tools (app/mcp/)
 bin/              setup, dev, ci, services, worktree and pull request scripts, leak-check, codex-review,
-                  favicon
+                  db-backup, favicon
 config/           Rails config; ci.rb (the bin/ci steps), redis_url.rb, worktree_isolation.rb
 db/               migrations, schema, seeds
 design/           favicon/source.png, the artwork behind the logo and the favicons
