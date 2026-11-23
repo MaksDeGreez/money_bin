@@ -494,10 +494,18 @@ The review form (rules: [`docs/domain.md`](docs/domain.md), "Review"):
   category for its total;
 - live totals (items, total, difference, QR total) in exact hundredths as you type; the saved figures are
   the server's;
+- **Book as**: the ledger transactions that may be this purchase (an expense of the receipt's amount within
+  two days, on an account in its currency, not booked from another receipt), each with its account, date,
+  payee, status and current lines, or **a new expense** on an account. Nothing is chosen for you while there
+  is a match. Booking onto a transaction replaces its lines with the items (so a bank row and its receipt are
+  never counted twice), and its earlier state is kept for an undo; items that do not sum to its amount are
+  refused until corrected. Matches already booked from another receipt are listed, not offered;
 - **Save** (Ctrl+S or Cmd+S) stores the corrections; **Accept** (Ctrl+Enter or Cmd+Enter) saves and books
-  the receipt as a transaction whose lines are the item amounts summed per category, and opens it, with
-  "Next receipt to review" focused; an accepted receipt offers **Accept again**. Enter in the last row adds
-  a row. A warning links to a transaction or receipt with the same date and amount;
+  the receipt as chosen under "Book as", with lines that are the item amounts summed per category, and
+  opens the transaction, with "Next receipt to review" focused; an accepted receipt offers **Accept
+  again**. If the matching transactions changed since the page was opened (a corrected date or total, say),
+  nothing is booked and the fresh list is shown. Enter in the last row adds a row. A warning links to
+  another receipt with the same date and total;
 - a form that was opened before OCR read the receipt again, or before another tab saved it, is refused
   and keeps your values on screen; live refreshes wait while the form has unsaved changes, and leaving the
   page asks first;

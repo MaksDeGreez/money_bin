@@ -525,7 +525,7 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
                       discount: item.discount.to_s("F"), amount: item.amount.to_s("F"), category_id: item.category_id.to_s, _destroy: "0" } ]
     end
     { lock_version: receipt.lock_version, kind: receipt.kind, merchant_name: receipt.merchant_name, total: receipt.total&.to_s("F"),
-      currency: receipt.currency, items_attributes: items }.merge(changes)
+      currency: receipt.currency, booking: "new", items_attributes: items }.merge(changes)
   end
 
   test "Save stores the corrections and comes back to the receipt with the filter" do
@@ -667,16 +667,100 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert receipt.card_slip?
   end
 
-  test "a receipt about to be accepted warns about the same date and amount on the account" do
+  # --- Book as: a ledger transaction or a new expense ----------------------------------------------------------
+
+  def bank_row(on: Date.new(2026, 10, 9), **attributes)
+    Transaction.create!(account: accounts(:card_uah), occurred_on: on, amount: "-152.50", source: :bank, status: :needs_review,
+                        lines_attributes: [ { amount: "-152.50", comment: "bank note" } ], **attributes)
+  end
+
+  test "the ledger transactions that may be the purchase are offered, and nothing is chosen" do
     receipt = receipts(:corner_receipt)
-    same = Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 8), amount: "-152.50", source: :bank,
-                               lines_attributes: [ { amount: "-152.50" } ])
+    bank = bank_row(payee: payees(:corner_cafe))
 
     get receipt_path(receipt)
 
-    assert_select ".callout", text: /Possibly booked already/ do
-      assert_select "a[href=?]", transaction_path(same)
+    assert_select "input[type=radio][name='receipt[booking]']", 2
+    assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
+    assert_select ".booking-option", text: /Everyday card · .* \(1 day later\) · -152.50 UAH/ do
+      assert_select "input[type=radio][value=?]", bank.id.to_s
+      assert_select "a[href=?][target=_blank]", transaction_path(bank)
+      assert_select "li", text: /No category · -152.50 UAH · has a comment/
+      assert_select "li", text: /Accepting replaces these lines/
+      assert_select ".badge", text: "Needs review"
     end
+    assert_select "input[type=hidden][name='receipt[shown_candidate_ids]'][value=?]", bank.id.to_s
+    assert_select "input[type=hidden][name='receipt[link_lock_versions][#{bank.id}]'][value=?]", bank.lock_version.to_s
+    assert_select "select#receipt_account_id[disabled]", 1, "the account is sent only with a new expense"
+  end
+
+  test "a match booked from another receipt is shown, not offered, and still nothing is chosen" do
+    receipt = receipts(:corner_receipt)
+    taken = bank_row
+    receipts(:new_receipt).update_columns(transaction_id: taken.id, status: "reviewed")
+
+    get receipt_path(receipt)
+
+    assert_select "input[type=radio][name='receipt[booking]']", 1
+    assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
+    assert_select ".callout", text: /Booked from another receipt already/ do
+      assert_select "a[href=?][data-turbo-prefetch=false]", receipt_path(receipts(:new_receipt))
+    end
+    assert_select "input[type=hidden][name='receipt[shown_linked_ids]'][value=?]", taken.id.to_s
+  end
+
+  test "with no match a new expense is chosen and the account select is on" do
+    get receipt_path(receipts(:corner_receipt))
+
+    assert_select "input[type=radio][name='receipt[booking]'][value=new][checked]", 1
+    assert_select "select#receipt_account_id:not([disabled])", 1
+    assert_select "p", text: /No expense of 152.50 UAH within 2 days/
+  end
+
+  test "items that do not sum to a candidate's amount are flagged" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(total: BigDecimal("160.00"))
+    Transaction.create!(account: accounts(:card_uah), occurred_on: Date.new(2026, 10, 8), amount: "-160.00", source: :bank,
+                        lines_attributes: [ { amount: "-160.00" } ])
+    get receipt_path(receipt)
+
+    assert_select ".booking-option .badge", text: "Items sum to 152.50 UAH"
+  end
+
+  test "Accept onto a chosen transaction lands on it, and books no new one" do
+    receipt = receipts(:corner_receipt)
+    bank = bank_row
+
+    assert_no_difference -> { Transaction.count } do
+      patch receipt_path(receipt), params: { intent: "accept", receipt: review_params(receipt, booking: bank.id.to_s,
+        shown_candidate_ids: bank.id.to_s, shown_linked_ids: "", link_lock_versions: { bank.id.to_s => bank.lock_version.to_s }) }
+    end
+
+    assert_redirected_to transaction_path(bank, accepted: 1)
+    assert_equal bank, receipt.reload.ledger_transaction
+    assert receipt.booking.linked?
+  end
+
+  test "Accept on a list that changed is refused on the page with the fresh list and the typed values" do
+    receipt = receipts(:corner_receipt)
+    bank = bank_row
+
+    patch receipt_path(receipt), params: { intent: "accept",
+      receipt: review_params(receipt, merchant_name: "Typed Shop", account_id: accounts(:card_uah).id) }
+
+    assert_response :unprocessable_content
+    assert_select ".field-error", text: /the ledger transactions that match this receipt changed/
+    assert_select "input[type=radio][value=?]", bank.id.to_s
+    assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
+    assert_select "input[name='receipt[merchant_name]'][value=?]", "Typed Shop"
+    assert_nil receipt.reload.transaction_id
+  end
+
+  test "an accepted receipt shows what it is booked on, and offers no choice" do
+    get receipt_path(receipts(:market_receipt))
+
+    assert_select "p", text: /Booked on Everyday card, transaction ##{transactions(:market_split).id}/
+    assert_select "input[name='receipt[booking]']", 0
   end
 
   test "Enter by hand opens the review form on a failed receipt" do

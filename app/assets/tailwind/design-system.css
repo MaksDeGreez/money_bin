@@ -366,6 +366,11 @@
   .review-fields { @apply grid gap-4 sm:grid-cols-2; }
   /* Under a field: the QR code's value for it, its mark and "Use the QR value" */
   .field-qr { @apply flex flex-wrap items-center gap-2 text-xs text-ink-muted; }
+  /* "Book as" on the review form: one choice per ledger transaction (or a new expense), the chosen one marked */
+  .booking-option { @apply block space-y-2 rounded-md border border-hairline p-3; }
+  .booking-option:has(> .booking-option-choice input:checked) { @apply border-accent; }
+  .booking-option-choice { @apply flex flex-wrap items-center gap-x-2 gap-y-1 text-sm; }
+  .booking-option-lines { @apply space-y-0.5 pl-6 text-xs text-ink-muted; }
 
   /* Editable rows (line_items_controller.js): a grid per row that lays itself out by the editor's width.
      Narrow: name and remove, then the numbers, then the category. Wide: one line, under a header row. */

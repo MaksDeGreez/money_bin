@@ -20,6 +20,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `bulk_acceptances`, `bulk_acceptance_items` | "Accept suggestions at or above N %" for a list filter, and one transaction of it as previewed | `filter`, `threshold_percent`, `status`, the counts; per item `transaction_id`, `lock_version`, `line_ids`, `category_id`, `probability`, `model_version`, `outcome` (`accepted`, `stale`, `changed`, `failed`) |
 | `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `categorised_at`, `categoriser_error`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
 | `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `categories_known`, `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
+| `receipt_bookings` | How a receipt was booked: onto a ledger transaction the person chose, or as a new one (for an undo) | `receipt_id`, `transaction_id` (both unique), `mode` (`linked`, `created`), `previous`, `lines_digest`, `transaction_import_digest`, `assigned_payee_id`, `payee_created` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `suggested_by`, `name_key`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
@@ -153,6 +154,9 @@ listed, the model gives a readable error and the database is the safety net for 
 | A receipt's `sha256` is present, 64 lower-case hex characters, and unique | Model + DB |
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
 | A `reviewed` receipt has a transaction: destroying the transaction moves its receipt back to `extracted` | Model (in the destroy's database transaction); the foreign key only nullifies the link |
+| A receipt and a transaction have at most one booking record; it goes with either | Model + DB (unique indexes, foreign keys `ON DELETE CASCADE`) |
+| A `linked` booking records the transaction's earlier state (a JSON object with `format`, `amount` as text, `status`, `lines`); a `created` one has neither that nor an import digest; a payee marked created is assigned | Model + DB (`receipt_bookings_*` checks) |
+| A receipt is booked onto a ledger transaction only by a person's choice, never onto a transfer leg, an income, another receipt's transaction, an account in another currency, or a transaction changed since the page showed it | Model only (`Receipts::Review` and `Receipts::Accept`, under row locks) |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
 | A receipt item's `suggested_by` is `memory`, `model` or nil; its `name_key` is `ItemName.key(name)`, never null | Model; DB for the values and the null (`receipt_items_suggested_by_known`) |
 | Filling suggestions never writes an item's `category_id` or `accepted_by_user`, nor the receipt's `lock_version` | `Receipts::SuggestCategories` (tested) |
@@ -235,8 +239,11 @@ read, and only the person or the client can decide what to do with their change.
   transaction's; a mismatch saves nothing and keeps the typed values on the page (see "Review");
 - the API (when it writes transactions) answers `409 Conflict` with the code `stale_transaction`, and the
   client reads the row again;
-- a service that reads and writes in one go (`Receipts::Accept`) takes the row lock first
-  (`transaction.lock!`), so it waits for a parallel writer instead of failing;
+- a service that reads and writes in one go (`Receipts::Accept`) takes the row lock first, so it waits for a
+  parallel writer instead of failing. Booking onto a transaction the person chose locks the transaction row
+  and then its lines in id order (the suggestion job writes lines without moving the version), reads them
+  again, and only then compares the version the page showed: a mismatch is refused ("changed somewhere
+  else"), since the person chose the transaction as it was;
 - nothing retries on its own: a retry with the same stale data would only fail again.
 
 ## Transfers
@@ -661,8 +668,11 @@ read stays nil (the others are still stored), and a receipt whose photos carry t
 ### Acceptance
 
 When a receipt is accepted, the transaction's lines are the item amounts summed per category.
-`Receipts::Accept.call(receipt, account: nil)` does this and returns the transaction. The grouping is
-`CategoryLines` (`app/services/category_lines.rb`), the same code manual entry books with:
+`Receipts::Accept.call(receipt, account: nil, link: nil, link_lock_version: nil)` does this and returns the
+transaction: onto the receipt's own transaction ("Accept again"), onto a ledger transaction the person chose
+(`link:`, see "Booking onto a transaction"), or as a new expense on `account:`. It never searches for a
+transaction itself. The grouping is `CategoryLines` (`app/services/category_lines.rb`), the same code manual
+entry books with:
 
 - items are grouped by `category`; items with no category form one line with no category. A suggestion is
   used only once it was copied to `category`. A category whose items sum to zero (a free item) adds no
@@ -671,10 +681,13 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
   own `category` (no category gives a line with none). A slip that still has items is refused
   (`NotAcceptable`: remove them or make it a fiscal receipt), and so is one without a total. "The booked
   total" below is the items' sum, or a slip's total (`Receipt#booking_total`);
-- a receipt that already has a transaction: the booked total must be the absolute value of its amount, or
-  the service raises `TotalMismatch` (it carries both figures). The lines are replaced, not added, and carry
-  the transaction's sign. An `account:` argument, if given, must be that transaction's account;
-- a receipt with no transaction: `account:` is required. The service creates an expense: amount = minus
+- a receipt that already has a transaction, or one booked onto a chosen transaction: the booked total must be
+  the absolute value of its amount, or the service raises `TotalMismatch` (it carries both figures; nothing
+  is added to make them fit, the person corrects the items). The lines are replaced, not added, carry the
+  transaction's sign, and have no `category_origin` (a receipt's categories are the person's own, so
+  `PayeeHistory` counts them as labels, as for a new booking). An `account:` argument, if given, must be
+  that transaction's account (`AccountMismatch`). A receipt that has a transaction always rebooks that one;
+- a receipt with no transaction and no `link:`: `account:` is required. The service creates an expense: amount = minus
   the booked total, `source: receipt`, `occurred_on` = the Kyiv date of `issued_at` (today when unknown),
   `occurred_at` = `issued_at`, `merchant` = `merchant_name`. When the receipt currency is known, it must be
   the account currency;
@@ -696,12 +709,86 @@ When a receipt is accepted, the transaction's lines are the item amounts summed 
   the transaction;
 - only `extracted` receipts (the first acceptance) and `reviewed` ones (accepting again after a change)
   can be accepted. `uploaded` and `processing` have no OCR result yet, and `failed` has none to trust;
-- it runs in one database transaction with the receipt row locked, so a failure changes nothing and two
-  parallel calls cannot book one receipt twice. Calling it twice gives the same result.
+- every booking writes the receipt's booking record (see "Receipt bookings");
+- it runs in one database transaction with the receipt row locked, so a failure changes nothing (the record
+  included) and two parallel calls cannot book one receipt twice. Calling it twice gives the same result.
 
 Every refusal raises a subclass of `Receipts::Accept::Error`: `NotAcceptable` (status, no items, a slip
-with items or without a total, or linked to a transfer leg), `AccountRequired`, `CurrencyMismatch`,
-`NothingToBook` (the booked total is zero or less, so there is no expense) and `TotalMismatch`.
+with items or without a total, or linked to a transfer leg), `AccountRequired`, `AccountMismatch`,
+`CurrencyMismatch`, `NothingToBook` (the booked total is zero or less, so there is no expense),
+`TotalMismatch`, and for a chosen transaction `LinkGone`, `TransactionChanged`, `NotLinkable` and
+`AlreadyLinked`.
+
+### Booking onto a transaction
+
+The bank's transaction for a purchase is usually in the ledger before its receipt is read (the history
+import, a bank feed). Booking the receipt as a new expense would count the purchase twice, so the review
+form offers the transactions it may be (`docs/decisions/0018-link-receipt-to-transaction.md`).
+
+**The search** (`ReceiptLinkCandidates`, `app/queries/`, over the receipt as last saved):
+
+- the date is the Kyiv date of `issued_at`, else of `qr_issued_at`; with neither nothing is searched (never
+  today);
+- the amounts are the distinct known positive values among the printed `total`, the booking total and
+  `qr_total`, so a receipt with a skipped or misread line still finds its bank row;
+- a match is an expense of minus one of those amounts, not a transfer leg, dated within two days either
+  side, on an account in the receipt's currency (archived accounts and every status included; an unknown
+  receipt currency searches every account, as acceptance books an unknown currency on any account);
+- matches another receipt is booked on are listed apart (a fiscal receipt and its card slip are one
+  purchase): shown with a link to that receipt, never a choice;
+- ranked in Ruby over every match: days apart, then the gap between the two times when both are known, then
+  whether the receipt's merchant name (`ItemName.key`) is contained in the payee's name, `merchant` or
+  `bank_description`, then the id; twenty of each are shown. Each candidate says whether its amount is the
+  booking total, which acceptance requires.
+
+The window and the extra amounts are a search filter, not a rule: `Receipts::Accept` checks only what any
+link must satisfy (the row is there, at the version the page showed, an expense and not a transfer leg, no
+other receipt on it, the receipt's currency when known, the amount).
+
+**The choice is the person's.** Nothing is pre-selected while there is any match; "A new expense" is
+pre-selected only when there is none. See "Review" for how the form makes a stale choice safe.
+
+**What booking onto it does.** Under the receipt's row lock: the transaction row and then its lines are
+locked and read again; the version and the rules above are checked; its earlier state is recorded (see
+"Receipt bookings"); then its lines are replaced as for "Accept again" (an empty payee is filled from the
+merchant, a payee of its own stays; `merchant`, `bank_description`, dates and amount stay the bank's). Two
+receipts choosing one transaction: the second waits on the row lock and then sees the link; the unique
+indexes on `receipts.transaction_id` and `receipt_bookings` are the backstop, refused as `AlreadyLinked`
+inside a savepoint.
+
+### Receipt bookings
+
+`ReceiptBooking` (`receipt_bookings`) records how each booked receipt was booked, so that a booking can be
+undone. `Receipts::Accept` writes it on every path:
+
+- `mode`: `linked` (onto a transaction the person chose) or `created` (a new expense);
+- `previous`, for `linked` only: the transaction as it was before the first rebook, a JSON document of
+  format version 1 with `amount` (decimal string), `status`, `payee_id` and `lines`, every column of every
+  old line (`ReceiptBooking::LINE_COLUMNS`: ids, category, amount as a decimal string, legacy path, comment,
+  the stored suggestion, the category's origin, timestamps in UTC to the microsecond). Money never passes
+  through a float; a test compares the column list with the table, so a new line column needs a new format;
+- `lines_digest`: the SHA-256 of the lines Accept wrote, one "category id, tab, amount with two places" per
+  line, sorted, under a versioned prefix (`ReceiptBooking.lines_digest`). Refreshed by every "Accept again";
+- `transaction_import_digest`: the transaction's `import_digest` at the first link (nil when no importer
+  wrote it);
+- `assigned_payee_id` and `payee_created`: the payee Accept set on an empty payee (nil when it kept the
+  transaction's own or the merchant name was blank), and whether Accept created it (read from the save
+  itself, so a payee a parallel writer created is not counted as Accept's). A later "Accept again" that
+  assigns the same payee keeps "created".
+
+`previous`, the mode and the import digest are written at the first booking only; "Accept again" keeps them.
+The record goes with its receipt and with its transaction (`ON DELETE CASCADE`). A receipt booked before
+records existed gets one on its next "Accept again" (`created` when Accept had created the transaction).
+
+**The undo** (a later change) restores `previous` for a `linked` booking, or removes the transaction of a
+`created` one, and a created payee nothing else uses. It can tell from the digests that the lines or the row
+changed since, and must then refuse rather than overwrite.
+
+**The history import is unchanged, and the export still wins.** When a later export changes a linked row,
+either the importer rewrites its lines in place (the receipt stays linked and `reviewed`, and the stored
+digests no longer match the row), or it destroys and recreates the row (the record cascades away and the
+receipt returns to `extracted` through `Transaction#release_receipt`, to be booked again). An unchanged
+export keeps the receipt's lines, as it keeps every edit made in the app.
 
 ### Category suggestions
 
@@ -854,10 +941,23 @@ answer, which the OCR evaluation reads), `ocr_model_*`, the QR ground truth (`qr
 - validation errors appear next to the field or on the row that caused them, and the typed values stay on
   the form. Nothing is saved while any of them stands.
 
-**What an acceptance does.** "Accept" saves and then runs `Receipts::Accept` with the chosen account, in
+**What an acceptance does.** "Accept" saves and then runs `Receipts::Accept` as chosen under "Book as", in
 one database transaction: a refusal (no account, `CurrencyMismatch`, `NothingToBook`, `TotalMismatch`, a
-slip with items) leaves nothing saved and shows the reason on the form, with the typed values (a row
-marked for removal stays marked). A successful save or acceptance refreshes the receipt's other open pages and
+slip with items, a chosen transaction that changed) leaves nothing saved and shows the reason on the form,
+with the typed values (a row marked for removal stays marked).
+
+**Book as.** While the receipt has no transaction, the form lists the ledger transactions that may be this
+purchase (see "Booking onto a transaction"), each a radio with its account, date and distance ("same day",
+"1 day later"), amount, payee, status, a link to it (a new tab), its current lines (category or "no
+category", amount, whether a line has a comment), the warning that accepting replaces those lines, and a
+danger badge when the items do not sum to its amount. Then the matches booked from another receipt, not
+selectable, and last "A new expense on" with the account select. Nothing is chosen while there is any match.
+The form carries the ids it listed and each candidate's `lock_version`. On "Accept", `Receipts::Review`
+computes the list again from the values it has just saved, in the same database transaction: when the ids
+are not the listed ones (a corrected date or total, a new bank row, another receipt took one), nothing is
+booked or saved and the page shows the fresh list, with nothing chosen and the typed values kept; no choice
+at all is refused the same way. A chosen transaction goes to `Receipts::Accept` with the version the page
+showed and no account; the account goes only with "A new expense" (the select is enabled only then). A successful save or acceptance refreshes the receipt's other open pages and
 the list (`Receipts::LiveUpdate`); a form there with unsaved changes is not refreshed, and its save is refused
 as stale. The page then
 opens the transaction (`/transactions/:id`): its lines, its status, why it needs review, and "Next receipt
@@ -865,7 +965,8 @@ to review" (the next `extracted` receipt of the list's filter after this one, wr
 focus. A `reviewed` receipt changes only through "Accept again" (save and rebook together), never by a plain
 save that would leave items and lines apart. The account a form starts on is the last one used by hand or
 from a receipt (`Account.default_for`, read from the ledger), among the active accounts in the receipt's
-currency; an account chosen before a Save stays chosen on the page the save returns to.
+currency; an account chosen before a Save stays chosen on the page the save returns to. A booked receipt
+shows the transaction it is booked on instead of "Book as".
 
 **Card slips.** A slip has no items and one category for its total. Switching a receipt with items to
 "Card slip" shows a confirmation in the form; the items are removed only by a save with it checked, and a
@@ -881,10 +982,11 @@ is withdrawn under the row lock the OCR job also takes, so a job queued earlier 
 receipt with no request and leaves it alone. A receipt being read is refused.
 
 **The duplicate warning.** A fiscal receipt and its card slip are often two photographed receipts of one
-purchase. Before "Accept", the form warns (`Receipt::DuplicateCheck`) about a transaction on the chosen
-account with the same Kyiv date and the same amount as accepting would book, and about another receipt
-not booked yet with the same Kyiv date of `issued_at` and the same total, with links. It is a warning, not a
-block: two equal purchases on one day happen. It reflects the values as last saved.
+purchase. Before "Accept", the form warns (`Receipt::DuplicateCheck`) about another receipt not booked yet
+with the same Kyiv date of `issued_at` and the same total, with links. It is a warning, not a block: two
+equal purchases on one day happen. It reflects the values as last saved. The ledger side (a transaction of
+the same amount) is the "Book as" list, which replaced the warning's list of same-day, same-amount
+transactions on the chosen account.
 
 **Changed somewhere else.** The receipt has a `lock_version` (Active Record's optimistic locking). The form
 carries the version it was rendered from, and for a reviewed receipt also its transaction's
@@ -1568,7 +1670,9 @@ the checks and the rules are in [`import-contract.md`](import-contract.md); the 
 - Refreshing transaction suggestions on their own when a new uncategorised line appears (today: "Refresh
   suggestions"), and calibrating their probabilities on the ledger.
 - A database trigger for the line sum, if anything starts writing lines past the models.
-- Matching bank items to receipts and to each other (two legs of a bank-to-bank transfer).
+- Undoing a receipt booking (restoring the transaction from its booking record; see "Receipt bookings").
+- Matching bank items to receipts automatically (today a person chooses under "Book as") and to each other
+  (two legs of a bank-to-bank transfer).
 - Exchange rates and a base-currency view (the dashboard shows one currency at a time until then).
 - Top payees and receipt counts over the REST API and the MCP server (their query objects are ready).
 - Payee merging and categorisation rules.

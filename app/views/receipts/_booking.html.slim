@@ -1,0 +1,92 @@
+/ "Book as" on the review form of a receipt with no ledger transaction (docs/domain.md, "Booking onto a
+/ transaction"): the ledger transactions that may be this purchase (ReceiptLinkCandidates), each a choice; the
+/ matches another receipt is booked on, shown but not a choice; then a new expense on an account. Nothing is
+/ chosen for the person while there is any match. The form sends the ids it listed and each candidate's
+/ lock_version, so Receipts::Review refuses a list that changed since, and Receipts::Accept a transaction that
+/ changed. The account select is sent only with "A new expense" (receipt_review_controller.js enables it).
+ruby:
+  candidates = found.candidates
+  linked = found.linked_elsewhere
+  none = candidates.empty? && linked.empty?
+  new_choice = Receipts::Review::NEW_BOOKING
+  chosen = review&.booking || (new_choice if none)
+  currency = found.receipt.currency
+  invalid = (form_receipt.errors[:booking].any? || nil)
+section.review-section aria-labelledby=dom_id(receipt, :booking_heading) data-receipt-review-target="booking"
+  h2.text-base id=dom_id(receipt, :booking_heading) Book as
+  = hidden_field_tag "receipt[shown_candidate_ids]", found.candidate_ids.join(" "), id: nil
+  = hidden_field_tag "receipt[shown_linked_ids]", found.linked_ids.join(" "), id: nil
+  - if found.date.nil?
+    p.text-sm.text-ink-muted
+      | The receipt has no date (nor has its QR code), so the ledger was not searched for this purchase. Save a date
+      |  to look for the bank's transaction.
+  - elsif none
+    p.text-sm.text-ink-muted
+      = "No expense of #{found.amounts.map { |amount| receipt_money(amount, currency) }.to_sentence(two_words_connector: ' or ', last_word_connector: ' or ').presence || 'this amount'}"
+      = " within #{ReceiptLinkCandidates::WINDOW_DAYS} days of #{l(found.date)} is in the ledger (as last saved)."
+  - else
+    p.text-sm.text-ink-muted
+      | The bank's transaction for this purchase may already be in the ledger. Choosing it books the receipt onto it:
+      |  its lines are replaced by the items, so the purchase is not counted twice. Nothing is chosen for you.
+  - form_receipt.errors[:booking].each do |message|
+    p.field-error role="alert" = message
+
+  .form-radio-group role="radiogroup" aria-labelledby=dom_id(receipt, :booking_heading)
+    - candidates.each do |candidate|
+      - transaction = candidate.transaction
+      - radio_id = dom_id(receipt, "booking_#{transaction.id}")
+      .booking-option
+        = hidden_field_tag "receipt[link_lock_versions][#{transaction.id}]", transaction.lock_version, id: nil
+        .booking-option-choice
+          = radio_button_tag "receipt[booking]", transaction.id, chosen == transaction.id.to_s, id: radio_id, class: "form-radio", "aria-invalid": invalid,
+            data: { action: "receipt-review#bookingChanged" }
+          label.font-medium for=radio_id
+            = "#{transaction.account.name} · #{l(transaction.occurred_on)} (#{receipt_link_distance(candidate.days)}) · "
+            = receipt_money(transaction.amount, transaction.account.currency)
+          - if transaction.payee
+            span.text-ink-muted = transaction.payee.name
+          = transaction_status_badge(transaction)
+          - if transaction.account.archived?
+            = ui_badge "Archived account", tone: :muted
+          - unless candidate.matches_total
+            = ui_badge "Items sum to #{receipt_money(found.receipt.booking_total, currency)}", tone: :danger,
+              title: "Accepting onto this transaction is refused until the items sum to its amount"
+          = link_to "Transaction ##{transaction.id}", transaction_path(transaction), target: "_blank", rel: "noopener", class: "text-xs"
+        ul.booking-option-lines aria-label="Its lines now"
+          - transaction.lines.each do |line|
+            li
+              = line.category&.full_name || "No category"
+              = " · #{receipt_money(line.amount, transaction.account.currency)}"
+              - if line.comment.present?
+                = " · has a comment"
+          li Accepting replaces these lines with the receipt's items.
+
+    - if linked.any?
+      = render "ui/callout", tone: :signal do
+        .space-y-2.text-sm role="status"
+          p
+            strong Booked from another receipt already.
+            |  These match too, but a transaction has one receipt (a fiscal receipt and its card slip are often one
+            |  purchase):
+          ul.list-disc.pl-5
+            - linked.each do |candidate|
+              - transaction = candidate.transaction
+              li
+                = link_to "Transaction ##{transaction.id}", transaction_path(transaction), target: "_blank", rel: "noopener"
+                = " · #{transaction.account.name} · #{l(transaction.occurred_on)} · #{receipt_money(transaction.amount, transaction.account.currency)} · from "
+                = link_to receipt_label(candidate.other_receipt), receipt_path(candidate.other_receipt), data: { turbo_prefetch: false }
+
+    .booking-option
+      .booking-option-choice
+        = radio_button_tag "receipt[booking]", new_choice, chosen == new_choice, id: dom_id(receipt, :booking_new), class: "form-radio", "aria-invalid": invalid,
+          data: { action: "receipt-review#bookingChanged" }
+        label.font-medium for=dom_id(receipt, :booking_new) A new expense on
+      .field.max-w-sm.pl-6
+        = label_tag "receipt_account_id", "Account to book on", class: "sr-only"
+        .form-select-wrapper
+          = select_tag "receipt[account_id]", account_choices(currency, account), include_blank: "Choose an account",
+            id: "receipt_account_id", class: "form-control form-control-select", disabled: chosen != new_choice,
+            "aria-invalid": (form_receipt.errors[:account_id].any? || nil), data: { receipt_review_target: "bookingAccount" }
+          = ui_icon "chevron-down", class: "form-select-chevron"
+        - form_receipt.errors[:account_id].first&.then do |message|
+          p.field-error = message

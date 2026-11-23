@@ -22,7 +22,7 @@ class Receipts::ReviewTest < ActiveSupport::TestCase
       issued_at: receipt.issued_at&.in_time_zone&.strftime("%Y-%m-%dT%H:%M:%S").to_s, total: receipt.total&.to_s("F").to_s,
       currency: receipt.currency.to_s, fiscal_number: receipt.fiscal_number.to_s, receipt_number: receipt.receipt_number.to_s,
       card_last4: receipt.card_last4.to_s, incomplete: receipt.incomplete? ? "1" : "0", category_id: receipt.category_id.to_s,
-      items_attributes: items.each_with_index.to_h { |item, index| [ index.to_s, item ] }
+      booking: "new", items_attributes: items.each_with_index.to_h { |item, index| [ index.to_s, item ] }
     }.merge(changes)
   end
 

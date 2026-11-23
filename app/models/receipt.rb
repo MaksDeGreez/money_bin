@@ -104,6 +104,9 @@ class Receipt < ApplicationRecord
   has_many :items, -> { order(:position) }, class_name: "ReceiptItem", inverse_of: :receipt, dependent: :destroy
   # What the receipt really says, per source (ReceiptGroundTruth). Only the ground-truth writers change it.
   has_many :ground_truths, class_name: "ReceiptGroundTruth", inverse_of: :receipt, dependent: :delete_all
+  # How Receipts::Accept booked it (a transaction it created, or one the person linked), for an undo. The
+  # database cascades it with the receipt and with the transaction.
+  has_one :booking, class_name: "ReceiptBooking", inverse_of: :receipt
   belongs_to :category, optional: true
   belongs_to :suggested_category, class_name: "Category", optional: true
   # The open OCR batch the receipt waits in (docs/domain.md, "OCR in a batch"), and every batch it was ever in.

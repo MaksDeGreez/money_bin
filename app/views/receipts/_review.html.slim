@@ -124,22 +124,17 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
           = f.label :card_last4, "Card digits (last four)"
           = f.text_field :card_last4, maxlength: 4, inputmode: "numeric", autocomplete: "off"
           = f.error_for :card_last4
-        .field
-          - if receipt.reviewed? && transaction
+        / Where it is booked; a receipt not booked yet chooses under "Book as" below.
+        - if transaction
+          .field
             span.block.text-sm.font-medium.text-ink-display Account
             p.text-sm
               | Booked on
               =< transaction.account.name
               | ,
               =< link_to "transaction ##{transaction.id}", transaction_path(transaction)
-          - else
-            = label_tag "receipt_account_id", "Account to book on"
-            .form-select-wrapper
-              = select_tag "receipt[account_id]", account_choices(currency, account), include_blank: "Choose an account",
-                id: "receipt_account_id", class: "form-control form-control-select", "aria-invalid": (form_receipt.errors[:account_id].any? || nil)
-              = ui_icon "chevron-down", class: "form-select-chevron"
-            - form_receipt.errors[:account_id].first&.then do |message|
-              p.field-error = message
+              - if receipt.booking&.linked?
+                |  (a ledger transaction it was linked to)
         .field.self-end
           label.form-check-label
             = f.check_box :incomplete
@@ -198,8 +193,10 @@ section.review-panel id=dom_id(receipt, :data) aria-label="Receipt review"
         = ui_icon "plus"
         span Add a row
 
+    - if transaction.nil? && !review&.conflict?
+      = render "receipts/booking", receipt:, form_receipt:, review:, account:, found: receipt_link_candidates(receipt, review)
     - if receipt.extracted? && !review&.conflict?
-      = render "receipts/duplicates", check: Receipt::DuplicateCheck.new(form_receipt, account:)
+      = render "receipts/duplicates", check: Receipt::DuplicateCheck.new(form_receipt)
 
     ruby:
       items_sum = form_receipt.kept_items.sum(BigDecimal("0")) { |item| item.amount || 0 }

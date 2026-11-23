@@ -4,7 +4,7 @@ require "test_helper"
 # record through its model and checks that it is valid, so the fixtures cannot drift from the rules.
 class FixturesTest < ActiveSupport::TestCase
   MODELS = [ Account, Category, Payee, Transaction, TransactionLine, Receipt, ReceiptItem, ReceiptGroundTruth, OcrBatch, OcrBatchEntry,
-    User, ApiToken, TransactionSuggestionRun, BulkAcceptance, BulkAcceptanceItem ].freeze
+    User, ApiToken, TransactionSuggestionRun, BulkAcceptance, BulkAcceptanceItem, ReceiptBooking ].freeze
 
   test "every fixture record is valid" do
     MODELS.each do |model|
@@ -24,6 +24,13 @@ class FixturesTest < ActiveSupport::TestCase
   test "every accepted fixture receipt matches its transaction" do
     Receipt.reviewed.where.not(transaction_id: nil).find_each do |receipt|
       assert_equal receipt.ledger_transaction.amount.abs, receipt.items_total, receipt.id
+    end
+  end
+
+  test "every booked fixture receipt has its booking record, with the digest of its lines" do
+    Receipt.where.not(transaction_id: nil).find_each do |receipt|
+      assert_equal receipt.transaction_id, receipt.booking&.transaction_id, receipt.id
+      assert_equal ReceiptBooking.lines_digest(receipt.transaction_id), receipt.booking.lines_digest, receipt.id
     end
   end
 end

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_18_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -200,6 +200,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_190000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["normalized_name"], name: "index_payees_on_normalized_name", unique: true
+  end
+
+  create_table "receipt_bookings", force: :cascade do |t|
+    t.bigint "receipt_id", null: false
+    t.bigint "transaction_id", null: false
+    t.string "mode", null: false
+    t.jsonb "previous"
+    t.string "lines_digest", null: false
+    t.string "transaction_import_digest"
+    t.bigint "assigned_payee_id"
+    t.boolean "payee_created", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["assigned_payee_id"], name: "index_receipt_bookings_on_assigned_payee_id"
+    t.index ["receipt_id"], name: "index_receipt_bookings_on_receipt_id", unique: true
+    t.index ["transaction_id"], name: "index_receipt_bookings_on_transaction_id", unique: true
+    t.check_constraint "NOT payee_created OR assigned_payee_id IS NOT NULL", name: "receipt_bookings_created_payee_assigned"
+    t.check_constraint "lines_digest::text ~ '^[0-9a-f]{64}$'::text", name: "receipt_bookings_lines_digest_format"
+    t.check_constraint "mode::text <> 'created'::text OR previous IS NULL AND transaction_import_digest IS NULL", name: "receipt_bookings_created_shape"
+    t.check_constraint "mode::text <> 'linked'::text OR (jsonb_typeof(previous) = 'object'::text AND jsonb_typeof(previous -> 'format'::text) = 'number'::text AND jsonb_typeof(previous -> 'amount'::text) = 'string'::text AND jsonb_typeof(previous -> 'status'::text) = 'string'::text AND jsonb_typeof(previous -> 'lines'::text) = 'array'::text) IS TRUE", name: "receipt_bookings_linked_shape"
+    t.check_constraint "mode::text = ANY (ARRAY['linked'::character varying, 'created'::character varying]::text[])", name: "receipt_bookings_mode_allowed"
   end
 
   create_table "receipt_ground_truths", force: :cascade do |t|
@@ -427,6 +448,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_18_190000) do
   add_foreign_key "categories", "categories", column: "parent_id"
   add_foreign_key "ocr_batch_entries", "ocr_batches", on_delete: :cascade
   add_foreign_key "ocr_batch_entries", "receipts", on_delete: :nullify
+  add_foreign_key "receipt_bookings", "payees", column: "assigned_payee_id"
+  add_foreign_key "receipt_bookings", "receipts", on_delete: :cascade
+  add_foreign_key "receipt_bookings", "transactions", on_delete: :cascade
   add_foreign_key "receipt_ground_truths", "receipts", on_delete: :cascade
   add_foreign_key "receipt_items", "categories"
   add_foreign_key "receipt_items", "categories", column: "suggested_category_id"

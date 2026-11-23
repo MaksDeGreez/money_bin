@@ -59,6 +59,8 @@ class Transaction < ApplicationRecord
   # sends it back to review (release_receipt).
   has_one :receipt, foreign_key: :transaction_id, inverse_of: :ledger_transaction
   before_destroy :release_receipt
+  # The record of the receipt booking on this transaction (ReceiptBooking); the database deletes it with the row.
+  has_one :receipt_booking, foreign_key: :transaction_id, inverse_of: :ledger_transaction
 
   accepts_nested_attributes_for :lines, allow_destroy: true
 
