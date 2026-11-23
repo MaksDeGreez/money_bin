@@ -434,6 +434,33 @@ class Receipts::UndoAcceptTest < ActiveSupport::TestCase
     assert_equal created, other_bank.reload.payee
   end
 
+  test "another booking's earlier payee of another type does not fail the payee check" do
+    link
+    created = @bank.reload.payee
+    second = second_receipt_on(bank_row_of_40, merchant_name: nil)
+    second.booking.update_column(:previous, second.booking.previous.merge("payee_id" => "not a number"))
+
+    assert undo.payee_removed?
+    assert_not Payee.exists?(created.id)
+  end
+
+  test "the created flag goes only to a booking that still names the payee" do
+    link
+    created = @bank.reload.payee
+    other_bank = bank_row_of_40
+    second = second_receipt_on(other_bank)
+    other_bank.reload.update!(payee: nil)
+    Payee.create!(name: "Corner Bakery")
+    second.update!(merchant_name: "Corner Bakery")
+    Receipts::Accept.call(Receipt.find(second.id)) # now assigns another payee, one that existed
+    assert_equal "Corner Bakery", second.booking.reload.assigned_payee.name
+    Transaction.create!(account: accounts(:cash_uah), occurred_on: Date.new(2026, 10, 10), amount: "-5.00", source: :manual,
+                        payee: created, lines_attributes: [ { amount: "-5.00" } ])
+
+    assert_not undo.payee_removed?
+    assert_not second.booking.reload.payee_created?
+  end
+
   # As a writer that missed a reference under the row lock would see it.
   BLIND_TO_PAYEES = Class.new(Receipts::UndoAccept) do
     private def payee_in_use?(_payee) = false

@@ -88,9 +88,9 @@ a test compares it with the table, so a new column cannot slip in or out of the 
 
 ### Concurrency
 
-Accept locks the receipt row, then the chosen transaction row, then its lines in id order (the suggestion job
-writes lines without moving the transaction's version, as for `Transactions::Categorise`), and reads them
-again. Two receipts choosing one transaction: the second waits for the first's row lock and then sees the
+Accept locks the receipt row, then the chosen transaction row, then its lines in id order and its booking
+record (the suggestion job writes lines without moving the transaction's version, as for
+`Transactions::Categorise`), and reads them again. Two receipts choosing one transaction: the second waits for the first's row lock and then sees the
 link (checked before the version, which the first booking also moved). The unique indexes are the backstop;
 a violation is refused as `AlreadyLinked`, inside a savepoint so that PostgreSQL's aborted transaction does
 not leak into the caller's. The history import destroys a row's lines before the row, the opposite order,
@@ -153,11 +153,15 @@ record, after which the undo checks it.
 
 A payee the acceptance created is deleted when no transaction, no other booking record and no linked booking's
 `previous` names it any more, in a savepoint: if the delete is refused anyway, the payee stays and the undo
-commits. An unused payee is harmless; a lost undo is not. Its row is locked with `SKIP LOCKED`: a writer about to
-refer to it holds a key-share lock (the foreign key of a transaction it inserts, and
-`Payee.find_or_create_by_name!` reads with one), and the payee is then kept rather than deleted under that
-writer. When the payee is kept because another booking assigned it too, that booking inherits "Accept created
-it", so the payee goes with whichever of the two is undone last, in either order.
+commits. An unused payee is harmless; a lost undo is not. Every undo locks the payee its record assigned, last
+in Accept's order, so undos of bookings that share a payee take turns and each reads the other's outcome; a
+writer about to refer to the payee (the foreign key of a transaction it inserts, and
+`Payee.find_or_create_by_name!`, which reads with a key-share lock) either finished first and is seen, or waits
+and then finds no payee. When the payee is kept because another booking assigned it too, that booking inherits
+"Accept created it", so the payee goes with whichever of the two is undone last, in either order. Only a
+booking that can be locked at once and still names the payee inherits, and Accept now locks its booking row
+before it reads it, so a parallel "Accept again" that moves that booking to another payee can never be handed
+the flag for the wrong payee; the price is that in that rare overlap the payee may stay, unused.
 
 A refusal for an edit made in the app (a category set from the transaction list, a comment) says that "Accept
 again" makes the undo possible: it overwrites the lines anyway and records the transaction as it leaves it. A

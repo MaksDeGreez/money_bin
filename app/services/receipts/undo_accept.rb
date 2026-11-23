@@ -48,7 +48,8 @@ module Receipts
   # nothing queues OCR for an `extracted` receipt but a person's "Read again".
   #
   # Locks, in Receipts::Accept's order so the two cannot deadlock: the receipt row, the transaction row, its lines in
-  # id order (the suggestion job writes lines without moving the transaction's version). Everything runs in one
+  # id order (the suggestion job writes lines without moving the transaction's version); then the payee the record
+  # assigned, so undos of bookings that share a payee take turns. Everything runs in one
   # database transaction: a refusal changes nothing. Every refusal is a subclass of Error, its message in words for
   # the page; a lock or a reference lost to a parallel writer is Busy. The SQL log is silenced while it writes.
   class UndoAccept
@@ -112,12 +113,22 @@ module Receipts
         check_transaction(transaction)
         booking = transaction.receipt_booking
         check_booking(transaction, booking)
+        lock_assigned_payee(booking)
 
         if booking&.linked?
           restore(transaction, booking)
         else
           remove(transaction, booking)
         end
+      end
+
+      # Undos whose bookings assigned one payee take turns on that payee's row lock (taken last, after Accept's order),
+      # so each sees the other's booking gone and its "created" flag handed over, then reads its own flag again.
+      def lock_assigned_payee(booking)
+        return unless booking&.assigned_payee_id
+
+        Payee.where(id: booking.assigned_payee_id).lock.pick(:id)
+        booking.reload
       end
 
       # The restore writes the earlier lines' comments and amounts: kept out of the SQL log, as the importers do.
@@ -291,20 +302,19 @@ module Receipts
       end
 
       # Deletes the payee Accept created when nothing refers to it any more. In a savepoint: a refusal keeps the payee
-      # and lets the undo commit. The payee row is locked without waiting: a writer that is adding a reference to it
-      # (a transaction's foreign key, Payee.find_or_create_by_name!'s read) holds a key-share lock on it, and then the
-      # payee is simply kept. When it is kept because another booking also assigned it, that booking inherits "Accept
-      # created it", so the last undo of the payee's bookings removes it. True when it was deleted.
+      # and lets the undo commit. Its row is already locked (lock_assigned_payee): a writer that was adding a reference
+      # to it (a transaction's foreign key, Payee.find_or_create_by_name!'s key-share read) finished first and is seen,
+      # a later one waits and then no longer finds it. When it is kept because another booking also assigned it, that
+      # booking inherits "Accept created it", so the last undo of the payee's bookings removes it. True when deleted.
       def remove_created_payee(booking)
         return false unless booking.payee_created? && booking.assigned_payee_id
 
         Payee.transaction(requires_new: true) do
-          payee = Payee.lock("FOR UPDATE SKIP LOCKED").find_by(id: booking.assigned_payee_id)
+          payee = Payee.find_by(id: booking.assigned_payee_id)
           if payee.nil?
             false
           elsif payee_in_use?(payee)
-            ReceiptBooking.where(assigned_payee_id: payee.id, payee_created: false).order(:id).first
-              &.update_columns(payee_created: true, updated_at: Time.current)
+            hand_over_created(payee)
             false
           else
             payee.destroy!
@@ -315,11 +325,21 @@ module Receipts
         false
       end
 
+      # Another booking that assigned the payee takes over "Accept created it". Only one that can be locked at once
+      # and still names the payee: a booking an acceptance is rewriting (Accept locks it) keeps its own flag, and then
+      # the payee may outlive both bookings, unused and harmless.
+      def hand_over_created(payee)
+        ids = ReceiptBooking.where(assigned_payee_id: payee.id, payee_created: false).order(:id).limit(1)
+          .lock("FOR UPDATE SKIP LOCKED").pluck(:id)
+        ReceiptBooking.where(id: ids, assigned_payee_id: payee.id).update_all(payee_created: true, updated_at: Time.current)
+      end
+
       # A transaction names the payee, another booking assigned it, or a linked booking's earlier state names it (an
-      # undo of that booking would put it back).
+      # undo of that booking would put it back). The last by JSON containment: a typed comparison that never fails on
+      # a value of another type.
       def payee_in_use?(payee)
         Transaction.exists?(payee_id: payee.id) || ReceiptBooking.exists?(assigned_payee_id: payee.id) ||
-          ReceiptBooking.linked.where("(previous ->> 'payee_id')::bigint = ?", payee.id).exists?
+          ReceiptBooking.linked.where("previous @> ?::jsonb", { payee_id: payee.id }.to_json).exists?
       end
 
       def decimal(value, what)

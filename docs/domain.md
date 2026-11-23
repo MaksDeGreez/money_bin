@@ -241,8 +241,8 @@ read, and only the person or the client can decide what to do with their change.
 - the API (when it writes transactions) answers `409 Conflict` with the code `stale_transaction`, and the
   client reads the row again;
 - a service that reads and writes in one go (`Receipts::Accept`) takes the row lock first, so it waits for a
-  parallel writer instead of failing. Booking onto a transaction the person chose locks the transaction row
-  and then its lines in id order (the suggestion job writes lines without moving the version), reads them
+  parallel writer instead of failing. Booking onto a transaction the person chose locks the transaction row,
+  then its lines in id order and its booking record (the suggestion job writes lines without moving the version), reads them
   again, and only then compares the version the page showed: a mismatch is refused ("changed somewhere
   else"), since the person chose the transaction as it was;
 - nothing retries on its own: a retry with the same stale data would only fail again.
@@ -853,11 +853,14 @@ the ledger goes back to what it was before the receipt was booked, the receipt g
   transfer leg is refused.
 - **The payee Accept created** (`payee_created`) is deleted when no transaction, no other booking record and
   no linked booking's `previous` refers to it any more (an undo of that booking would put it back), in a
-  savepoint: a refusal (a foreign key, a parallel reuse) keeps the payee and never takes the undo back. Its row
-  is locked without waiting: a writer about to refer to it holds a key-share lock (a transaction's foreign
-  key, and `Payee.find_or_create_by_name!` reads the payee it returns with one), and then the payee is kept.
-  When it is kept because another booking assigned it too (a second receipt from the same new shop), that
-  booking inherits "Accept created it", so whichever of the two is undone last removes it.
+  savepoint: a refusal (a foreign key, a parallel reuse) keeps the payee and never takes the undo back. Every
+  undo locks the payee its record assigned (after the transaction and its lines), so undos of bookings that
+  share a payee take turns, and a writer about to refer to it (a transaction's foreign key, and
+  `Payee.find_or_create_by_name!` reads the payee it returns with a key-share lock) either finished first and
+  is seen, or waits and then finds no payee. When it is kept because another booking assigned it too (a
+  second receipt from the same new shop), that booking inherits "Accept created it", so whichever of the two
+  is undone last removes it; only a booking that can be locked at once and still names the payee inherits
+  (Accept locks its booking row), so in a rare overlap the payee may outlive both, unused.
 - **The receipt** becomes `extracted` with no transaction and no booking record
   (`Receipt#release_from_ledger!`, the same step a destroyed transaction takes), and its `lock_version`
   moves. Its items, their categories and `accepted_by_user`, its ground truth, its OCR and QR columns, its

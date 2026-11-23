@@ -18,7 +18,9 @@ import { Controller } from "@hotwired/stimulus"
 // - While a submission is on its way the form is inert, so nothing typed then can be lost to the response.
 // - Leaving the page while dirty asks first (a Turbo visit, and closing or reloading the tab). So does sending
 //   another form of the page ("Undo the acceptance", "Read again"), before it reaches the server: its redirect
-//   would only ask once the server had acted. A yes drops the unsaved changes, so the response can render.
+//   would only ask once the server had acted. A yes drops the unsaved changes once that request really starts (after
+//   Turbo's own confirmation, which may still say no), so its response can render; a request that fails puts the
+//   guard back.
 // - Enter never submits the form by accident; Ctrl+S (Cmd+S) clicks Save, Ctrl+Shift+S (Cmd+Shift+S) clicks
 //   Save as ground truth and Ctrl+Enter (Cmd+Enter) clicks Accept, when the form has them and they are
 //   enabled. Missing Shift on the ground-truth shortcut only saves, which is harmless.
@@ -82,7 +84,7 @@ export default class extends Controller {
   otherFormSubmit(event) {
     if (event.target === this.element || !this.guarding) return
     if (window.confirm(LEAVE_MESSAGE)) {
-      this.dirtyValue = false
+      this.leavingWith = event.target
     } else {
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -104,9 +106,15 @@ export default class extends Controller {
 
   submitStart(event) {
     if (event.target === this.element) this.element.inert = true
+    else if (event.target === this.leavingWith) this.dirtyValue = false
   }
 
   submitEnd(event) {
+    if (event.target === this.leavingWith) {
+      this.leavingWith = null
+      if (!event.detail.success) this.dirtyValue = true
+      return
+    }
     if (event.target !== this.element) return
     this.submitting = false
     this.element.inert = false
