@@ -162,25 +162,29 @@ A refinement of "Item matching", not a new decision. Before names are compared (
 letter, on both sides, for every model. The rule stays as first built: one class per pair, applied
 after NFKC and case folding (so a class alike only as capitals, `В`/`B`, also joins its small
 letters and a word's case never decides whether two scripts compare equal), on every token, digits
-left alone. It gains the class `Ï ï`/`Ї ї` and the non-Ukrainian twins `ј ѕ һ` of `j s h`. Pairs alike
-only in italics (`n`/`п`, `u`/`и`, `r`/`г`, `b`/`ь`, `m`/`т`) and `ё` stay out; so do digit
-look-alikes (`0`/`О`, `3`/`З`, `6`/`б`), since a digit read as a letter is a real error. The
-classes, and why each borderline pair is in or out, are in `ml/README.md`, "The evaluation harness".
+left alone. It gains the class `Ï ï`/`Ї ї` and the non-Ukrainian twins `ј ѕ һ` of `j s h`, and units
+and legal-form words are now recognised after the fold, by their folded spelling (before, a unit
+with one look-alike swap, `KГ`, was not a unit, and the normalised figure charged more for the swap
+than the raw one). Pairs alike only in italics (`n`/`п`, `u`/`и`, `r`/`г`, `b`/`ь`, `m`/`т`) and `ё`
+stay out; so do digit look-alikes (`0`/`О`, `3`/`З`, `6`/`б`), since a digit read as a letter is a
+real error. The classes, and why each borderline pair is in or out, are in `ml/README.md`, "The
+evaluation harness".
 
 Folding every token was kept over folding only tokens that contain a Cyrillic letter. Folding
 Cyrillic into Latin, the two coincide; in the other direction, and for any variant that folds only
-some tokens, a word written wholly in the other script on one side is rewritten on that side only.
-On the pilot OCR runs, each taken as the reference for each other (aggregate counts in the README),
-both scoped variants matched fewer items than no fold at all, and the fold on every token matched
-the most, whichever script is the internal form.
+some tokens, the same word is folded on one side and not the other whenever only one side's spelling
+has the letter that triggers the fold. On the pilot OCR runs, each taken as the reference for each
+other (aggregate counts in the README), both scoped variants matched fewer items than no fold at
+all, and the fold on every token matched the most, whichever script is the internal form.
 
 `cer_plain` stays raw (NFC and collapsed spaces only): it is the strict figure, and its gap to
 `cer_normalised` shows how much error is case, punctuation, units and script swaps. Its pairs come
 from the normalised matching, so it too depends on the rule.
 
-The rule is versioned: `NORMALISATION_VERSION` in `ml/evaluation/text.py` (1: the first 13 classes;
-2: with `ї ј ѕ һ`), written to `index.json` under `inputs.matching.normalisation_version`, so a
-number can always be traced to the rule that made it. The new key changes the writer's declared
-structure (it accepts exactly the declared keys), so `RESULTS_VERSION` moves from 1 to 2. On the
-pilot runs version 2 changes no number against version 1; nothing committed under `eval/results/`
-changes, since no results are committed yet.
+The rule is versioned: `NORMALISATION_VERSION` in `ml/evaluation/text.py` (1: the first 13 classes,
+units before the fold; 2: with `ї ј ѕ һ`, units and legal forms after it), written to `index.json`
+under `inputs.matching.normalisation_version`, so every results folder names the rule its numbers
+were made with (the harness rewrites the folder as a whole; a test pins the tables to the version).
+The new key changes the writer's declared structure (it accepts exactly the declared keys), so
+`RESULTS_VERSION` moves from 1 to 2. On the pilot runs version 2 changes no number against version
+1; nothing committed under `eval/results/` changes, since no results are committed yet.
