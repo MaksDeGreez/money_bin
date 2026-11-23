@@ -16,8 +16,8 @@ module Receipts
   # removes them), `filled_from` ("dps_xml" when the person filled the form from the tax-service record),
   # `without_categories` and `replace_ground_truth` (for "Save as ground truth"), and the "Book as" choice:
   # `booking` ("new", or the id of the chosen ledger transaction), `link_lock_versions` (each candidate's
-  # `lock_version` as shown, by id), `shown_candidate_ids` and `shown_linked_ids` (the ids the page listed,
-  # separated by spaces).
+  # `lock_version` as shown, by id), `shown_candidate_ids`, `shown_linked_ids` and `shown_exact_ids` (the ids the
+  # page listed, separated by spaces; the last: the candidates whose amount was the booking total).
   #
   # Rules:
   # - Only a receipt a person may review is saved: `extracted` or `reviewed`, with no OCR queued or running
@@ -42,9 +42,11 @@ module Receipts
   #   ledger transaction of the list (ReceiptLinkCandidates), with the `lock_version` the page showed and no
   #   account, or as a new expense on the chosen account. The list is computed again from the values just
   #   saved, in the same database transaction; when its ids are not the ones the page showed (the date or the
-  #   total was corrected, a bank row arrived, another receipt took one), or no choice was made, nothing is
-  #   booked or saved and the fresh list goes back to the form (`link_candidates`) with nothing chosen. So a
-  #   "new expense" chosen before a correction cannot go through past a match the person has not seen.
+  #   total was corrected, a bank row arrived, another receipt took one), or which of them match the items' sum
+  #   exactly changed, or no choice was made, nothing is booked or saved and the fresh list goes back to the form
+  #   (`link_candidates`) with nothing chosen. So a "new expense" chosen before a correction cannot go through
+  #   past a match the person has not seen. A refusal about the chosen transaction (changed, gone, taken) also
+  #   returns the list as it is then. A lock that could not be had (a deadlock with an import) is a message too.
   # - "Save as ground truth" saves as "Save" does and then writes the manual ground-truth record from the
   #   stored receipt (Receipts::SaveGroundTruth), in one database transaction; it never books and never moves
   #   the status. Before it, the form must be complete enough to be ground truth (the kind set, a total and
@@ -75,6 +77,8 @@ module Receipts
       "\"Save without categories\".".freeze
     CANDIDATES_CHANGED = "Not accepted: the ledger transactions that match this receipt changed (your corrections, or a " \
       "change in the ledger). Nothing was saved. Check the list under \"Book as\" and choose again.".freeze
+    LOCK_FAILED = "Not accepted: the transaction was being written by something else at the same moment (an import?). " \
+      "Nothing was saved. Try again.".freeze
     CHOICE_NEEDED = "Not accepted: choose under \"Book as\" whether this receipt books onto a transaction already in the " \
       "ledger or as a new expense. Nothing was saved.".freeze
     NEW_BOOKING = "new".freeze
@@ -87,7 +91,7 @@ module Receipts
 
     def self.permitted_params
       [ *HEADER_FIELDS, :lock_version, :transaction_lock_version, :account_id, :remove_items, :filled_from,
-        :without_categories, :replace_ground_truth, :booking, :shown_candidate_ids, :shown_linked_ids,
+        :without_categories, :replace_ground_truth, :booking, :shown_candidate_ids, :shown_linked_ids, :shown_exact_ids,
         { items_attributes: ITEM_FIELDS, link_lock_versions: {} } ]
     end
 
@@ -141,7 +145,8 @@ module Receipts
     end
 
     def call
-      saved = Receipt.transaction do
+      # Its own savepoint inside a caller's transaction, so a refusal rolls the save back there too.
+      saved = Receipt.transaction(requires_new: true) do
         @receipt.lock!
         next refuse_detached(not_editable_message) if not_editable_message
         next refuse_detached(CONFLICT, conflict: true) if stale?
@@ -170,6 +175,12 @@ module Receipts
       rescue BookingRefused => error
         @transaction = nil
         @receipt.errors.add(:booking, error.message)
+        raise ActiveRecord::Rollback
+      rescue ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout
+        # PostgreSQL aborted the transaction: nothing more can be read in it. The page reads the list again.
+        @transaction = nil
+        @link_candidates = nil
+        @receipt.errors.add(:base, LOCK_FAILED)
         raise ActiveRecord::Rollback
       rescue ActiveRecord::RecordInvalid => error
         # A booking the models refuse (the items sum past the amount limit, say): a reason on the form, not a 500.
@@ -200,7 +211,8 @@ module Receipts
 
         @link_candidates = ReceiptLinkCandidates.new(stored)
         unless same_ids?(@params[:shown_candidate_ids], @link_candidates.candidate_ids) &&
-            same_ids?(@params[:shown_linked_ids], @link_candidates.linked_ids)
+            same_ids?(@params[:shown_linked_ids], @link_candidates.linked_ids) &&
+            same_ids?(@params[:shown_exact_ids], @link_candidates.exact_ids)
           @candidates_changed = true
           raise BookingRefused, CANDIDATES_CHANGED
         end
@@ -475,9 +487,12 @@ module Receipts
       # account select; the others above the form.
       def accept_refused(error)
         @transaction = nil
-        # The chosen transaction is not what the person saw any more: they choose again from the fresh list.
+        # The chosen transaction is not what the person saw any more: they choose again from the list as it is now
+        # (read after Accept's savepoint rolled back, past the row lock it waited on).
         @choose_again = [ Accept::TransactionChanged, Accept::LinkGone, Accept::AlreadyLinked, Accept::NotLinkable ].any? { |type| error.is_a?(type) }
+        @link_candidates = ReceiptLinkCandidates.new(Receipt.find(@receipt.id)) if @choose_again
         field = if @linking then :booking
+        elsif error.is_a?(Accept::CurrencyMismatch) && @receipt.transaction_id then :currency
         elsif error.is_a?(Accept::AccountRequired) || error.is_a?(Accept::CurrencyMismatch) then :account_id
         else :base
         end

@@ -4,6 +4,7 @@ market_booking:
   receipt: market_receipt
   ledger_transaction: market_split
   mode: created
-  lines_digest: <%= ReceiptBooking.digest_lines([ [ ActiveRecord::FixtureSet.identify(:groceries), BigDecimal("-1000.40") ],
-                                                  [ ActiveRecord::FixtureSet.identify(:household_supplies), BigDecimal("-250.00") ] ]) %>
+  lines_digest: <%= ReceiptBooking.digest_rows([ [ ActiveRecord::FixtureSet.identify(:groceries), BigDecimal("-1000.40"), nil, nil, nil, nil, nil ],
+                                                 [ ActiveRecord::FixtureSet.identify(:household_supplies), BigDecimal("-250.00"), nil, nil, nil, nil, nil ] ]) %>
+  booked_lock_version: 0
   assigned_payee: example_market

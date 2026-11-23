@@ -88,6 +88,7 @@ class ReceiptLinkCandidatesTest < ActiveSupport::TestCase
     assert matches[by_items.id].matches_total
     assert_not matches[by_total.id].matches_total, "Accept would refuse it until the items are corrected"
     assert_not matches[by_qr.id].matches_total
+    assert_equal [ by_items.id ], found.exact_ids
   end
 
   test "a card slip searches its total" do

@@ -136,7 +136,8 @@ class Receipts::AcceptTest < ActiveSupport::TestCase
   end
 
   test "lines on a linked income carry its positive sign" do
-    refund = Transaction.create!(account: accounts(:card_uah), amount: "152.50", occurred_on: Date.new(2026, 10, 9), source: :manual,
+    # Booked from a receipt before booking records existed (Accept no longer links an income).
+    refund = Transaction.create!(account: accounts(:card_uah), amount: "152.50", occurred_on: Date.new(2026, 10, 9), source: :receipt,
                                  lines_attributes: [ { amount: "152.50" } ])
     receipt = receipts(:corner_receipt)
     receipt.update!(ledger_transaction: refund)

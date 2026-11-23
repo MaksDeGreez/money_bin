@@ -71,6 +71,11 @@ class ReceiptLinkCandidates
     linked_elsewhere.map(&:id)
   end
 
+  # The candidates whose amount is the booking total (the ones Accept takes as they are).
+  def exact_ids
+    candidates.select(&:matches_total).map(&:id)
+  end
+
   def any?
     candidates.any? || linked_elsewhere.any?
   end

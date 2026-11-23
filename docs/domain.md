@@ -20,7 +20,7 @@ There is one owner of all data, so ledger tables have no `user_id`.
 | `bulk_acceptances`, `bulk_acceptance_items` | "Accept suggestions at or above N %" for a list filter, and one transaction of it as previewed | `filter`, `threshold_percent`, `status`, the counts; per item `transaction_id`, `lock_version`, `line_ids`, `category_id`, `probability`, `model_version`, `outcome` (`accepted`, `stale`, `changed`, `failed`) |
 | `receipts` | A photographed shop receipt, its OCR result and its QR ground truth | `transaction_id` (nullable), `status`, `kind`, `incomplete`, `images` (1 to 3 photos), `ocr_raw`, `ocr_model_name`, `ocr_model_version`, `ocr_prompt_version`, `filled_from`, `categoriser_model_name`, `categorised_at`, `categoriser_error`, `fiscal_number`, `receipt_number`, `issued_at`, `total`, `currency`, `merchant_name`, `card_last4`, `qr_payload`, `qr_issued_at`, `qr_total`, `qr_fiscal_number`, `qr_receipt_number`, `batch`, `ingest_id`, `sha256`, `ocr_requested_at`, `category_id`, `suggested_category_id`, `suggested_category_confidence`, `lock_version` |
 | `receipt_ground_truths` | What a receipt really says, according to one source (a saved tax-service file, a person) | `receipt_id`, `source`, `document` (the OCR receipt shape), `schema_version`, `items_known`, `categories_known`, `prefilled_by`, `prefilled_model_version`, `prefilled_prompt_version`, `categories_prefilled_by`, `source_sha256`, `source_format`, `checked_at`, `check_outcome`, `check_note` |
-| `receipt_bookings` | How a receipt was booked: onto a ledger transaction the person chose, or as a new one (for an undo) | `receipt_id`, `transaction_id` (both unique), `mode` (`linked`, `created`), `previous`, `lines_digest`, `transaction_import_digest`, `assigned_payee_id`, `payee_created` |
+| `receipt_bookings` | How a receipt was booked: onto a ledger transaction the person chose, or as a new one (for an undo) | `receipt_id`, `transaction_id` (both unique), `mode` (`linked`, `created`), `previous`, `lines_digest`, `booked_lock_version`, `transaction_import_digest`, `assigned_payee_id`, `payee_created` |
 | `receipt_items` | One line printed on a receipt | `receipt_id`, `position`, `name`, `quantity`, `unit_price`, `amount`, `discount`, `category_id`, `suggested_category_id`, `confidence`, `suggested_by`, `name_key`, `accepted_by_user` |
 
 Photos are stored with Active Storage (`active_storage_*` tables), attached to a receipt as `images`.
@@ -155,7 +155,7 @@ listed, the model gives a readable error and the database is the safety net for 
 | A transaction has at most one receipt | Model + DB (unique index on `receipts.transaction_id`) |
 | A `reviewed` receipt has a transaction: destroying the transaction moves its receipt back to `extracted` | Model (in the destroy's database transaction); the foreign key only nullifies the link |
 | A receipt and a transaction have at most one booking record; it goes with either | Model + DB (unique indexes, foreign keys `ON DELETE CASCADE`) |
-| A `linked` booking records the transaction's earlier state (a JSON object with `format`, `amount` as text, `status`, `lines`); a `created` one has neither that nor an import digest; a payee marked created is assigned | Model + DB (`receipt_bookings_*` checks) |
+| A `linked` booking records the transaction's earlier state (a JSON object with `format`, `amount` as text, `status`, `lines`); a `created` one has neither that nor an import digest; a payee marked created is assigned; the booked version is not negative | Model + DB (`receipt_bookings_*` checks) |
 | A receipt is booked onto a ledger transaction only by a person's choice, never onto a transfer leg, an income, another receipt's transaction, an account in another currency, or a transaction changed since the page showed it | Model only (`Receipts::Review` and `Receipts::Accept`, under row locks) |
 | Receipt item positions are unique per receipt and not negative; quantity > 0; discount >= 0; confidence in 0..1 | Model + DB |
 | A receipt item's `suggested_by` is `memory`, `model` or nil; its `name_key` is `ItemName.key(name)`, never null | Model; DB for the values and the null (`receipt_items_suggested_by_known`) |
@@ -746,7 +746,10 @@ link must satisfy (the row is there, at the version the page showed, an expense 
 other receipt on it, the receipt's currency when known, the amount).
 
 **The choice is the person's.** Nothing is pre-selected while there is any match; "A new expense" is
-pre-selected only when there is none. See "Review" for how the form makes a stale choice safe.
+pre-selected only when the search ran (the receipt has a date) and found nothing, and only on a page as
+first rendered: a refused form keeps the person's choice, or none. See "Review" for how the form makes a
+stale choice safe. Any status is offered, a `draft` too: booking a receipt onto a draft books it (as for
+a draft a receipt created), and `previous` keeps its old status.
 
 **What booking onto it does.** Under the receipt's row lock: the transaction row and then its lines are
 locked and read again; the version and the rules above are checked; its earlier state is recorded (see
@@ -767,22 +770,34 @@ undone. `Receipts::Accept` writes it on every path:
   old line (`ReceiptBooking::LINE_COLUMNS`: ids, category, amount as a decimal string, legacy path, comment,
   the stored suggestion, the category's origin, timestamps in UTC to the microsecond). Money never passes
   through a float; a test compares the column list with the table, so a new line column needs a new format;
-- `lines_digest`: the SHA-256 of the lines Accept wrote, one "category id, tab, amount with two places" per
-  line, sorted, under a versioned prefix (`ReceiptBooking.lines_digest`). Refreshed by every "Accept again";
+- `lines_digest`: the SHA-256 of the lines Accept wrote: per line the category, the amount (two places), the
+  comment, the legacy path and the category's origin, as a JSON array, the lines sorted, under a versioned
+  prefix (`ReceiptBooking.lines_digest`). A line saved on its own with only a new comment or category does
+  not move the transaction's version, so the digest covers those. The stored suggestion is left out: the
+  suggestion job refreshes it without anyone's choice, and an undo may discard it. Refreshed by every
+  "Accept again";
+- `booked_lock_version`: the transaction's `lock_version` right after Accept wrote it, refreshed by every
+  "Accept again". Every other writer of the row moves it (a person's edit of the payee, status, date or
+  comment, a category from the list, an import), so an undo can tell the transaction changed since;
 - `transaction_import_digest`: the transaction's `import_digest` at the first link (nil when no importer
   wrote it);
 - `assigned_payee_id` and `payee_created`: the payee Accept set on an empty payee (nil when it kept the
   transaction's own or the merchant name was blank), and whether Accept created it (read from the save
   itself, so a payee a parallel writer created is not counted as Accept's). A later "Accept again" that
-  assigns the same payee keeps "created".
+  assigns the same payee keeps "created", and one that assigns another payee leaves a created one recorded
+  (an undo may remove it when nothing else uses it).
 
 `previous`, the mode and the import digest are written at the first booking only; "Accept again" keeps them.
 The record goes with its receipt and with its transaction (`ON DELETE CASCADE`). A receipt booked before
-records existed gets one on its next "Accept again" (`created` when Accept had created the transaction).
+records existed gets one on its next "Accept again" (`created`, when Accept had created the transaction,
+`source: receipt`); for any other transaction "Accept again" is refused, since its earlier state is lost and
+recording the current one would make an undo a silent no-op. "Accept again" also checks the currency again:
+a receipt currency corrected since the booking must still be the account's. Rolling the migration back
+refuses while the table has a row: it holds the only copy of the earlier states.
 
 **The undo** (a later change) restores `previous` for a `linked` booking, or removes the transaction of a
-`created` one, and a created payee nothing else uses. It can tell from the digests that the lines or the row
-changed since, and must then refuse rather than overwrite.
+`created` one, and a created payee nothing else uses. It can tell from `booked_lock_version`, `lines_digest`
+and the import digest that the row or its lines changed since, and must then refuse rather than overwrite.
 
 **The history import is unchanged, and the export still wins.** When a later export changes a linked row,
 either the importer rewrites its lines in place (the receipt stays linked and `reviewed`, and the stored
@@ -952,12 +967,15 @@ purchase (see "Booking onto a transaction"), each a radio with its account, date
 category", amount, whether a line has a comment), the warning that accepting replaces those lines, and a
 danger badge when the items do not sum to its amount. Then the matches booked from another receipt, not
 selectable, and last "A new expense on" with the account select. Nothing is chosen while there is any match.
-The form carries the ids it listed and each candidate's `lock_version`. On "Accept", `Receipts::Review`
-computes the list again from the values it has just saved, in the same database transaction: when the ids
-are not the listed ones (a corrected date or total, a new bank row, another receipt took one), nothing is
+The form carries the ids it listed, which of them matched the booking total exactly, and each candidate's
+`lock_version`. On "Accept", `Receipts::Review` computes the list again from the values it has just saved,
+in the same database transaction (a savepoint inside a caller's): when the ids, or the exact ones, are not
+the listed ones (a corrected date, total or item, a new bank row, another receipt took one), nothing is
 booked or saved and the page shows the fresh list, with nothing chosen and the typed values kept; no choice
 at all is refused the same way. A chosen transaction goes to `Receipts::Accept` with the version the page
-showed and no account; the account goes only with "A new expense" (the select is enabled only then). A successful save or acceptance refreshes the receipt's other open pages and
+showed and no account; the account goes only with "A new expense" (the select is enabled only then). When
+Accept refuses the chosen transaction (changed, gone, taken), the page shows the list as it is after the row
+lock, and a lock that could not be had (a deadlock with an import) is a message too, never an error page. A successful save or acceptance refreshes the receipt's other open pages and
 the list (`Receipts::LiveUpdate`); a form there with unsaved changes is not refreshed, and its save is refused
 as stale. The page then
 opens the transaction (`/transactions/:id`): its lines, its status, why it needs review, and "Next receipt

@@ -60,8 +60,14 @@ the form. The candidate shows a danger badge, so the person sees it before accep
 `receipt_bookings` (`ReceiptBooking`) holds one row per booked receipt, written by Accept on both paths:
 `mode` (`linked` or `created`), `previous` (for `linked`: the transaction as it was before the first rebook,
 a versioned JSON document with the amount and every line column, money as decimal strings, times to the
-microsecond), a digest of the lines Accept wrote (refreshed by every "Accept again"), the transaction's
+microsecond), what Accept left (a digest of the lines it wrote, with their comments and origins, and the
+transaction's `lock_version` right after; both refreshed by every "Accept again"), the transaction's
 `import_digest` at the first link, and which payee Accept assigned and whether it created it.
+
+The version and the digest together are how an undo tells that somebody changed the transaction after the
+booking: every writer of the row moves its version, except a line saved on its own with only a new comment
+or category, which the digest sees. The suggestion job's refresh of a line's stored suggestion moves neither,
+on purpose: a suggestion is nobody's choice and can be filled again.
 
 Why a table and not columns on the receipt:
 
@@ -85,8 +91,16 @@ a test compares it with the table, so a new column cannot slip in or out of the 
 Accept locks the receipt row, then the chosen transaction row, then its lines in id order (the suggestion job
 writes lines without moving the transaction's version, as for `Transactions::Categorise`), and reads them
 again. Two receipts choosing one transaction: the second waits for the first's row lock and then sees the
-link. The unique indexes are the backstop; a violation is refused as `AlreadyLinked`, inside a savepoint so
-that PostgreSQL's aborted transaction does not leak into the caller's.
+link (checked before the version, which the first booking also moved). The unique indexes are the backstop;
+a violation is refused as `AlreadyLinked`, inside a savepoint so that PostgreSQL's aborted transaction does
+not leak into the caller's. The history import destroys a row's lines before the row, the opposite order,
+so the two can deadlock; that is rare, PostgreSQL breaks it, and the form says to try again (the importer is
+not changed here).
+
+### The migration does not roll back over records
+
+Rolling the migration back would drop the only copy of the earlier state of every linked transaction while
+the receipts' lines stay in the ledger. The rollback refuses while the table has a row.
 
 ## The importer limit
 

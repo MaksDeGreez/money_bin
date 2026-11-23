@@ -32,7 +32,7 @@ class Receipts::AcceptLinkTest < ActiveSupport::TestCase
   def assert_refused(error_class, message = nil, &block)
     before = line_summary(@bank)
     error = nil
-    assert_no_difference [ "Transaction.count", "ReceiptBooking.count", "TransactionLine.count" ] do
+    assert_no_difference [ "Transaction.count", "ReceiptBooking.count", "TransactionLine.count", "Payee.count" ] do
       error = assert_raises(error_class, &block)
     end
     assert_equal message, error.message if message
@@ -102,6 +102,7 @@ class Receipts::AcceptLinkTest < ActiveSupport::TestCase
     assert_equal "Groceries and a refund", previous["lines"].first["comment"]
     assert_equal "person", previous["lines"].second["category_origin"]
     assert_equal ReceiptBooking.lines_digest(@bank.id), booking.lines_digest
+    assert_equal @bank.reload.lock_version, booking.booked_lock_version
   end
 
   test "an empty payee is filled from the merchant and recorded, a payee of its own is kept" do
@@ -212,7 +213,68 @@ class Receipts::AcceptLinkTest < ActiveSupport::TestCase
     assert_equal "a" * 64, booking.transaction_import_digest
     assert_not_equal digest, booking.lines_digest
     assert_equal ReceiptBooking.lines_digest(@bank.id), booking.lines_digest
+    assert_equal @bank.reload.lock_version, booking.booked_lock_version
     assert booking.linked?
+  end
+
+  test "a later edit shows: a line's comment in the digest, the payee in the version, a suggestion in neither" do
+    accept
+    booking = @receipt.reload.booking
+
+    TransactionLine.where(transaction_id: @bank.id, category_id: nil)
+      .update_all(suggested_category_id: categories(:cafes).id, suggestion_probability: 0.5, suggestion_source: "model",
+                  suggestion_model_version: "2026-11-18-0123456789ab", suggested_at: Time.current)
+    assert_equal booking.lines_digest, ReceiptBooking.lines_digest(@bank.id)
+    assert_equal booking.booked_lock_version, @bank.reload.lock_version
+
+    @bank.lines.first.update!(comment: "a note added later") # a line saved alone: the version does not move
+    assert_equal booking.booked_lock_version, @bank.reload.lock_version
+    assert_not_equal booking.lines_digest, ReceiptBooking.lines_digest(@bank.id)
+
+    @bank.update!(payee: payees(:corner_cafe))
+    assert_operator @bank.reload.lock_version, :>, booking.booked_lock_version
+  end
+
+  test "Accept again keeps a payee Accept created when it now assigns another one" do
+    accept
+    created = @receipt.reload.booking.assigned_payee
+    @bank.reload.update!(payee: nil)
+    Payee.create!(name: "Corner Shop Two")
+    @receipt.update!(merchant_name: "Corner Shop Two")
+
+    Receipts::Accept.call(@receipt.reload)
+
+    booking = @receipt.booking.reload
+    assert_equal "Corner Shop Two", @bank.reload.payee.name
+    assert_equal created, booking.assigned_payee
+    assert booking.payee_created?
+  end
+
+  test "Accept again refuses a receipt currency corrected since the booking" do
+    accept
+    @receipt.reload.update!(currency: "EUR")
+
+    error = assert_raises(Receipts::Accept::CurrencyMismatch) { Receipts::Accept.call(@receipt.reload) }
+    assert_equal "the receipt is in EUR but Everyday card is in UAH", error.message
+  end
+
+  test "a transaction another receipt took while this one waited is refused as taken, not as changed" do
+    other = receipts(:new_receipt)
+    other.update_columns(status: "extracted", total: BigDecimal("152.50"), currency: "UAH")
+    other.items.create!(position: 1, name: "Bread", amount: "152.50")
+    shown_version = @bank.lock_version
+    Receipts::Accept.call(other.reload, link: @bank, link_lock_version: shown_version)
+
+    assert_refused(Receipts::Accept::AlreadyLinked, "the chosen transaction is already booked from receipt ##{other.id}") do
+      accept(link_lock_version: shown_version)
+    end
+  end
+
+  test "Accept again refuses a transaction it has no earlier state of, rather than record the current one" do
+    @receipt.update_columns(transaction_id: @bank.id, status: "reviewed")
+
+    error = assert_raises(Receipts::Accept::NotAcceptable) { Receipts::Accept.call(@receipt.reload) }
+    assert_match(/no record of its state/, error.message)
   end
 
   test "a linked receipt refuses a link to another transaction" do
@@ -236,7 +298,7 @@ class Receipts::AcceptLinkTest < ActiveSupport::TestCase
     second = receipts(:new_receipt)
     second.update_columns(transaction_id: @bank.id, status: "reviewed")
     before = line_summary(@bank)
-    assert_no_difference [ "ReceiptBooking.count", "Transaction.count" ] do
+    assert_no_difference [ "ReceiptBooking.count", "Transaction.count", "Payee.count" ] do
       error = assert_raises(Receipts::Accept::AlreadyLinked) do
         BLIND.new(receipt, link: @bank, link_lock_version: @bank.lock_version).call
       end

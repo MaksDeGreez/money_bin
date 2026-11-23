@@ -17,8 +17,7 @@ import { Controller } from "@hotwired/stimulus"
 const FILL_QUESTION = "Replace the fields and items in this form with the tax-service record? Nothing is saved until you save."
 
 export default class extends Controller {
-  static targets = ["kind", "slipOnly", "itemsOnly", "threshold", "suggestionStatus", "filledFrom", "fillStatus", "booking",
-    "bookingAccount"]
+  static targets = ["kind", "slipOnly", "itemsOnly", "threshold", "suggestionStatus", "filledFrom", "fillStatus", "bookingAccount"]
   static values = { fill: Object }
   static outlets = ["line-items"]
 

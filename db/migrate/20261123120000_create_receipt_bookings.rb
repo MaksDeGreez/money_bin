@@ -13,8 +13,14 @@
 #   refreshed by every "Accept again": an undo compares it with the lines stored then.
 # - transaction_import_digest: the transaction's import_digest at the first link (null when no importer wrote
 #   the row), so an undo can tell that an import rewrote the row since.
+# - booked_lock_version: the transaction's lock_version right after Accept wrote it (refreshed by every "Accept
+#   again"): every writer of the row or its lines moves it, so an undo can tell that a person changed the
+#   transaction since (its payee, a comment, a category).
 # - assigned_payee_id, payee_created: the payee Accept set on the transaction (null when it set none), and
 #   whether Accept created that payee.
+#
+# Rolling back drops the table, and with it the only copy of the earlier state of every linked transaction: the
+# rollback refuses while the table has a row.
 class CreateReceiptBookings < ActiveRecord::Migration[8.1]
   def change
     create_table :receipt_bookings do |t|
@@ -24,6 +30,7 @@ class CreateReceiptBookings < ActiveRecord::Migration[8.1]
       t.jsonb :previous
       t.string :lines_digest, null: false
       t.string :transaction_import_digest
+      t.integer :booked_lock_version, null: false
       t.references :assigned_payee, foreign_key: { to_table: :payees }
       t.boolean :payee_created, null: false, default: false
       t.timestamps
@@ -38,6 +45,18 @@ class CreateReceiptBookings < ActiveRecord::Migration[8.1]
         name: "receipt_bookings_linked_shape"
       t.check_constraint "lines_digest ~ '^[0-9a-f]{64}$'", name: "receipt_bookings_lines_digest_format"
       t.check_constraint "NOT payee_created OR assigned_payee_id IS NOT NULL", name: "receipt_bookings_created_payee_assigned"
+      t.check_constraint "booked_lock_version >= 0", name: "receipt_bookings_booked_lock_version_not_negative"
+    end
+
+    # Runs first on a rollback (reversed order), before the table is dropped.
+    reversible do |direction|
+      direction.down do
+        count = select_value("SELECT COUNT(*) FROM receipt_bookings").to_i
+        if count.positive?
+          raise ActiveRecord::IrreversibleMigration, "receipt_bookings holds #{count} booking record(s), the only copy of " \
+            "the earlier state of the transactions receipts were booked onto; undo or keep them before rolling back"
+        end
+      end
     end
   end
 end

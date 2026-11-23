@@ -733,7 +733,8 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
 
     assert_no_difference -> { Transaction.count } do
       patch receipt_path(receipt), params: { intent: "accept", receipt: review_params(receipt, booking: bank.id.to_s,
-        shown_candidate_ids: bank.id.to_s, shown_linked_ids: "", link_lock_versions: { bank.id.to_s => bank.lock_version.to_s }) }
+        shown_candidate_ids: bank.id.to_s, shown_linked_ids: "", shown_exact_ids: bank.id.to_s,
+        link_lock_versions: { bank.id.to_s => bank.lock_version.to_s }) }
     end
 
     assert_redirected_to transaction_path(bank, accepted: 1)
@@ -754,6 +755,33 @@ class ReceiptsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
     assert_select "input[name='receipt[merchant_name]'][value=?]", "Typed Shop"
     assert_nil receipt.reload.transaction_id
+  end
+
+  test "a receipt without a date is not searched, and nothing is chosen for it" do
+    receipt = receipts(:corner_receipt)
+    receipt.update_columns(issued_at: nil)
+    bank_row
+
+    get receipt_path(receipt)
+
+    assert_select "input[type=radio][name='receipt[booking]']", 1
+    assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
+    assert_select "p", text: /has no date/
+  end
+
+  test "a refused choice whose transaction left the list leaves nothing chosen, not a new expense" do
+    receipt = receipts(:corner_receipt)
+    bank = bank_row
+    params = review_params(receipt, booking: bank.id.to_s, shown_candidate_ids: bank.id.to_s, shown_linked_ids: "",
+                           shown_exact_ids: bank.id.to_s, link_lock_versions: { bank.id.to_s => bank.lock_version.to_s })
+    bank.update!(occurred_on: Date.new(2026, 10, 20)) # an import moved it out of the window
+
+    patch receipt_path(receipt), params: { intent: "accept", receipt: params }
+
+    assert_response :unprocessable_content
+    assert_select "input[type=radio][name='receipt[booking]']", 1
+    assert_select "input[type=radio][name='receipt[booking]'][checked]", 0
+    assert_select "select#receipt_account_id[disabled]", 1
   end
 
   test "an accepted receipt shows what it is booked on, and offers no choice" do

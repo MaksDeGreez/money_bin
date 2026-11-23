@@ -209,6 +209,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_120000) do
     t.jsonb "previous"
     t.string "lines_digest", null: false
     t.string "transaction_import_digest"
+    t.integer "booked_lock_version", null: false
     t.bigint "assigned_payee_id"
     t.boolean "payee_created", default: false, null: false
     t.datetime "created_at", null: false
@@ -217,6 +218,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_120000) do
     t.index ["receipt_id"], name: "index_receipt_bookings_on_receipt_id", unique: true
     t.index ["transaction_id"], name: "index_receipt_bookings_on_transaction_id", unique: true
     t.check_constraint "NOT payee_created OR assigned_payee_id IS NOT NULL", name: "receipt_bookings_created_payee_assigned"
+    t.check_constraint "booked_lock_version >= 0", name: "receipt_bookings_booked_lock_version_not_negative"
     t.check_constraint "lines_digest::text ~ '^[0-9a-f]{64}$'::text", name: "receipt_bookings_lines_digest_format"
     t.check_constraint "mode::text <> 'created'::text OR previous IS NULL AND transaction_import_digest IS NULL", name: "receipt_bookings_created_shape"
     t.check_constraint "mode::text <> 'linked'::text OR (jsonb_typeof(previous) = 'object'::text AND jsonb_typeof(previous -> 'format'::text) = 'number'::text AND jsonb_typeof(previous -> 'amount'::text) = 'string'::text AND jsonb_typeof(previous -> 'status'::text) = 'string'::text AND jsonb_typeof(previous -> 'lines'::text) = 'array'::text) IS TRUE", name: "receipt_bookings_linked_shape"

@@ -14,7 +14,9 @@ module Receipts
   #   one without a total.
   # - Accept never searches for a transaction (ReceiptLinkCandidates does, for the person to choose).
   # - A receipt that already has a transaction ("Accept again") always rebooks that one: `link:` naming another
-  #   is AlreadyLinked, an `account:` other than its account AccountMismatch.
+  #   is AlreadyLinked, an `account:` other than its account AccountMismatch, a receipt currency corrected to
+  #   another than its account's CurrencyMismatch. Without a booking record it is NotAcceptable unless Accept had
+  #   created the transaction (`source: receipt`): the earlier state of any other row is unknown.
   # - `link:` (a transaction or its id) on a receipt without one: the person chose that ledger transaction.
   #   It is locked with its lines, and must still be there (LinkGone), at the version the person saw
   #   (`link_lock_version`, else TransactionChanged), an expense and not a transfer leg (NotLinkable), without
@@ -174,11 +176,16 @@ module Receipts
         if @account && @account.id != transaction.account_id
           raise AccountMismatch, "the receipt is already booked on #{transaction.account.name}, not on #{@account.name}"
         end
+        # The currency may have been corrected since the booking: the items' numbers would become another currency's.
+        check_currency(transaction.account)
+        # Booked before bookings were recorded: Accept created every such transaction (source `receipt`). Any other
+        # row's earlier state is lost, and recording the current one would make an undo a silent no-op.
+        if transaction.receipt_booking.nil? && !transaction.from_receipt?
+          raise NotAcceptable, "the receipt's transaction has no record of its state before the receipt was booked on it"
+        end
 
-        # Booked before bookings were recorded: Accept created every such transaction.
-        snapshot = ReceiptBooking.snapshot(transaction) if transaction.receipt_booking.nil? && !transaction.from_receipt?
         payee = rebook(transaction, entries)
-        record(transaction, payee, mode: snapshot ? :linked : :created, previous: snapshot, import_digest: transaction.import_digest)
+        record(transaction, payee, mode: :created)
         transaction
       end
 
@@ -187,21 +194,19 @@ module Receipts
       def link(entries)
         transaction = lock_transaction(@link_id)
         raise LinkGone, "the chosen transaction no longer exists" unless transaction
-        if @link_lock_version.to_s != transaction.lock_version.to_s
-          raise TransactionChanged, "the chosen transaction changed somewhere else after the page was opened"
+        # Before the version: a receipt that took it while this one waited on the row lock also moved its version.
+        if (other = other_receipt_id(transaction))
+          raise AlreadyLinked, "the chosen transaction is already booked from receipt ##{other}"
         end
         raise NotLinkable, "the chosen transaction is a transfer leg" if transaction.transfer_leg?
         raise NotLinkable, "the chosen transaction is not an expense" unless transaction.expense?
-        if (other = other_receipt_id(transaction))
-          raise AlreadyLinked, "the chosen transaction is already booked from receipt ##{other}"
+        if @link_lock_version.to_s != transaction.lock_version.to_s
+          raise TransactionChanged, "the chosen transaction changed somewhere else after the page was opened"
         end
         if @account && @account.id != transaction.account_id
           raise AccountMismatch, "the chosen transaction is on #{transaction.account.name}, not on #{@account.name}"
         end
-        if @receipt.currency && @receipt.currency != transaction.account.currency
-          raise CurrencyMismatch, "the receipt is in #{@receipt.currency} but #{transaction.account.name} is in " \
-            "#{transaction.account.currency}"
-        end
+        check_currency(transaction.account)
 
         snapshot = ReceiptBooking.snapshot(transaction)
         import_digest = transaction.import_digest
@@ -241,11 +246,16 @@ module Receipts
         payee
       end
 
+      # A known receipt currency must be the account's; an unknown one books anywhere (the amount still has to match).
+      def check_currency(account)
+        return if @receipt.currency.nil? || @receipt.currency == account.currency
+
+        raise CurrencyMismatch, "the receipt is in #{@receipt.currency} but #{account.name} is in #{account.currency}"
+      end
+
       def book(entries)
         raise AccountRequired, "a receipt without a transaction needs an account" unless @account
-        if @receipt.currency && @receipt.currency != @account.currency
-          raise CurrencyMismatch, "the receipt is in #{@receipt.currency} but #{@account.name} is in #{@account.currency}"
-        end
+        check_currency(@account)
 
         total = CategoryLines.total(entries)
         unless total.positive?
@@ -264,18 +274,20 @@ module Receipts
         transaction
       end
 
-      # Writes the booking record, or refreshes it on "Accept again": the digest of the lines just written always,
-      # the payee when Accept assigned one now (still "created by Accept" when it is the payee Accept created
-      # before); the mode, `previous` and the import digest only at the first booking.
+      # Writes the booking record, or refreshes it on "Accept again": the digest of the lines just written and the
+      # transaction's version always; the payee when Accept assigned one now, unless the record names a payee
+      # Accept created (an undo may remove that one); the mode, `previous` and the import digest only at the first
+      # booking.
       def record(transaction, payee, mode:, previous: nil, import_digest: nil)
         booking = transaction.receipt_booking ||
           ReceiptBooking.new(receipt: @receipt, ledger_transaction: transaction, mode:, previous:,
                              transaction_import_digest: (import_digest if mode == :linked))
-        if payee
+        if payee && !(booking.payee_created? && booking.assigned_payee_id != payee.id)
           created = @payee_created || (booking.assigned_payee_id == payee.id && booking.payee_created?)
           booking.assign_attributes(assigned_payee: payee, payee_created: created)
         end
         booking.lines_digest = ReceiptBooking.lines_digest(transaction.id)
+        booking.booked_lock_version = transaction.lock_version
         booking.save!
       end
 

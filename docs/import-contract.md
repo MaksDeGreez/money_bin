@@ -208,6 +208,11 @@ Things that can still stop the import at this stage (and roll everything back):
   same database transaction. A row that stops being a leg is replaced the same way.
   The importer never deletes a stored row that the export does not have: when replacing would destroy one
   (the old counterpart of a leg, or a row that holds the pair's transfer id), the import stops.
+- A transaction a receipt was booked onto in the app (its lines replaced by the receipt's items,
+  `docs/domain.md`, "Booking onto a transaction") follows the same rule: unchanged, it keeps the receipt's
+  lines; changed in the export, the export wins. Its lines are rewritten in place (the receipt stays linked,
+  and its booking record's digests no longer match), or the row is destroyed and created again (the booking
+  record goes with it and the receipt returns to review). The report does not count these apart.
 - Rows stored by an earlier import that this export does not have (accounts and transactions) are left
   alone and counted in a warning.
 - The `Lines` and `Status` counts of the report describe the export (what each row gets from it), also for

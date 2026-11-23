@@ -35,7 +35,8 @@ class ReceiptBookingTest < ActiveSupport::TestCase
       { mode: "linked", previous: { "format" => 1, "amount" => -1250.4, "status" => "confirmed", "lines" => [] } } => "receipt_bookings_linked_shape",
       { mode: "linked", previous: nil } => "receipt_bookings_linked_shape",
       { lines_digest: "ABC" } => "receipt_bookings_lines_digest_format",
-      { assigned_payee_id: nil, payee_created: true } => "receipt_bookings_created_payee_assigned"
+      { assigned_payee_id: nil, payee_created: true } => "receipt_bookings_created_payee_assigned",
+      { booked_lock_version: -1 } => "receipt_bookings_booked_lock_version_not_negative"
     }.each do |columns, constraint|
       error = assert_raises(ActiveRecord::StatementInvalid, constraint) do
         ReceiptBooking.transaction(requires_new: true) { @booking.update_columns(columns) }
@@ -51,14 +52,22 @@ class ReceiptBookingTest < ActiveSupport::TestCase
     assert copy.errors.include?(:transaction_id)
   end
 
-  test "the lines digest ignores order and ids, and sees a category or an amount change" do
+  test "the lines digest ignores order and ids, and sees a category, an amount, a comment or an origin change" do
     a, b = categories(:groceries).id, categories(:cafes).id
-    digest = ReceiptBooking.digest_lines([ [ a, BigDecimal("-10.5") ], [ nil, BigDecimal("-2") ] ])
+    row = ->(category, amount, comment = nil, origin = nil) { [ category, BigDecimal(amount), comment, nil, origin, nil, nil ] }
+    digest = ReceiptBooking.digest_rows([ row.(a, "-10.5"), row.(nil, "-2") ])
 
-    assert_equal digest, ReceiptBooking.digest_lines([ [ nil, BigDecimal("-2.00") ], [ a, BigDecimal("-10.50") ] ])
-    assert_not_equal digest, ReceiptBooking.digest_lines([ [ b, BigDecimal("-10.50") ], [ nil, BigDecimal("-2.00") ] ])
-    assert_not_equal digest, ReceiptBooking.digest_lines([ [ a, BigDecimal("-10.51") ], [ nil, BigDecimal("-1.99") ] ])
+    assert_equal digest, ReceiptBooking.digest_rows([ row.(nil, "-2.00"), row.(a, "-10.50") ])
+    assert_not_equal digest, ReceiptBooking.digest_rows([ row.(b, "-10.50"), row.(nil, "-2.00") ])
+    assert_not_equal digest, ReceiptBooking.digest_rows([ row.(a, "-10.51"), row.(nil, "-1.99") ])
+    assert_not_equal digest, ReceiptBooking.digest_rows([ row.(a, "-10.50", "a note"), row.(nil, "-2.00") ])
+    assert_not_equal digest, ReceiptBooking.digest_rows([ row.(a, "-10.50", nil, "person"), row.(nil, "-2.00") ])
     assert_match ReceiptBooking::DIGEST_FORMAT, digest
+  end
+
+  test "the digest columns are line columns, and the stored suggestion is not among them" do
+    assert_empty ReceiptBooking::DIGEST_COLUMNS - TransactionLine.column_names
+    assert_empty ReceiptBooking::DIGEST_COLUMNS.grep(/suggest|runner_up/)
   end
 
   test "a payee a record assigned cannot be destroyed while the record stands" do

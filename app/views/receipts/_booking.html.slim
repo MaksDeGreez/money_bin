@@ -1,7 +1,8 @@
 / "Book as" on the review form of a receipt with no ledger transaction (docs/domain.md, "Booking onto a
 / transaction"): the ledger transactions that may be this purchase (ReceiptLinkCandidates), each a choice; the
-/ matches another receipt is booked on, shown but not a choice; then a new expense on an account. Nothing is
-/ chosen for the person while there is any match. The form sends the ids it listed and each candidate's
+/ matches another receipt is booked on, shown but not a choice; then a new expense on an account. "A new expense"
+/ is chosen only on a first render that searched and found nothing: never with a match, never without a date (no
+/ search), never on a refused form (it keeps what the person sent, or nothing). The form sends the ids it listed and each candidate's
 / lock_version, so Receipts::Review refuses a list that changed since, and Receipts::Accept a transaction that
 / changed. The account select is sent only with "A new expense" (receipt_review_controller.js enables it).
 ruby:
@@ -9,17 +10,18 @@ ruby:
   linked = found.linked_elsewhere
   none = candidates.empty? && linked.empty?
   new_choice = Receipts::Review::NEW_BOOKING
-  chosen = review&.booking || (new_choice if none)
+  chosen = review ? review.booking : (new_choice if none && found.date)
   currency = found.receipt.currency
   invalid = (form_receipt.errors[:booking].any? || nil)
-section.review-section aria-labelledby=dom_id(receipt, :booking_heading) data-receipt-review-target="booking"
+section.review-section aria-labelledby=dom_id(receipt, :booking_heading)
   h2.text-base id=dom_id(receipt, :booking_heading) Book as
   = hidden_field_tag "receipt[shown_candidate_ids]", found.candidate_ids.join(" "), id: nil
   = hidden_field_tag "receipt[shown_linked_ids]", found.linked_ids.join(" "), id: nil
+  = hidden_field_tag "receipt[shown_exact_ids]", found.exact_ids.join(" "), id: nil
   - if found.date.nil?
     p.text-sm.text-ink-muted
       | The receipt has no date (nor has its QR code), so the ledger was not searched for this purchase. Save a date
-      |  to look for the bank's transaction.
+      |  to look for the bank's transaction, or choose a new expense (dated today).
   - elsif none
     p.text-sm.text-ink-muted
       = "No expense of #{found.amounts.map { |amount| receipt_money(amount, currency) }.to_sentence(two_words_connector: ' or ', last_word_connector: ' or ').presence || 'this amount'}"
@@ -31,7 +33,7 @@ section.review-section aria-labelledby=dom_id(receipt, :booking_heading) data-re
   - form_receipt.errors[:booking].each do |message|
     p.field-error role="alert" = message
 
-  .form-radio-group role="radiogroup" aria-labelledby=dom_id(receipt, :booking_heading)
+  .form-radio-group
     - candidates.each do |candidate|
       - transaction = candidate.transaction
       - radio_id = dom_id(receipt, "booking_#{transaction.id}")
@@ -49,8 +51,7 @@ section.review-section aria-labelledby=dom_id(receipt, :booking_heading) data-re
           - if transaction.account.archived?
             = ui_badge "Archived account", tone: :muted
           - unless candidate.matches_total
-            = ui_badge "Items sum to #{receipt_money(found.receipt.booking_total, currency)}", tone: :danger,
-              title: "Accepting onto this transaction is refused until the items sum to its amount"
+            = ui_badge "#{found.receipt.card_slip? ? 'Slip total' : 'Items sum to'} #{receipt_money(found.receipt.booking_total, currency)}", tone: :danger
           = link_to "Transaction ##{transaction.id}", transaction_path(transaction), target: "_blank", rel: "noopener", class: "text-xs"
         ul.booking-option-lines aria-label="Its lines now"
           - transaction.lines.each do |line|
@@ -60,6 +61,9 @@ section.review-section aria-labelledby=dom_id(receipt, :booking_heading) data-re
               - if line.comment.present?
                 = " · has a comment"
           li Accepting replaces these lines with the receipt's items.
+          - unless candidate.matches_total
+            li.text-danger-display
+              = found.receipt.card_slip? ? "Accepting onto it is refused: the slip's total is not its amount." : "Accepting onto it is refused until the items sum to its amount."
 
     - if linked.any?
       = render "ui/callout", tone: :signal do
