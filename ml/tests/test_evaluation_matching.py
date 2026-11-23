@@ -9,6 +9,7 @@ from evaluation.matching import (
     match_items,
 )
 from evaluation.text import (
+    NORMALISATION_VERSION,
     levenshtein,
     normalise_merchant,
     normalise_name,
@@ -34,6 +35,67 @@ def test_normalisation_folds_case_punctuation_units_and_look_alikes() -> None:
     assert normalise_name("Хліб  *  5 шт") == normalise_name("хліб 5 pcs")
     assert normalise_name("Ｂｒｅａｄ") == "bread"  # full-width letters (NFKC)
     assert normalise_name(None) == normalise_name("") == ""
+
+
+def test_a_whole_word_in_the_other_script_folds() -> None:
+    # Every letter of `СОСА` is Cyrillic, every letter of `COCA` Latin.
+    assert normalise_name("СОСА КОКО") == normalise_name("COCA KOKO") == "coca koko"
+    assert similarity(normalise_name("ТЕХАС"), normalise_name("TEXAC")) == 1.0
+
+
+def test_case_and_script_mix_freely() -> None:
+    # Capitals and small letters of both scripts, in any mix, end the same.
+    spellings = ["Coca", "COCA", "сОСа", "СoСa", "cOcA", "СОСА", "сoca"]
+    assert {normalise_name(spelling) for spelling in spellings} == {"coca"}
+    # `В`/`B` look alike only as capitals; small `в` still joins `b`, since case goes first.
+    assert normalise_name("ВЕВ") == normalise_name("веb") == normalise_name("BEB")
+    assert normalise_name("НОМ") == normalise_name("hом") == normalise_name("HOM")
+
+
+def test_yi_and_the_rare_cyrillic_letters_fold() -> None:
+    assert normalise_name("ЇЖАК") == normalise_name("ÏЖAK") == normalise_name("їжак")
+    assert normalise_name("ї") == normalise_name("Ï") == "ï"
+    # A combining diaeresis is composed by NFKC first.
+    assert normalise_name("ї") == normalise_name("ï") == "ï"
+    # ї is not і: the diaeresis is a letter of its own.
+    assert normalise_name("ї") != normalise_name("і")
+    assert normalise_name("ЈЅҺ") == normalise_name("јѕһ") == normalise_name("JSH") == "jsh"
+
+
+def test_letters_alike_only_in_italics_and_digits_stay_apart() -> None:
+    for cyrillic, latin in [("п", "n"), ("и", "u"), ("г", "r"), ("ь", "b"), ("т", "m")]:
+        assert normalise_name(f"x{cyrillic}x") != normalise_name(f"x{latin}x")
+    assert normalise_name("ё") != normalise_name("ë")
+    assert normalise_name("ё") != normalise_name("е")
+    # Digits are never folded: `О`/`0`, `З`/`3`, `б`/`6`.
+    assert normalise_name("1О0") == "1 o 0"
+    assert normalise_name("ЗОО") != normalise_name("300")
+    assert normalise_name("б") != normalise_name("6")
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("СОСА-КОЛА 0,5Л", "Coca-Кола 0.5 l"),
+        ("ЇЖАК", "Ïжак"),
+        ("Молоко 2,5%", "MOЛOKO 2.5"),
+        ("Bread", "Хліб"),
+    ],
+)
+def test_similarity_is_symmetric(a: str, b: str) -> None:
+    assert similarity(normalise_name(a), normalise_name(b)) == similarity(
+        normalise_name(b), normalise_name(a)
+    )
+    forward = match_items([it(a, "1.00")], [it(b, "1.00")])
+    backward = match_items([it(b, "1.00")], [it(a, "1.00")])
+    for variant in ("main", "strict", "lenient"):
+        assert [pair.name for pair in forward.matched(variant)] == [
+            pair.name for pair in backward.matched(variant)
+        ]
+
+
+def test_normalisation_version() -> None:
+    assert NORMALISATION_VERSION == 2
 
 
 def test_merchant_normalisation_drops_legal_forms() -> None:

@@ -20,7 +20,10 @@ Per receipt (a prediction line whose status is not `skipped`; a receipt the back
   of the variants `main`, `strict`, `lenient`.
 - **character error rate** of the names of `main`-matched items: the sum of edit distances over the
   sum of reference name lengths, on normalised names (`cer_normalised`) and on names with only
-  Unicode NFC and collapsed spaces (`cer_plain`, where case and look-alike letters count).
+  Unicode NFC and collapsed spaces (`cer_plain`, where case and look-alike letters count). The
+  plain figure is the strict one on purpose: the gap between the two shows how much of the error
+  is case, punctuation, units and script swaps. Both are over the pairs the normalised `main`
+  matching chose, so both depend on `text.NORMALISATION_VERSION`.
 - **items sum to the total**: the predicted item amounts add up exactly (as decimals) to the QR
   total, else to the ground truth's total; over receipts with such a total, card slips (by
   `GroundTruth.reference_kind`) left out: they have no items.

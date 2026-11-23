@@ -10,11 +10,18 @@
 4. A space is put between digits and letters (`900г` reads as `900 г`).
 5. Units are spelled one way, per token: `кг` → `kg`; `г`, `гр` → `g`; `л` → `l`; `мл` → `ml`;
    `шт` → `pcs`; `уп` → `pack`.
-6. Cyrillic letters that look like Latin ones in print are written as the Latin letter
-   (`а е о р с у х і к м н т в` → `a e o p c y x i k m h t b`), so a model that reads a Latin `C`
-   for a Cyrillic `С` is not punished for it. Both sides go through this, so it never makes two
-   different words equal unless they differ only in such letters.
+6. Look-alike letters are folded: every Cyrillic letter of a look-alike class is written as its
+   Latin letter (`а е о р с у х і ї к м н т в ј ѕ һ` → `a e o p c y x i ï k m h t b j s h`), on
+   every token, so a model that reads a Latin `C` for a Cyrillic `С` is not punished for it. Both
+   sides go through this, so it never makes two different words equal unless they differ only in
+   such letters. Digits are never folded (`0`/`О`, `3`/`З`, `6`/`б` stay apart). The classes, and
+   the letters left out on purpose, are in `ml/README.md`, "The evaluation harness".
 7. Runs of spaces become one; leading and trailing spaces go.
+
+The fold comes after case folding, so the table needs only small letters and a class whose letters
+look alike only as capitals (`В`/`B`) still joins the small ones: the case of a word never decides
+whether two scripts compare equal. `NORMALISATION_VERSION` names this rule (1: the 13 classes
+without `ї ј ѕ һ`); the harness writes it to `index.json`, since every name metric depends on it.
 
 `normalise_merchant` does the same and also drops the legal-form words (`ТОВ`, `ФОП`, `ПП`, `ПрАТ`,
 `ПАТ`, `АТ`, `ДП`, `КП`, `LLC`, `Ltd`) wherever they stand, since a register prints the shop's
@@ -27,6 +34,8 @@ normalised names (1.0 when both are empty): 1 for equal names, 0 for names with 
 
 import unicodedata
 
+# 1: the 13 classes of `а е о р с у х і к м н т в`; 2: also `ї ј ѕ һ`.
+NORMALISATION_VERSION = 2
 APOSTROPHES = str.maketrans("", "", "'’ʼ‘`")
 UNITS = {
     "кг": "kg",
@@ -38,8 +47,10 @@ UNITS = {
     "уп": "pack",
 }
 # Lower-case Cyrillic letters whose capital (receipts are mostly printed in capitals) or small form
-# looks like a Latin letter.
-LOOK_ALIKES = str.maketrans("аеорсухікмнтв", "aeopcyxikmhtb")
+# looks like a Latin letter in upright print, each written as that Latin letter. Applied after case
+# folding, so one entry covers both cases of both scripts. Letters alike only in italics (п/n, и/u,
+# г/r, ь/b, т/m) and ё are left out; see `ml/README.md`, "The evaluation harness".
+LOOK_ALIKES = str.maketrans("аеорсухікмнтвїјѕһ", "aeopcyxikmhtbïjsh")
 LEGAL_FORMS = frozenset(
     {"тов", "фоп", "пп", "прат", "пат", "ат", "дп", "кп", "llc", "ltd", "tov", "fop"}
 )
