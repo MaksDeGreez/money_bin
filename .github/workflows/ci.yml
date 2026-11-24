@@ -141,7 +141,7 @@ jobs:
       # uv installs the Python version from ml/.python-version. setup-uv publishes no moving major tag,
       # so the exact release is pinned; Dependabot updates it.
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.3.3
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           working-directory: ml
 
@@ -173,7 +173,7 @@ jobs:
 
       # uv installs the Python version from tools/receipt_ingest/.python-version.
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.3.3
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           working-directory: tools/receipt_ingest
 
