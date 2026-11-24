@@ -34,7 +34,7 @@ gem "bcrypt", "~> 3.1"
 
 # The Model Context Protocol server at /mcp, for AI assistants (official Ruby SDK)
 # [https://github.com/modelcontextprotocol/ruby-sdk]
-gem "mcp", "~> 1.10"
+gem "mcp", "~> 1.11"
 
 # Charts on the dashboard: server-rendered data, drawn by Chart.js in the browser (vendored in the gem,
 # pinned through importmap). How it meets the Content Security Policy: docs/decisions/0013-dashboard-charts.md
@@ -86,7 +86,7 @@ group :test do
   gem "simplecov", require: false
 
   # Checks API requests and responses against docs/openapi.yaml [https://github.com/interagent/committee]
-  gem "committee", "~> 5.6"
+  gem "committee", "~> 5.7"
 end
 
 group :development do
